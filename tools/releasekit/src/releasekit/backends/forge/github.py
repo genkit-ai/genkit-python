@@ -281,7 +281,27 @@ class GitHubCLIBackend:
         *,
         dry_run: bool = False,
     ) -> CommandResult:
-        """Add labels to a PR."""
+        """Add labels to a PR, creating any that don't exist.
+
+        Uses ``gh label create --force`` which is a no-op for labels
+        that already exist, then adds them to the PR.
+        """
+        # Ensure all labels exist before adding them to the PR.
+        # gh pr edit --add-label fails if the label doesn't exist.
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    self._gh,
+                    'label',
+                    'create',
+                    label,
+                    '--force',
+                    dry_run=dry_run,
+                )
+                for label in labels
+            )
+        )
+
         cmd_parts = ['pr', 'edit', str(pr_number)]
         for label in labels:
             cmd_parts.extend(['--add-label', label])

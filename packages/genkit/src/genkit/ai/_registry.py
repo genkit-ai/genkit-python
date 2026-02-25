@@ -84,7 +84,7 @@ from genkit.blocks.reranker import (
     rerank as rerank_block,
 )
 from genkit.blocks.resource import (
-    FlexibleResourceFn,
+    ResourceFn,
     ResourceOptions,
     define_resource as define_resource_block,
 )
@@ -668,7 +668,6 @@ class GenkitRegistry:
             options = SimpleRetrieverOptions(name=options)
 
         async def retriever_fn(query: Document, options_obj: Any) -> RetrieverResponse:  # noqa: ANN401
-
             items = await ensure_async(handler)(query, options_obj)
             docs = []
             for item in items:
@@ -1588,7 +1587,7 @@ class GenkitRegistry:
     def define_resource(
         self,
         opts: 'ResourceOptions | None' = None,
-        fn: 'FlexibleResourceFn | None' = None,
+        fn: 'ResourceFn | None' = None,
         *,
         name: str | None = None,
         uri: str | None = None,

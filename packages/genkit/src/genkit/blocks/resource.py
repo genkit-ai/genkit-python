@@ -25,7 +25,7 @@ and return content (`ResourceOutput`) containing `Part`s.
 import inspect
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from pydantic import BaseModel
 
@@ -76,30 +76,9 @@ class ResourceOutput(BaseModel):
     content: list[Part]
 
 
-class ResourceFn(Protocol):
-    """A function that returns parts for a given resource.
-
-    The function receives the resolved input (including the URI) and context,
-    and should return a `ResourceOutput` containing the content parts.
-    """
-
-    def __call__(self, input: ResourceInput, ctx: ActionRunContext) -> Awaitable[ResourceOutput]:
-        """Call the resource function."""
-        ...
-
-
 ResourcePayload = ResourceOutput | dict[str, Any]
 
-# We need a flexible type because the runtime supports various signatures (0-2 args, sync/async, dict return)
-# but we also want to support the strict Protocol for those who want it.
-# Note: Callable[..., T] is used for flexible args because accurate variable arg Union logic is complex/verbose.
-FlexibleResourceFn = ResourceFn | Callable[..., Awaitable[ResourcePayload] | ResourcePayload]
-
-
-class MatchableAction(Protocol):
-    """Protocol for actions that have a matches method."""
-
-    matches: Callable[[object], bool]
+ResourceFn = Callable[..., Awaitable[ResourcePayload] | ResourcePayload]
 
 
 ResourceArgument = Action | str
@@ -159,7 +138,7 @@ async def lookup_resource_by_name(registry: Registry, name: str) -> Action:
     return resource
 
 
-def define_resource(registry: Registry, opts: ResourceOptions, fn: FlexibleResourceFn) -> Action:
+def define_resource(registry: Registry, opts: ResourceOptions, fn: ResourceFn) -> Action:
     """Defines a resource and registers it with the given registry.
 
     This creates a resource action that can handle requests for a specific URI
@@ -175,7 +154,7 @@ def define_resource(registry: Registry, opts: ResourceOptions, fn: FlexibleResou
     """
     action = dynamic_resource(opts, fn)
 
-    cast(MatchableAction, cast(object, action)).matches = create_matcher(opts.get('uri'), opts.get('template'))
+    action.matches = create_matcher(opts.get('uri'), opts.get('template'))  # type: ignore[attr-defined]
 
     # Mark as not dynamic since it's being registered
     action.metadata['dynamic'] = False
@@ -185,7 +164,7 @@ def define_resource(registry: Registry, opts: ResourceOptions, fn: FlexibleResou
     return action
 
 
-def resource(opts: ResourceOptions, fn: FlexibleResourceFn) -> Action:
+def resource(opts: ResourceOptions, fn: ResourceFn) -> Action:
     """Defines a dynamic resource action without immediate registration.
 
     This is an alias for `dynamic_resource`. Useful for defining resources that
@@ -201,7 +180,7 @@ def resource(opts: ResourceOptions, fn: FlexibleResourceFn) -> Action:
     return dynamic_resource(opts, fn)
 
 
-def dynamic_resource(opts: ResourceOptions, fn: FlexibleResourceFn) -> Action:
+def dynamic_resource(opts: ResourceOptions, fn: ResourceFn) -> Action:
     """Defines a dynamic resource action.
 
     Creates an `Action` of kind `RESOURCE` that wraps the provided function.
@@ -408,9 +387,7 @@ async def find_matching_resource(
     if dynamic_resources:
         for action in dynamic_resources:
             if (
-                hasattr(action, 'matches')
-                and callable(action.matches)
-                and cast(MatchableAction, cast(object, action)).matches(input_data)
+                hasattr(action, 'matches') and callable(action.matches) and action.matches(input_data)  # type: ignore[attr-defined]
             ):
                 return action
 
@@ -425,9 +402,7 @@ async def find_matching_resource(
 
     for action in resources.values():
         if (
-            hasattr(action, 'matches')
-            and callable(action.matches)
-            and cast(MatchableAction, cast(object, action)).matches(input_data)
+            hasattr(action, 'matches') and callable(action.matches) and action.matches(input_data)  # type: ignore[attr-defined]
         ):
             return action
 

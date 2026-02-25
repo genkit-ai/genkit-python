@@ -16,12 +16,14 @@
 
 """Asynchronous server gateway interface implementation for Genkit."""
 
+import asyncio
 import signal
+import socket
+import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
 import anyio
-import httpx
 import uvicorn
 
 from genkit.aio.loop import run_loop
@@ -32,7 +34,6 @@ from genkit.core.logging import get_logger
 from genkit.core.plugin import Plugin
 from genkit.core.reflection import create_reflection_asgi_app
 from genkit.core.registry import Registry
-from genkit.web.manager._ports import find_free_port_sync
 
 from ._registry import GenkitRegistry
 from ._runtime import RuntimeManager
@@ -42,7 +43,21 @@ logger = get_logger(__name__)
 
 T = TypeVar('T')
 
-_UNSET = object()  # Sentinel to distinguish "not yet set" from None.
+
+class _ReflectionServer(uvicorn.Server):
+    """A uvicorn.Server subclass that signals startup completion via a threading.Event."""
+
+    def __init__(self, config: uvicorn.Config, ready: threading.Event) -> None:
+        """Initialize the server with a ready event to set on startup."""
+        super().__init__(config)
+        self._ready = ready
+
+    async def startup(self, sockets: list | None = None) -> None:
+        """Override to set the ready event once uvicorn finishes binding."""
+        try:
+            await super().startup(sockets=sockets)
+        finally:
+            self._ready.set()
 
 
 class GenkitBase(GenkitRegistry):
@@ -64,9 +79,61 @@ class GenkitBase(GenkitRegistry):
         """
         super().__init__()
         self._reflection_server_spec: ServerSpec | None = reflection_server_spec
+        self._reflection_ready = threading.Event()
         self._initialize_registry(model, plugins)
         # Ensure the default generate action is registered for async usage.
         define_generate_action(self.registry)
+        # In dev mode, start the reflection server immediately in a background
+        # daemon thread so it's available regardless of which web framework (or
+        # none) the user chooses.
+        if is_dev_environment():
+            self._start_reflection_background()
+
+    def _start_reflection_background(self) -> None:
+        """Start the Dev UI reflection server in a background daemon thread.
+
+        The thread owns its own asyncio event loop so it never conflicts with
+        the main thread's loop (whether that's uvicorn, FastAPI, or none).
+        Sets ``self._reflection_ready`` once the server is listening.
+        """
+
+        def _thread_main() -> None:
+            async def _run() -> None:
+                sockets: list[socket.socket] | None = None
+                spec = self._reflection_server_spec
+                if spec is None:
+                    # Bind to port 0 to let the OS choose an available port and
+                    # pass the socket to uvicorn to avoid a check-then-bind race.
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.bind(('127.0.0.1', 0))
+                    sock.listen(2048)
+                    host, port = sock.getsockname()
+                    spec = ServerSpec(scheme='http', host=host, port=port)
+                    self._reflection_server_spec = spec
+                    sockets = [sock]
+
+                server = _make_reflection_server(self.registry, spec, ready=self._reflection_ready)
+                async with RuntimeManager(spec, lazy_write=True) as runtime_manager:
+                    server_task = asyncio.create_task(server.serve(sockets=sockets))
+
+                    # _ReflectionServer.startup() sets _reflection_ready once uvicorn binds.
+                    # Use asyncio.to_thread so we don't block the event loop.
+                    await asyncio.to_thread(self._reflection_ready.wait)
+
+                    if server.should_exit:
+                        logger.warning(f'Reflection server at {spec.url} failed to start.')
+                        return
+
+                    runtime_manager.write_runtime_file()
+                    await logger.ainfo(f'Genkit Dev UI reflection server running at {spec.url}')
+
+                    # Keep running until the process exits (daemon thread).
+                    await server_task
+
+            asyncio.run(_run())
+
+        t = threading.Thread(target=_thread_main, daemon=True, name='genkit-reflection-server')
+        t.start()
 
     def _initialize_registry(self, model: str | None, plugins: list[Plugin] | None) -> None:
         """Initialize the registry for the Genkit instance.
@@ -97,22 +164,19 @@ class GenkitBase(GenkitRegistry):
     def run_main(self, coro: Coroutine[Any, Any, T]) -> T | None:
         """Run the user's main coroutine.
 
-        In development mode (`GENKIT_ENV=dev`), this starts the Genkit
-        reflection server and runs the user's coroutine concurrently within the
-        same event loop, blocking until the server is stopped (e.g., via
-        Ctrl+C).
+        In development mode (`GENKIT_ENV=dev`), this runs the user's coroutine
+        then blocks until Ctrl+C or SIGTERM, keeping the background reflection
+        server (started in ``__init__``) alive for the Dev UI.
 
         In production mode, this simply runs the user's coroutine to completion
-        using `uvloop.run()` for performance if available, otherwise
-        `asyncio.run()`.
+        using ``uvloop.run()`` for performance if available, otherwise
+        ``asyncio.run()``.
 
         Args:
             coro: The main coroutine provided by the user.
 
         Returns:
-            The result of the user's coroutine, or None if the
-            development server was shut down gracefully (SIGTERM/Ctrl+C)
-            before the coroutine completed.
+            The result of the user's coroutine, or None on graceful shutdown.
         """
         if not is_dev_environment():
             logger.info('Running in production mode.')
@@ -120,109 +184,38 @@ class GenkitBase(GenkitRegistry):
 
         logger.info('Running in development mode.')
 
-        spec = self._reflection_server_spec
-        if not spec:
-            spec = ServerSpec(scheme='http', host='127.0.0.1', port=find_free_port_sync(3100, 3999))
-        assert spec is not None  # Type narrowing: spec is guaranteed non-None after the above check
-
         async def dev_runner() -> T | None:
-            """Internal async function to run tasks using AnyIO TaskGroup."""
-            # Assert for type narrowing inside closure (pyrefly doesn't propagate from outer scope)
-            assert spec is not None
-            # Capture spec in local var for nested functions (pyrefly doesn't narrow closures)
-            server_spec: ServerSpec = spec
-            user_result: T | object = _UNSET
-            user_task_finished_event = anyio.Event()
-            cancelled = False  # Track whether shutdown was intentional (SIGTERM/Ctrl+C)
-
-            async def run_user_coro_wrapper() -> None:
-                """Wraps user coroutine to capture result and signal completion."""
-                nonlocal user_result
-                try:
-                    user_result = await coro
-                    logger.debug('User coroutine completed successfully.')
-                except Exception as err:
-                    # Log error but don't necessarily stop the server
-                    logger.error(f'User coroutine failed: {err}', exc_info=True)
-                    pass  # Continue running server for now
-                finally:
-                    user_task_finished_event.set()
-
-            reflection_server = _make_reflection_server(self.registry, server_spec)
-
-            # Since anyio/asyncio handles SIGINT well, let's add a task to catch SIGTERM
-            async def handle_sigterm(tg_to_cancel: anyio.abc.TaskGroup) -> None:  # type: ignore[name-defined]
-                nonlocal cancelled
-                with anyio.open_signal_receiver(signal.SIGTERM) as signals:
-                    async for _signum in signals:
-                        logger.info('Received SIGTERM, cancelling tasks...')
-                        cancelled = True
-                        tg_to_cancel.cancel_scope.cancel()
-                        return
-
+            user_result: T | None = None
             try:
-                # Use lazy_write=True to prevent race condition where file exists before server is up
-                async with RuntimeManager(server_spec, lazy_write=True) as runtime_manager:
-                    # We use anyio.TaskGroup because it is compatible with
-                    # asyncio's event loop and works with Python 3.10
-                    # (asyncio.TaskGroup was added in 3.11, and we can switch to
-                    # that when we drop support for 3.10).
-                    async with anyio.create_task_group() as tg:
-                        # Start reflection server in the background.
-                        tg.start_soon(reflection_server.serve, name='genkit-reflection-server')
-                        await logger.ainfo(f'Started Genkit reflection server at {server_spec.url}')
-
-                        # Start SIGTERM handler
-                        tg.start_soon(handle_sigterm, tg, name='genkit-sigterm-handler')
-
-                        # Wait for server to be responsive
-
-                        max_retries = 20  # 2 seconds total roughly
-                        for _i in range(max_retries):
-                            try:
-                                health_url = f'{server_spec.url}/api/__health'
-                                async with httpx.AsyncClient(timeout=0.5) as client:
-                                    response = await client.get(health_url)
-                                    if response.status_code == 200:
-                                        break
-                            except Exception:
-                                await anyio.sleep(0.1)
-                        else:
-                            logger.warning(f'Reflection server at {server_spec.url} did not become healthy in time.')
-
-                        # Now write the file (or verify it persisted)
-                        _ = runtime_manager.write_runtime_file()
-
-                        # Start the (potentially short-lived) user coroutine wrapper
-                        tg.start_soon(run_user_coro_wrapper, name='genkit-user-coroutine')
-                        await logger.ainfo('Started Genkit user coroutine')
-
-            except anyio.get_cancelled_exc_class():
-                cancelled = True
-                logger.info('Development server task group cancelled (e.g., Ctrl+C).')
+                user_result = await coro
+                logger.debug('User coroutine completed successfully.')
             except Exception:
-                logger.exception('Development server task group error')
-                raise
+                logger.exception('User coroutine failed')
 
-            # Graceful shutdown (SIGTERM or Ctrl+C) — not an error.
-            if cancelled:
-                logger.info('Development server shut down gracefully.')
-                return user_result if user_result is not _UNSET else None  # type: ignore[return-value] - _UNSET is object, not T
+            # Block until Ctrl+C (SIGINT handled by anyio) or SIGTERM, keeping
+            # the daemon reflection thread alive.
+            logger.info('Script done — Dev UI running. Press Ctrl+C to stop.')
+            try:
+                async with anyio.create_task_group() as tg:
 
-            # Normal exit (not cancelled) — user coroutine should have finished.
-            if user_task_finished_event.is_set():
-                await logger.adebug('User coroutine finished before TaskGroup exit.')
-                if user_result is _UNSET:
-                    raise RuntimeError('User coroutine finished without a result.')
-                return user_result  # type: ignore[return-value] - narrowed by _UNSET check above
+                    async def _handle_sigterm(tg_: anyio.abc.TaskGroup) -> None:  # type: ignore[name-defined]
+                        with anyio.open_signal_receiver(signal.SIGTERM) as sigs:
+                            async for _ in sigs:
+                                tg_.cancel_scope.cancel()
+                                return
 
-            await logger.adebug('User coroutine did not finish before TaskGroup exit.')
-            raise RuntimeError('User coroutine did not finish before TaskGroup exit.')
+                    tg.start_soon(_handle_sigterm, tg)
+                    await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                pass
+
+            logger.info('Dev UI server stopped.')
+            return user_result
 
         return anyio.run(dev_runner)
 
 
-def _make_reflection_server(registry: Registry, spec: ServerSpec) -> uvicorn.Server:
+def _make_reflection_server(registry: Registry, spec: ServerSpec, ready: threading.Event) -> _ReflectionServer:
     """Make a reflection server for the given registry and spec.
 
     This is a helper function to make it easier to test the reflection server
@@ -231,6 +224,7 @@ def _make_reflection_server(registry: Registry, spec: ServerSpec) -> uvicorn.Ser
     Args:
         registry: The registry to use for the reflection server.
         spec: The spec to use for the reflection server.
+        ready: threading.Event to set once uvicorn finishes binding.
 
     Returns:
         A uvicorn server instance.
@@ -238,4 +232,4 @@ def _make_reflection_server(registry: Registry, spec: ServerSpec) -> uvicorn.Ser
     app = create_reflection_asgi_app(registry=registry)
     # pyrefly: ignore[bad-argument-type] - Starlette app is valid ASGI app for uvicorn
     config = uvicorn.Config(app, host=spec.host, port=spec.port, loop='asyncio')
-    return uvicorn.Server(config)
+    return _ReflectionServer(config, ready=ready)

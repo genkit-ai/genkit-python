@@ -806,6 +806,19 @@ GEMINI_3_1_FLASH_LITE_PREVIEW = ModelInfo(
     ),
 )
 
+GEMINI_3_1_FLASH_LITE = ModelInfo(
+    label='Google AI - Gemini 3.1 Flash Lite',
+    supports=Supports(
+        multiturn=True,
+        media=True,
+        tools=True,
+        tool_choice=True,
+        system_role=True,
+        constrained=Constrained.ALL,
+        output=['text', 'json'],
+    ),
+)
+
 GEMINI_IMAGE_SUPPORTS = Supports(
     multiturn=True,
     media=True,
@@ -919,6 +932,9 @@ class VertexAIGeminiVersion(StrEnum, metaclass=Deprecations):  # pyrefly: ignore
     | `gemini-2.5-pro-preview-03-25`       | Gemini 2.5 Pro Preview 03-25         | Supported    |
     | `gemini-2.5-pro-preview-05-06`       | Gemini 2.5 Pro Preview 05-06         | Supported    |
     | `gemini-3-flash-preview`             | Gemini 3 Flash Preview               | Supported    |
+    | `gemini-3.5-flash`                   | Gemini 3.5 Flash                     | Supported    |
+    | `gemini-3.1-pro-preview`            | Gemini 3.1 Pro Preview               | Supported    |
+    | `gemini-3.1-flash-lite`             | Gemini 3.1 Flash Lite                | Supported    |
     | `gemini-2.5-pro`                     | Gemini 2.5 Pro                       | Supported    |
     | `gemini-2.5-flash`                   | Gemini 2.5 Flash                     | Supported    |
     | `gemini-2.5-flash-lite`              | Gemini 2.5 Flash Lite                | Supported    |
@@ -955,6 +971,9 @@ class VertexAIGeminiVersion(StrEnum, metaclass=Deprecations):  # pyrefly: ignore
     GEMINI_3_PRO_IMAGE_PREVIEW = 'gemini-3-pro-image-preview'
     GEMINI_2_5_FLASH_IMAGE_PREVIEW = 'gemini-2.5-flash-image-preview'
     GEMINI_2_5_FLASH_IMAGE = 'gemini-2.5-flash-image'
+    GEMINI_3_5_FLASH = 'gemini-3.5-flash'
+    GEMINI_3_1_PRO_PREVIEW = 'gemini-3.1-pro-preview'
+    GEMINI_3_1_FLASH_LITE = 'gemini-3.1-flash-lite'
     GEMMA_3_12B_IT = 'gemma-3-12b-it'
     GEMMA_3_1B_IT = 'gemma-3-1b-it'
     GEMMA_3_27B_IT = 'gemma-3-27b-it'
@@ -1062,6 +1081,7 @@ _add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash', 'gemini-flash-latest'])
 _add_model(GEMINI_3_1_PRO_PREVIEW, ['gemini-3.1-pro-preview'])
 _add_model(GEMINI_3_1_PRO_PREVIEW_CUSTOMTOOLS, ['gemini-3.1-pro-preview-customtools'])
 _add_model(GEMINI_3_1_FLASH_LITE_PREVIEW, ['gemini-3.1-flash-lite-preview'])
+_add_model(GEMINI_3_1_FLASH_LITE, ['gemini-3.1-flash-lite'])
 _add_model(GEMINI_3_PRO_IMAGE, ['gemini-3-pro-image'])
 _add_model(GEMINI_3_1_FLASH_IMAGE, ['gemini-3.1-flash-image'])
 _add_model(GEMINI_3_1_FLASH_IMAGE_PREVIEW, ['gemini-3.1-flash-image-preview'])

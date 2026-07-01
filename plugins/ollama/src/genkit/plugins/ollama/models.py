@@ -88,6 +88,7 @@ from typing import Any, Literal, cast
 
 import structlog
 from pydantic import BaseModel
+from pydantic.alias_generators import to_snake
 
 import ollama as ollama_api
 from genkit import (
@@ -283,7 +284,7 @@ class OllamaModel:
             idx = 0
             async for chunk in chat_response:
                 idx += 1
-                role = Role.MODEL if chunk.message.role == 'assistant' else Role.TOOL
+                role = Role.TOOL if chunk.message.role == 'tool' else Role.MODEL
                 if ctx:
                     ctx.send_chunk(
                         chunk=ModelResponseChunk(
@@ -417,14 +418,15 @@ class OllamaModel:
         if isinstance(config, ModelConfig):
             config = dict(
                 top_k=config.top_k,
-                topP=config.top_p,
+                top_p=config.top_p,
                 stop=config.stop_sequences,
                 temperature=config.temperature,
                 num_predict=config.max_output_tokens,
             )
         if isinstance(config, dict):
-            # Use cast to avoid type error with **spread of dict[str, object]
-            config = ollama_api.Options(**cast(dict[str, Any], config))
+            # Snake-case keys so camelCase knobs (e.g. ``topP``) map to the
+            # server field instead of being silently dropped by Options.
+            config = ollama_api.Options(**{to_snake(k): v for k, v in cast(dict[str, Any], config).items()})
 
         return config
 
@@ -507,7 +509,9 @@ class OllamaModel:
         """
         if url.startswith('data:'):
             # Strip data URI prefix → raw base64: "data:image/jpeg;base64,ABC" → "ABC"
-            comma_idx = url.index(',')
+            comma_idx = url.find(',')
+            if comma_idx == -1:
+                raise ValueError(f'Malformed data URI (missing comma separator): {url!r}')
             return url[comma_idx + 1 :]
 
         if url.startswith(('http://', 'https://')):
@@ -579,28 +583,58 @@ class OllamaModel:
 
 def _convert_parameters(input_schema: dict[str, object]) -> ollama_api.Tool.Function.Parameters | None:
     """Sanitizes a schema to be compatible with Ollama API."""
-    if not input_schema or 'type' not in input_schema:
+    if not input_schema:
         return None
 
+    schema_type = input_schema.get('type')
+    if schema_type is None and 'properties' in input_schema:
+        # Infer an object schema when properties are present but ``type`` is omitted.
+        schema_type = 'object'
+    if schema_type != 'object':
+        # JS parity (isValidOllamaTool): Ollama only supports object-typed tool inputs.
+        raise ValueError(f'Unsupported schema type {schema_type!r}: Ollama only supports tools with object inputs')
+
     schema = ollama_api.Tool.Function.Parameters()
-    if 'required' in input_schema:
-        required = input_schema['required']
-        if isinstance(required, list):
-            schema.required = cast(list[str], required)
+    schema.type = 'object'
 
-    if 'type' in input_schema:
-        schema_type = input_schema['type']
-        if schema_type == 'object':
-            schema.type = 'object'
+    required = input_schema.get('required')
+    if isinstance(required, list):
+        schema.required = cast(list[str], required)
 
-        if schema_type == 'object':
-            schema.properties = {}
-            properties_raw = input_schema.get('properties', {})
-            if isinstance(properties_raw, dict):
-                properties = cast(dict[str, dict[str, Any]], properties_raw)
-                for key in properties:
-                    schema.properties[key] = ollama_api.Tool.Function.Parameters.Property(
-                        type=properties[key]['type'], description=properties[key].get('description', '')
-                    )
+    schema.properties = {}
+    properties_raw = input_schema.get('properties', {})
+    if isinstance(properties_raw, dict):
+        properties = cast(dict[str, dict[str, Any]], properties_raw)
+        for key in properties:
+            schema.properties[key] = ollama_api.Tool.Function.Parameters.Property(
+                type=_property_type(properties[key]), description=properties[key].get('description', '')
+            )
 
     return schema
+
+
+def _property_type(prop: dict[str, Any]) -> str | list[str] | None:
+    """Resolves a JSON-schema property to a type Ollama's Property accepts.
+
+    Optional/Union fields serialize as ``anyOf`` with no top-level ``type``
+    (e.g. ``Optional[str]`` -> ``{'anyOf': [{'type': 'string'}, {'type': 'null'}]}``).
+    Map those to the list form ``Property.type`` accepts instead of crashing on a
+    missing ``type`` key or dropping the property (which would leave ``required``
+    pointing at a property that no longer exists). Schemas with no resolvable type
+    (e.g. ``Any``) fall back to ``None``, which Ollama treats as untyped.
+    """
+    if 'type' in prop:
+        return cast(str | list[str], prop['type'])
+    union = prop.get('anyOf') or prop.get('oneOf')
+    if isinstance(union, list):
+        types: list[str] = []
+        for entry in union:
+            if isinstance(entry, dict):
+                entry_type = entry.get('type')
+                if isinstance(entry_type, str):
+                    types.append(entry_type)
+                elif isinstance(entry_type, list):
+                    types.extend(t for t in entry_type if isinstance(t, str))
+        if types:
+            return list(dict.fromkeys(types))  # order-preserving dedup
+    return None

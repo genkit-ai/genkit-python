@@ -179,6 +179,49 @@ def _to_dict(obj: JsonAny) -> JsonAny:  # noqa: ANN401
     return obj.model_dump() if isinstance(obj, BaseModel) else obj
 
 
+def _to_finish_reason(fr: Any) -> FinishReason:  # noqa: ANN401
+    """Map a google-genai finish reason onto Genkit's FinishReason."""
+    fr_name = getattr(fr, 'name', fr) if fr is not None else None
+    if fr_name == 'STOP':
+        return FinishReason.STOP
+    if fr_name == 'MAX_TOKENS':
+        return FinishReason.LENGTH
+    if fr_name in (
+        'SAFETY',
+        'RECITATION',
+        'BLOCKLIST',
+        'PROHIBITED_CONTENT',
+        'SPII',
+        'LANGUAGE',
+        'MALICIOUS',
+        'IMAGE_SAFETY',
+    ):
+        return FinishReason.BLOCKED
+    if fr_name in ('OTHER', 'MALFORMED_FUNCTION_CALL', 'MISSING_THOUGHT_SIGNATURE'):
+        return FinishReason.OTHER
+    return FinishReason.UNKNOWN
+
+
+def _to_float(obj: Any, attr: str) -> float | None:  # noqa: ANN401
+    """Extract an optional numeric attribute as a float."""
+    val = getattr(obj, attr, None)
+    return float(val) if val is not None else None
+
+
+def _usage_from_metadata(usage_metadata: Any) -> ModelUsage:  # noqa: ANN401
+    """Build ModelUsage from a google-genai usage_metadata block."""
+    if usage_metadata is None:
+        return ModelUsage()
+
+    return ModelUsage(
+        input_tokens=_to_float(usage_metadata, 'prompt_token_count'),
+        output_tokens=_to_float(usage_metadata, 'candidates_token_count'),
+        total_tokens=_to_float(usage_metadata, 'total_token_count'),
+        thoughts_tokens=_to_float(usage_metadata, 'thoughts_token_count'),
+        cached_content_tokens=_to_float(usage_metadata, 'cached_content_token_count'),
+    )
+
+
 from genkit_google_genai.models._deprecations import (  # noqa: E402
     deprecated_enum_metafactory,
 )
@@ -1668,17 +1711,7 @@ class GeminiModel:
                 if not c_content:
                     c_content = [Part(root=TextPart(text=''))]
 
-                c_finish_reason = FinishReason.OTHER
-                if c.finish_reason:
-                    fr_name = c.finish_reason.name
-                    if fr_name == 'STOP':
-                        c_finish_reason = FinishReason.STOP
-                    elif fr_name == 'MAX_TOKENS':
-                        c_finish_reason = FinishReason.LENGTH
-                    elif fr_name in ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII']:
-                        c_finish_reason = FinishReason.BLOCKED
-                    elif fr_name == 'OTHER':
-                        c_finish_reason = FinishReason.OTHER
+                c_finish_reason = _to_finish_reason(c.finish_reason)
 
                 if i == 0:
                     finish_reason = c_finish_reason
@@ -1698,21 +1731,7 @@ class GeminiModel:
             ),
             finish_reason=finish_reason,
             candidates=candidates,
-            usage=ModelUsage(
-                input_tokens=float(response.usage_metadata.prompt_token_count or 0)
-                if response.usage_metadata
-                else None,
-                output_tokens=float(response.usage_metadata.candidates_token_count or 0)
-                if response.usage_metadata
-                else None,
-                total_tokens=float(response.usage_metadata.total_token_count or 0) if response.usage_metadata else None,
-                thoughts_tokens=float(response.usage_metadata.thoughts_token_count or 0)
-                if response.usage_metadata and response.usage_metadata.thoughts_token_count
-                else None,
-                cached_content_tokens=float(response.usage_metadata.cached_content_token_count or 0)
-                if response.usage_metadata and response.usage_metadata.cached_content_token_count
-                else None,
-            ),
+            usage=_usage_from_metadata(response.usage_metadata),
         )
 
     async def _streaming_generate(
@@ -1762,6 +1781,8 @@ class GeminiModel:
             ) from e
 
         accumulated_content: list[Part] = []
+        finish_reason = FinishReason.UNKNOWN
+        usage_metadata: Any = None
         async for response_chunk in generator:
             content = await self._contents_from_response(response_chunk)
             if content:  # Only process if we have content
@@ -1772,12 +1793,23 @@ class GeminiModel:
                         role=Role.MODEL,
                     )
                 )
+            # The terminating reason and cumulative token usage ride on the trailing
+            # chunks, so hold onto the latest values we see as the stream drains —
+            # otherwise a streamed turn reports no finish reason and no usage at all.
+            if response_chunk.candidates and response_chunk.candidates[0] is not None:
+                fr = response_chunk.candidates[0].finish_reason
+                if fr:
+                    finish_reason = _to_finish_reason(fr)
+            if response_chunk.usage_metadata is not None:
+                usage_metadata = response_chunk.usage_metadata
 
         return ModelResponse(
             message=Message(
                 role=Role.MODEL,
                 content=accumulated_content,
-            )
+            ),
+            finish_reason=finish_reason,
+            usage=_usage_from_metadata(usage_metadata),
         )
 
     @cached_property
@@ -2080,10 +2112,9 @@ class GeminiModel:
 
         usage = get_basic_usage_stats(input_=request.messages, response=response.message)
         if response.usage:
-            usage.input_tokens = response.usage.input_tokens
-            usage.output_tokens = response.usage.output_tokens
-            usage.total_tokens = response.usage.total_tokens
-            usage.thoughts_tokens = response.usage.thoughts_tokens
-            usage.cached_content_tokens = response.usage.cached_content_tokens
+            for field in ('input_tokens', 'output_tokens', 'total_tokens', 'thoughts_tokens', 'cached_content_tokens'):
+                val = getattr(response.usage, field, None)
+                if val is not None:
+                    setattr(usage, field, val)
 
         return usage

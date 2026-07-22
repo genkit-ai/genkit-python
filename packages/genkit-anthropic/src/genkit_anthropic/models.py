@@ -25,16 +25,21 @@ See:
 """
 
 import json
+import math
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol, cast
 
 import structlog
-from anthropic import AsyncAnthropic
+from anthropic import APIError, AsyncAnthropic
 from anthropic.types import Message as AnthropicMessage
 
 from genkit import (
     Constrained,
     CustomPart,
+    ErrorResponseMetadata,
     FinishReason,
+    GenkitError,
     MediaPart,
     Message,
     ModelRequest,
@@ -50,7 +55,7 @@ from genkit import (
     ToolResponsePart,
 )
 from genkit.model import get_basic_usage_stats
-from genkit.plugin_api import ActionRunContext
+from genkit.plugin_api import ActionRunContext, StatusName
 from genkit_anthropic.config import BETA_KWARG_KEYS, STABLE_KWARG_KEYS, AnthropicConfig
 from genkit_anthropic.model_info import get_model_info
 from genkit_anthropic.utils import (
@@ -74,6 +79,63 @@ class _ModelDumpable(Protocol):
     def model_dump(self, *, exclude_none: bool = False, by_alias: bool = False) -> dict[str, object]:
         """Dump model fields."""
         ...
+
+
+_ANTHROPIC_STATUS_MAP: dict[int, StatusName] = {
+    400: 'INVALID_ARGUMENT',
+    401: 'UNAUTHENTICATED',
+    403: 'PERMISSION_DENIED',
+    429: 'RESOURCE_EXHAUSTED',
+    500: 'INTERNAL',
+    503: 'UNAVAILABLE',
+    529: 'UNAVAILABLE',
+}
+
+
+def _parse_retry_after_ms(value: str) -> float | None:
+    """Parse an HTTP Retry-After value into milliseconds.
+
+    Supports both delay-seconds and HTTP-date values, matching the
+    JavaScript Anthropic adapter.
+    """
+    value = value.strip()
+    if not value:
+        return None
+
+    try:
+        seconds = float(value)
+    except ValueError:
+        pass
+    else:
+        # Check the scaled value: a large finite input can overflow to inf.
+        retry_after_ms = seconds * 1000
+        if seconds >= 0 and math.isfinite(retry_after_ms):
+            return retry_after_ms
+
+    try:
+        retry_at_ms = parsedate_to_datetime(value).timestamp() * 1000
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
+    return max(0.0, retry_at_ms - time.time() * 1000)
+
+
+def _from_anthropic_error(error: APIError) -> GenkitError:
+    """Convert an Anthropic SDK error to its Genkit equivalent."""
+    status_code = getattr(error, 'status_code', None)
+    status = _ANTHROPIC_STATUS_MAP.get(status_code, 'UNKNOWN') if isinstance(status_code, int) else 'UNKNOWN'
+
+    response = getattr(error, 'response', None)
+    retry_after_header = response.headers.get('retry-after') if response is not None else None
+    retry_after_ms = _parse_retry_after_ms(retry_after_header) if retry_after_header else None
+    response_metadata: ErrorResponseMetadata | None = None
+    if retry_after_ms is not None:
+        response_metadata = {'retry_after_ms': retry_after_ms}
+
+    return GenkitError(
+        status=status,
+        message=error.message,
+        response_metadata=response_metadata,
+    )
 
 
 def _to_anthropic_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -228,13 +290,16 @@ class AnthropicModel:
 
         logger.debug('Anthropic generate request', model=self.model_name, streaming=bool(streaming))
 
-        if streaming:
-            assert ctx is not None  # streaming requires ctx
-            response = await self._generate_streaming(params, ctx, client=client, use_beta=use_beta)
-        else:
-            active_client = cast(Any, client)
-            messages_client = active_client.beta.messages if use_beta else active_client.messages
-            response = await messages_client.create(**params)
+        try:
+            if streaming:
+                assert ctx is not None  # streaming requires ctx
+                response = await self._generate_streaming(params, ctx, client=client, use_beta=use_beta)
+            else:
+                active_client = cast(Any, client)
+                messages_client = active_client.beta.messages if use_beta else active_client.messages
+                response = await messages_client.create(**params)
+        except APIError as error:
+            raise _from_anthropic_error(error) from error
 
         logger.debug(
             'Anthropic raw API response',

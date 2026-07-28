@@ -1943,7 +1943,7 @@ class GeminiModel:
                     content_parts.extend(converted)
                 else:
                     content_parts.append(converted)
-            role = 'user' if msg.role == Role.TOOL else msg.role
+            role = 'model' if msg.role in (Role.MODEL, 'model') else 'user'
             request_contents.append(genai_types.Content(parts=content_parts, role=role))
 
             if msg.metadata and msg.metadata.get('cache'):

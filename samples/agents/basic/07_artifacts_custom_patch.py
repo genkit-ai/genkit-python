@@ -120,7 +120,7 @@ async def research_agent_fn(sess: SessionRunner, ctx: ActionRunContext) -> Agent
 
         res = await stream_resp.response
         if res.message:
-            await sess.add_messages(res.message)
+            await sess.add_messages([res.message])
 
         fr = AgentFinishReason.STOP if res.finish_reason == FinishReason.STOP else AgentFinishReason.UNKNOWN
         return TurnResult(finish_reason=fr)
@@ -135,7 +135,7 @@ agent = ai.define_custom_agent(name='researchAgent', fn=research_agent_fn, store
 async def main() -> None:
     chat = agent.chat()  # AgentChat[ResearchState] — state is typed
 
-    turn = chat.send('Analyze Python async performance best practices')
+    turn = chat.send_stream('Analyze Python async performance best practices')
     async for chunk in turn.stream:
         if chunk.custom is not None:
             topics = ', '.join(chunk.custom.topics_explored)

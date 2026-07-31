@@ -137,7 +137,7 @@ class SessionRunner(Generic[StateT]):
         async for inp in self.turn_inputs:
             # Auto-add inbound messages to session history
             if inp.message:
-                await self.session.add_messages(inp.message)
+                await self.session.add_messages([inp.message])
 
             parent_snapshot_id = self.get_parent_snapshot_id() if self.get_parent_snapshot_id else None
             # Reserve the turn's snapshot id up front (when a store is configured)
@@ -220,14 +220,14 @@ class SessionRunner(Generic[StateT]):
     async def set_messages(self, messages: list[MessageData]) -> None:
         await self.session.set_messages(messages)
 
-    async def add_messages(self, *messages: MessageData) -> None:
-        await self.session.add_messages(*messages)
+    async def add_messages(self, messages: list[MessageData]) -> None:
+        await self.session.add_messages(messages)
 
     async def get_artifacts(self) -> list[Artifact]:
         return await self.session.get_artifacts()
 
-    async def add_artifacts(self, *artifacts: Artifact) -> None:
-        await self.session.add_artifacts(*artifacts)
+    async def add_artifacts(self, artifacts: list[Artifact]) -> None:
+        await self.session.add_artifacts(artifacts)
 
     async def get_custom(self) -> StateT | None:
         return await self.session.get_custom()
@@ -287,6 +287,27 @@ class AgentInitError(GenkitError):
     """
 
 
+def seeded_init_fields(state: SessionState) -> str:
+    """Caller-facing names for whatever seeded this ``SessionState`` blob.
+
+    ``messages`` / ``artifacts`` / ``state`` all get bundled into one
+    ``SessionState`` before the server-managed check, so the error should name
+    the field(s) the caller actually passed — not always ``'state'``.
+    """
+    names = [
+        name
+        for name, present in (
+            ('messages', state.messages is not None),
+            ('artifacts', state.artifacts is not None),
+            ('state', state.custom is not None),
+        )
+        if present
+    ]
+    if not names:
+        return "'state'"
+    return '/'.join(f"'{name}'" for name in names)
+
+
 def assert_init_matches_state_management(
     *,
     init: AgentInit,
@@ -304,10 +325,11 @@ def assert_init_matches_state_management(
             ),
         )
     if init.state is not None and store is not None:
+        fields = seeded_init_fields(init.state)
         raise AgentInitError(
             status='FAILED_PRECONDITION',
             message=(
-                f"Cannot send 'state' to agent '{agent_name}': this agent uses a "
+                f"Cannot send {fields} to agent '{agent_name}': this agent uses a "
                 "server-managed store. Send 'snapshot_id' or 'session_id' instead."
             ),
         )

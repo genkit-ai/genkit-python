@@ -56,7 +56,7 @@ async def guarded_fn(sess: SessionRunner, ctx: ActionRunContext) -> AgentResult:
         # Server-side state carries a secret the client should never see.
         await sess.update_custom(lambda c: {'answers': (c or {}).get('answers', 0) + 1, 'api_key': 'sk-super-secret'})
         # An internal artifact the client shouldn't receive either.
-        await sess.add_artifacts(Artifact(name='debug', parts=[Part(TextPart(text='internal trace'))]))
+        await sess.add_artifacts([Artifact(name='debug', parts=[Part(TextPart(text='internal trace'))])])
 
         history = await sess.get_messages()
         messages = [Message(m) for m in history] if history else None
@@ -70,7 +70,7 @@ async def guarded_fn(sess: SessionRunner, ctx: ActionRunContext) -> AgentResult:
 
         res = await stream_resp.response
         if res.message:
-            await sess.add_messages(res.message)
+            await sess.add_messages([res.message])
 
         fr = AgentFinishReason.STOP if res.finish_reason == FinishReason.STOP else AgentFinishReason.UNKNOWN
         return TurnResult(finish_reason=fr)
@@ -103,7 +103,7 @@ agent = ai.define_custom_agent(
 
 async def main() -> None:
     chat = agent.chat()
-    turn = chat.send('Say hello.')
+    turn = chat.send_stream('Say hello.')
 
     saw_artifact_chunk = False
     async for chunk in turn.stream:
@@ -118,9 +118,9 @@ async def main() -> None:
     assert not saw_artifact_chunk
     # state hook stripped the secret but kept the public counter.
     assert res.state is not None
-    assert res.state.custom.get('api_key') is None
-    assert res.state.custom.get('answers') == 1
-    print(f'client sees custom={res.state.custom}, {len(res.artifacts)} artifact(s)')
+    assert res.state.get('api_key') is None
+    assert res.state.get('answers') == 1
+    print(f'client sees custom={res.state}, {len(res.artifacts)} artifact(s)')
 
 
 if __name__ == '__main__':

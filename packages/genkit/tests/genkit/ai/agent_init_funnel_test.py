@@ -46,9 +46,9 @@ async def echo_fn(session_runner: SessionRunner, _: ActionRunContext) -> AgentRe
         if inp.message and inp.message.content:
             root = inp.message.content[0].root
             text = getattr(root, 'text', '') or ''
-        await session_runner.add_messages(
+        await session_runner.add_messages([
             MessageData(role='model', content=[Part(root=TextPart(text=f'Echo: {text}'))])
-        )
+        ])
         return TurnResult(finish_reason=AgentFinishReason.STOP)
 
     await session_runner.run(handle_turn)
@@ -110,6 +110,33 @@ async def test_state_on_server_managed_agent_raises_agent_init_error() -> None:
     assert "Cannot send 'state'" in str(exc.value)
 
 
+def test_chat_rejects_state_on_server_managed_agent() -> None:
+    """App-facing chat() refuses a state seed the same way the wire path does."""
+    registry = Registry()
+    store = InMemorySessionStore()
+    agent = define_custom_agent(registry, 'serverChatSeed', echo_fn, store=store)
+
+    with pytest.raises(AgentInitError) as exc:
+        agent.chat(state={'x': 1})
+
+    assert exc.value.status == 'FAILED_PRECONDITION'
+    assert "Cannot send 'state'" in str(exc.value)
+
+
+def test_chat_rejects_messages_on_server_managed_agent() -> None:
+    """Bundled messages seed must be named as 'messages', not blamed as 'state'."""
+    registry = Registry()
+    store = InMemorySessionStore()
+    agent = define_custom_agent(registry, 'serverChatMessages', echo_fn, store=store)
+
+    with pytest.raises(AgentInitError) as exc:
+        agent.chat(messages=[MessageData(role='user', content=[Part(root=TextPart(text='hi'))])])
+
+    assert exc.value.status == 'FAILED_PRECONDITION'
+    assert "Cannot send 'messages'" in str(exc.value)
+    assert "Cannot send 'state'" not in str(exc.value)
+
+
 @pytest.mark.asyncio
 async def test_snapshot_id_on_client_managed_agent_raises_agent_init_error() -> None:
     registry = Registry()
@@ -131,6 +158,6 @@ async def test_chat_surfaces_missing_snapshot_as_agent_error() -> None:
     agent = define_custom_agent(registry, 'missingSnapChat', echo_fn, store=store)
 
     with pytest.raises(AgentError) as exc:
-        await agent.chat(snapshot_id='gone').send('hi').response
+        await agent.chat(snapshot_id='gone').send('hi')
 
     assert exc.value.status == 'NOT_FOUND'

@@ -45,7 +45,7 @@ async def write_artifact(input: WriteArtifactInput) -> dict[str, str]:
     # Adding to the session is what makes it stream out as an `artifact` chunk and
     # show up in chat.artifacts; same name replaces the prior version.
     if sess := ai.current_session():
-        await sess.add_artifacts(Artifact(name=input.name, parts=[Part(TextPart(text=input.content))]))
+        await sess.add_artifacts([Artifact(name=input.name, parts=[Part(TextPart(text=input.content))])])
     return {'name': input.name, 'status': 'written'}
 
 
@@ -64,7 +64,7 @@ workspace_agent = ai.define_agent(
 async def test_workspace_agent(text: str, ctx: ActionRunContext) -> dict[str, Any]:
     """Ask for a file; watch it arrive as an artifact chunk, then in chat.artifacts."""
     chat = workspace_agent.chat()
-    turn = chat.send(text or 'Write poem.txt with a short poem about genkit')
+    turn = chat.send_stream(text or 'Write poem.txt with a short poem about genkit')
     async for chunk in turn:
         if chunk.artifact is not None:
             ctx.send_chunk(f'[artifact] {chunk.artifact.name}')

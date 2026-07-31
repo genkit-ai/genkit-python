@@ -80,7 +80,7 @@ def _counter_agent(
                 return {'count': (custom or {}).get('count', 0) + 1}
 
             await session_runner.update_custom(bump)
-            await session_runner.add_messages(MessageData(role='model', content=[Part(root=TextPart(text='done'))]))
+            await session_runner.add_messages([MessageData(role='model', content=[Part(root=TextPart(text='done'))])])
             return TurnResult(finish_reason=AgentFinishReason.STOP)
 
         await session_runner.run(handle_turn)
@@ -116,7 +116,7 @@ async def test_run_turn_span_output_is_session_state_with_store(
     store = InMemorySessionStore()
     agent = _counter_agent(registry=registry, name='turnSpanStore', store=store)
 
-    out = await agent.chat().send('hi').response
+    out = await agent.chat().send('hi')
     assert out.snapshot_id
     assert out.session_id
     assert UUID_RE.match(out.session_id)
@@ -145,7 +145,7 @@ async def test_run_turn_span_output_is_session_state_client_managed(
     registry = Registry()
     agent = _counter_agent(registry=registry, name='turnSpanClient', store=None)
 
-    out = await agent.chat().send('hi').response
+    out = await agent.chat().send('hi')
     assert out.raw.state is not None
     assert out.raw.state.session_id
     assert UUID_RE.match(out.raw.state.session_id)
@@ -173,11 +173,11 @@ async def test_client_managed_preserves_session_id_across_turns() -> None:
     agent = _counter_agent(registry=registry, name='preserveClientSid', store=None)
 
     chat = agent.chat()
-    out1 = await chat.send('one').response
+    out1 = await chat.send('one')
     assert out1.raw.state is not None
     sid = out1.raw.state.session_id
     assert sid
 
-    out2 = await chat.send('two').response
+    out2 = await chat.send('two')
     assert out2.raw.state is not None
     assert out2.raw.state.session_id == sid

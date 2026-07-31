@@ -28,6 +28,7 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 from pydantic import BaseModel
 from typing_extensions import TypeVar as TypeVarExt
 
+from genkit._ai._agents._runtime import AgentInitError, seeded_init_fields
 from genkit._ai._agents._snapshot import lookup_label
 from genkit._ai._agents._types import StateManagement
 from genkit._ai._json_patch import apply_json_patch
@@ -38,6 +39,7 @@ from genkit._core._error import (
     StatusCodes,
     StatusName,
 )
+from genkit._core._logger import get_logger
 from genkit._core._model import Message
 from genkit._core._typing import (
     AgentFinishReason,
@@ -63,6 +65,8 @@ from genkit._core._typing import (
     ToolResponse,
     ToolResponsePart,
 )
+
+logger = get_logger(__name__)
 
 # Custom state is a Pydantic model, so StateT is bound to BaseModel; the Any
 # default covers schemaless (client-managed) sessions where custom is plain JSON.
@@ -523,7 +527,12 @@ class AgentAPI(Protocol, Generic[StateT]):
         artifacts: list[Artifact] | None = None,
         state: StateT | None = None,
     ) -> AgentChat[StateT]:
-        """Starts a new session, or attaches to one via a snapshot/session id or saved conversation state."""
+        """Starts a new session, or attaches to one via a snapshot/session id or saved conversation state.
+
+        ``messages`` / ``artifacts`` / ``state`` are only for client-managed agents
+        (no store). Store-backed agents take ``snapshot_id`` or ``session_id``;
+        passing a state blob raises :class:`AgentInitError`.
+        """
         ...
 
     async def load_chat(
@@ -579,7 +588,12 @@ class AgentClient(Generic[StateT]):
         artifacts: list[Artifact] | None = None,
         state: StateT | None = None,
     ) -> AgentChat[StateT]:
-        """Starts a new session, or attaches to one via a snapshot/session id or saved conversation state."""
+        """Starts a new session, or attaches to one via a snapshot/session id or saved conversation state.
+
+        ``messages`` / ``artifacts`` / ``state`` are only for client-managed agents
+        (no store). Store-backed agents take ``snapshot_id`` or ``session_id``;
+        passing a state blob raises :class:`AgentInitError`.
+        """
         session_transport = copy.copy(self._transport)
         return AgentChat(
             session_transport,
@@ -741,12 +755,11 @@ class RunTurnFn(Protocol):
 
 
 class TurnDriver(Generic[StateT]):
-    """Runs one in-flight turn and exposes it as an AgentTurn.
+    """Runs one turn: pump the transport, apply patches, commit the result.
 
-    Everything a turn needs lives here so AgentChat.send stays small: it starts
-    the transport, pumps chunks onto the caller's stream, resolves the final output,
-    and handles abort. Keeping it in one object means a single cancellation path and
-    no closures that reference each other before they exist.
+    Shared execution path behind both ``AgentChat.send`` (await the final
+    response) and ``AgentChat.send_stream`` (expose chunks to the caller) — the
+    same shape as ``Action.run`` vs ``Action.stream``.
     """
 
     def __init__(
@@ -759,6 +772,7 @@ class TurnDriver(Generic[StateT]):
         commit_custom_patch: Callable[[Any], StateT | None],
         accumulate_chunk: Callable[[AgentStreamChunk], None] | None = None,
         on_turn_error: Callable[[Exception], Exception] | None = None,
+        chunks: CloseableQueue[AgentChunk[StateT] | Exception] | None = None,
     ) -> None:
         self.inp = inp
         self.init = init
@@ -769,21 +783,23 @@ class TurnDriver(Generic[StateT]):
         self.on_turn_error = on_turn_error
         self.accumulated_text = ''
         self.output: asyncio.Future[AgentResponse[StateT]] = asyncio.get_running_loop().create_future()
-        self.chunks: CloseableQueue[AgentChunk[StateT] | Exception] = CloseableQueue()
+        # Only the streaming path needs a caller-facing chunk queue; send() still
+        # pumps the transport (for patches + message stitching) without buffering
+        # chunks nobody will read.
+        self.chunks = chunks
         self.run_task: asyncio.Task[None] | None = None
-        self.turn: AgentTurn[StateT] = AgentTurn(
-            stream=self.stream(),
-            output=self.output,
-            abort_fn=self.abort,
+        self.turn: AgentTurn[StateT] | None = (
+            AgentTurn(
+                stream=self.stream(),
+                output=self.output,
+                abort_fn=self.abort,
+            )
+            if chunks is not None
+            else None
         )
 
-    def start(self) -> AgentTurn[StateT]:
-        """Launches the turn in the background and returns its handle immediately."""
-        self.run_task = asyncio.create_task(self.run())
-        return self.turn
-
-    async def run(self) -> None:
-        """Pumps every chunk to the caller's stream, then resolves the turn's result.
+    async def run(self) -> AgentResponse[StateT]:
+        """Pump the transport stream, then return the committed response.
 
         The transport drives its turn to completion on its own; we drain its chunk
         stream — which also feeds the message accumulator and applies state patches —
@@ -801,20 +817,54 @@ class TurnDriver(Generic[StateT]):
                 if chunk.turn_end:
                     break
             raw = await output
+            result = self.commit_output(raw)
             if not self.output.done():
-                self.output.set_result(self.commit_output(raw))
+                self.output.set_result(result)
+            return result
+        except asyncio.CancelledError:
+            if not self.output.done():
+                self.output.cancel()
+            raise
         except Exception as e:
             wrapped = self.on_turn_error(e) if self.on_turn_error is not None else e
-            if not self.output.done():
-                self.output.set_exception(wrapped)
-            self.chunks.put_nowait(wrapped)
+            if self.chunks is not None:
+                # Streaming path: callers retrieve the error via turn.response / stream.
+                # send() never exposes self.output, so leave it untouched and re-raise.
+                if not self.output.done():
+                    self.output.set_exception(wrapped)
+                self.chunks.put_nowait(wrapped)
+            raise wrapped from e
         finally:
             # Closing wakes the stream consumer once buffered chunks drain, so the
             # turn ends without a sentinel value threading through the queue.
-            self.chunks.close()
+            if self.chunks is not None:
+                self.chunks.close()
+
+    def start(self) -> AgentTurn[StateT]:
+        """Launch ``run`` in the background and return a streaming turn handle.
+
+        Same idea as ``Action.stream`` wrapping ``Action.run``: the work is still
+        ``run``, and the caller gets a ``.stream`` / ``.response`` surface on top.
+        """
+        if self.turn is None:
+            raise RuntimeError('TurnDriver.start() requires a chunks queue')
+        self.run_task = asyncio.create_task(self._run_background())
+        return self.turn
+
+    async def _run_background(self) -> None:
+        """Background wrapper so task exceptions stay on ``self.output`` / the stream."""
+        try:
+            await self.run()
+        except Exception as e:
+            # Normal turn failures already resolve ``self.output`` inside ``run``.
+            # If ``on_turn_error`` (or anything else) blows up before that, resolve
+            # here so ``await turn.response`` can't hang forever with an empty log.
+            if not self.output.done():
+                logger.exception('TurnDriver background run failed without resolving output')
+                self.output.set_exception(e)
 
     def emit(self, chunk: AgentStreamChunk) -> None:
-        """Applies any state patch, transforms the wire chunk, and enqueues it."""
+        """Applies any state patch, transforms the wire chunk, and optionally enqueues it."""
         if self.accumulate_chunk is not None:
             self.accumulate_chunk(chunk)
         custom = self.commit_custom_patch(chunk.custom_patch) if chunk.custom_patch else None
@@ -822,6 +872,9 @@ class TurnDriver(Generic[StateT]):
         content = chunk.model_chunk.content if chunk.model_chunk else None
         text = text_of(content)
         self.accumulated_text += text
+
+        if self.chunks is None:
+            return
 
         agent_chunk: AgentChunk[StateT] = AgentChunk(
             text=text or None,
@@ -834,12 +887,14 @@ class TurnDriver(Generic[StateT]):
             custom=custom,
             raw=chunk,
         )
-
         self.chunks.put_nowait(agent_chunk)
 
     async def stream(self) -> AsyncIterator[AgentChunk[StateT]]:
         """Yields transformed chunks until the turn ends, re-raising any failure."""
-        async for item in self.chunks:
+        chunks = self.chunks
+        if chunks is None:
+            raise RuntimeError('TurnDriver.stream() requires a chunks queue')
+        async for item in chunks:
             if isinstance(item, Exception):
                 raise item
             yield item
@@ -863,8 +918,9 @@ class AgentChat(Generic[StateT]):
     """A stateful conversation session with an agent.
 
     Public surface: read ``snapshot_id``, ``session_id``, ``state``, ``messages``,
-    and ``artifacts``; call ``send``, ``resume``, ``detach``, and ``abort``.
-    Everything prefixed with ``_`` is internal wiring.
+    and ``artifacts``; call ``send`` / ``send_stream``, ``resume`` /
+    ``resume_stream``, ``detach``, and ``abort``. Everything prefixed with ``_``
+    is internal wiring.
 
     ``state`` is the agent's custom session state; ``messages`` and ``artifacts``
     are the running conversation and files. The chat tracks all three directly,
@@ -903,6 +959,18 @@ class AgentChat(Generic[StateT]):
 
         if init is not None:
             validate_init(init)
+            # Store-backed chats resume by snapshot/session id only. Accepting a
+            # seed state blob here would look live on the client while the server
+            # session stayed empty — so refuse up front instead of dropping it.
+            if init.state is not None and self._transport.state_management == 'server':
+                fields = seeded_init_fields(init.state)
+                raise AgentInitError(
+                    status='FAILED_PRECONDITION',
+                    message=(
+                        f'Cannot send {fields} to a server-managed agent (one with a '
+                        "store). Send 'snapshot_id' or 'session_id' instead."
+                    ),
+                )
             if init.state is not None:
                 self._set_state(init.state)
             elif init.snapshot_id:
@@ -961,19 +1029,41 @@ class AgentChat(Generic[StateT]):
     # Public API
     # ------------------------------------------------------------------
 
-    def send(
+    async def send(
+        self,
+        input: str | AgentInput,
+    ) -> AgentResponse[StateT]:
+        """Runs a turn and returns the completed response.
+
+        Primary path (like ``Action.run`` / ``ai.generate``). Pumps the transport
+        so custom-state patches and message stitching still apply; does not expose
+        a chunk stream. For incremental chunks use :meth:`send_stream`.
+        """
+        return await self._start_turn(input).run()
+
+    def send_stream(
         self,
         input: str | AgentInput,
     ) -> AgentTurn[StateT]:
-        """Sends a message to the agent and returns a handle to the in-flight turn.
+        """Runs a turn and returns a handle with ``.stream`` / ``.response``.
 
-        Read ``turn.stream`` for chunks or await ``turn.response`` for the final
-        result. To stop a turn, call ``turn.abort()`` for a client-side detach (the
-        server finishes in the background), or wrap the stream/response in
-        ``asyncio.timeout(...)`` / cancel the surrounding task — both detach the same
-        way and then surface the deadline. Use ``chat.abort()`` to halt server-side
-        work on a store-backed agent.
+        Streaming form of :meth:`send` (like ``Action.stream`` / ``ai.generate_stream``):
+        same underlying turn, with chunks delivered to the caller. To stop a turn,
+        call ``turn.abort()`` for a client-side detach (the server finishes in the
+        background), or wrap the stream/response in ``asyncio.timeout(...)`` /
+        cancel the surrounding task — both detach the same way and then surface the
+        deadline. Use ``chat.abort()`` to halt server-side work on a store-backed
+        agent.
         """
+        return self._start_turn(input, chunks=CloseableQueue()).start()
+
+    def _start_turn(
+        self,
+        input: str | AgentInput,
+        *,
+        chunks: CloseableQueue[AgentChunk[StateT] | Exception] | None = None,
+    ) -> TurnDriver[StateT]:
+        """Shared setup for :meth:`send` and :meth:`send_stream`."""
         inp = to_agent_input(input)
 
         # Capture the resume payload from history *before* this turn's message.
@@ -990,7 +1080,7 @@ class AgentChat(Generic[StateT]):
             self.messages.append(inp.message)
 
         self._turn_accumulator = StreamedMessageAccumulator()
-        driver = TurnDriver(
+        return TurnDriver(
             inp=inp,
             init=init,
             run_turn=self._transport.run_turn,
@@ -998,26 +1088,39 @@ class AgentChat(Generic[StateT]):
             commit_custom_patch=self._commit_custom_patch,
             accumulate_chunk=self._turn_accumulator.add,
             on_turn_error=self._on_turn_error,
+            chunks=chunks,
         )
-        return driver.start()
 
-    def resume(
+    async def resume(
+        self,
+        *,
+        respond: list[ToolResponsePart] | None = None,
+        restart: list[ToolRequestPart] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AgentResponse[StateT]:
+        """Continues a conversation from an interrupt and returns the response.
+
+        Sugar for :meth:`send` with a resume payload. For streaming, use
+        :meth:`resume_stream`.
+        """
+        return await self.send(AgentInput(resume=Resume(respond=respond, restart=restart, metadata=metadata)))
+
+    def resume_stream(
         self,
         *,
         respond: list[ToolResponsePart] | None = None,
         restart: list[ToolRequestPart] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AgentTurn[StateT]:
-        """Continues a conversation from an interrupt.
+        """Continues a conversation from an interrupt and returns an in-flight turn.
 
         ``respond`` answers paused tool requests; ``restart`` re-runs them with
         new metadata. Build each part with the interrupt's ``respond`` / ``restart``
         helpers. ``metadata`` rides along on the resumed tool message (the same
-        ``resume_metadata`` a plain ``generate`` call takes). Sugar for ``send``
-        with a resume payload.
+        ``resume_metadata`` a plain ``generate`` call takes). Sugar for
+        :meth:`send_stream` with a resume payload.
         """
-        inp = AgentInput(resume=Resume(respond=respond, restart=restart, metadata=metadata))
-        return self.send(inp)
+        return self.send_stream(AgentInput(resume=Resume(respond=respond, restart=restart, metadata=metadata)))
 
     async def get_snapshot(self) -> SessionSnapshotSchema | None:
         """Reads the current snapshot from the server store, if store-backed."""

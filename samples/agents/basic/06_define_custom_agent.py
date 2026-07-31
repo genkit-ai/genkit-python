@@ -58,7 +58,7 @@ async def custom_coder_fn(sess: SessionRunner, ctx: ActionRunContext) -> AgentRe
 
         res = await stream_resp.response
         if res.message:
-            await sess.add_messages(res.message)
+            await sess.add_messages([res.message])
 
         fr = AgentFinishReason.STOP if res.finish_reason == FinishReason.STOP else AgentFinishReason.UNKNOWN
         return TurnResult(finish_reason=fr)
@@ -73,7 +73,7 @@ agent = ai.define_custom_agent(name='customCoder', fn=custom_coder_fn, store=sto
 async def main() -> None:
     chat = agent.chat()
     # → the custom fn streams a concise explanation and persists it to history
-    await chat.send('What is a Python list comprehension?').response
+    await chat.send('What is a Python list comprehension?')
 
 
 if __name__ == '__main__':

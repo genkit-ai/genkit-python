@@ -47,7 +47,7 @@ jobs:
           cp -R genkit-python/site/* hosting-templates/api-ref/py-public/
 
       - name: Setup Node.js (for Firebase CLI)
-        uses: actions/setup-node@39370e3970a6d050c08000b21d576f6d815de85d # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 

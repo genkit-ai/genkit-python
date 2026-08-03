@@ -81,7 +81,7 @@ jobs:
 
       - name: Install sample dependencies
         run: |
-          cd py
+          cd .
           uv sync --package ${{ matrix.sample }}
 
       - name: Verify sample imports
@@ -130,7 +130,7 @@ jobs:
 
       - name: Install sample dependencies
         run: |
-          cd py
+          cd .
           uv sync --package ${{ matrix.sample }}
 
       - name: Verify sample imports

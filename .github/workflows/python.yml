@@ -19,7 +19,7 @@ name: Python Checks
 on:
   pull_request:
     paths:
-      - "py/**"
+      - "**"
       - "genkit-tools/**"
       - ".github/workflows/python.yml"
 
@@ -46,17 +46,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd py
+          cd .
           uv sync --group lint
 
       - name: Check lockfile is up to date
-        run: uv lock --check --directory py
+        run: uv lock --check --directory .
 
       - name: Format check
-        run: uv run --directory py ruff format --check --preview .
+        run: uv run --directory . ruff format --check --preview .
 
       - name: Lint with ruff
-        run: uv run --directory py ruff check --preview .
+        run: uv run --directory . ruff check --preview .
 
       - name: Run consistency checks
         run: python3 ./scripts/check_consistency.py
@@ -87,23 +87,23 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd py
+          cd .
           uv sync --group lint
 
       - name: Generate schema typing
-        run: ./py/bin/generate_schema_typing --ci
+        run: ./bin/generate_schema_typing --ci
 
       - name: Type check with Ty
         if: matrix.checker == 'ty'
-        run: uv run --directory py ty check .
+        run: uv run --directory . ty check .
 
       - name: Type check with Pyrefly
         if: matrix.checker == 'pyrefly'
-        run: uv run --directory py pyrefly check
+        run: uv run --directory . pyrefly check
 
       - name: Type check with Pyright
         if: matrix.checker == 'pyright'
-        run: cd py && uv run pyright packages/*/src
+        run: cd . && uv run pyright packages/*/src
 
   # =============================================================================
   # Security and compliance checks
@@ -122,18 +122,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd py
+          cd .
           uv sync --group lint
 
       - name: Check source file license headers
         run: ./bin/check_license
 
       - name: Check Python dependency licenses
-        run: uv run --directory py liccheck -s pyproject.toml
+        run: uv run --directory . liccheck -s pyproject.toml
 
       - name: Check for hardcoded secrets
         run: |
-          cd py
+          cd .
           # Check for common API key patterns
           if grep -rE "(sk-[a-zA-Z0-9]{20,}|AIza[a-zA-Z0-9_-]{35}|AKIA[0-9A-Z]{16})" \
               packages/ plugins/ --include="*.py" | grep -vE "test|mock|fake|example|#"; then
@@ -169,15 +169,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd py
+          cd .
           uv sync
 
       - name: Generate schema typing
-        run: ./py/bin/generate_schema_typing --ci
+        run: ./bin/generate_schema_typing --ci
 
       - name: Run tests
         run: |
-          uv run --python ${{ matrix.python-version }} --active --isolated --directory py \
+          uv run --python ${{ matrix.python-version }} --active --isolated --directory . \
             pytest -xvs --log-level=DEBUG .
   # =============================================================================
   # Build verification (runs after tests pass)
@@ -197,11 +197,11 @@ jobs:
           python-version: "3.12"
 
       - name: Build and verify distributions
-        run: ./py/bin/build_dists
+        run: ./bin/build_dists
 
       - name: Verify wheel contents
         run: |
-          cd py
+          cd .
           for wheel in dist/*.whl; do
             if [[ -f "$wheel" ]]; then
               wheel_name=$(basename "$wheel" | sed 's/-[0-9].*//')

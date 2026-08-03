@@ -134,7 +134,7 @@ else
 fi
 
 # Navigate to py/ for version checks
-cd py
+cd .
 
 # Step 1: Verify version in packages
 echo -e "${YELLOW}Step 1: Verifying package versions...${NC}"
@@ -184,13 +184,13 @@ if [ "$USE_PR_NOTES" = true ]; then
     echo -e "${YELLOW}Step 4: Finding release PR...${NC}"
     if [ -z "$PR_NUMBER" ]; then
         # Auto-find the merged PR for this version
-        PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python-python --state merged \
+        PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python --state merged \
             --search "Python SDK ${VERSION} in:title" \
             --json number --limit 1 | jq -r '.[0].number // empty')
         
         if [ -z "$PR_NUMBER" ]; then
             # Try searching by version in body
-            PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python-python --state merged \
+            PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python --state merged \
                 --search "v${VERSION} label:python" \
                 --json number --limit 1 | jq -r '.[0].number // empty')
         fi
@@ -207,7 +207,7 @@ if [ "$USE_PR_NOTES" = true ]; then
 
     echo ""
     echo -e "${YELLOW}Step 5: Fetching PR description...${NC}"
-    gh pr view "$PR_NUMBER" --repo genkit-ai/genkit-python-python --json body --jq '.body' > "$RELEASE_NOTES_FILE"
+    gh pr view "$PR_NUMBER" --repo genkit-ai/genkit-python --json body --jq '.body' > "$RELEASE_NOTES_FILE"
 
     if [ ! -s "$RELEASE_NOTES_FILE" ]; then
         echo -e "${RED}Error: PR #${PR_NUMBER} has no description${NC}"
@@ -250,7 +250,7 @@ Release highlights:
 
 Published packages:
 - genkit (core)
-- genkit-plugin-* (22 plugins)"
+- genkit-* plugins"
 else
     TAG_MSG="Genkit Python SDK v${VERSION}
 
@@ -259,7 +259,7 @@ Release highlights:
 
 Published packages:
 - genkit (core)
-- genkit-plugin-* (22 plugins)"
+- genkit-* plugins"
 fi
 git tag -a "$TAG_NAME" -m "$TAG_MSG"
 

@@ -29,7 +29,7 @@ NC='\033[0m'
 # Paths (set by caller or default)
 : "${SCRIPT_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${PY_DIR:=$(cd "${SCRIPT_DIR}/.." && pwd)}"
-: "${TOP_DIR:=$(cd "${PY_DIR}/.." && pwd)}"
+: "${TOP_DIR:=$(cd "${PY_DIR}" && pwd)}"
 
 # Extracts field from pyproject.toml. $1 = dir or path to .toml
 get_pyproject() {

@@ -47,13 +47,13 @@ echo ""
 
 for PROJECT_DIR in "${PROJECT_DIRS[@]}"; do
   uv \
-    --directory="${TOP_DIR}"/py \
+    --directory="${TOP_DIR}" \
     --project "$PROJECT_DIR" \
     build
 done
 
 # Safely handle glob expansion for filenames with spaces
-dist_files=("${TOP_DIR}"/py/dist/*)
+dist_files=("${TOP_DIR}"/dist/*)
 if [[ ! -e "${dist_files[0]}" ]]; then
   echo "Error: No distribution files found in dist/" >&2
   exit 1

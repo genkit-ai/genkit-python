@@ -54,7 +54,7 @@ runs:
     # ── 1. Restore cached models ────────────────────────────────────
     - name: Restore Ollama model cache
       id: cache-ollama
-      uses: actions/cache@v4
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208d3cf829445e # v4.2.0
       with:
         path: ~/.ollama/models
         # Key includes the model list so different model sets get

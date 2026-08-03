@@ -14,40 +14,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# ══════════════════════════════════════════════════════════════════════
-# Python Samples: Build + Smoke Test
-#
-# Verifies that Python samples install and import cleanly.  Samples
-# that require Ollama get a local Ollama server with cached models.
-#
-# Ollama samples are tested on a single Python version to keep CI
-# costs reasonable (model downloads are ~2-4 GB each).
-# ══════════════════════════════════════════════════════════════════════
-
 name: Python Samples
 
-# Disabled for now — enable when ready for regular CI runs.
-# To run manually: Actions → Python Samples → Run workflow.
 on:
   workflow_dispatch: {}
-  # pull_request:
-  #   paths:
-  #     - "samples/**"
-  #     - "packages/**"
-  #     - "py/plugins/**"
-  #     - ".github/workflows/python-samples.yml"
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ═══════════════════════════════════════════════════════════════════
-  # Samples that do NOT need Ollama — just verify they install + import
-  # ═══════════════════════════════════════════════════════════════════
   build-samples:
     name: Build (${{ matrix.sample }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -71,10 +55,10 @@ jobs:
           - web-fastapi-bugbot
           - web-flask-hello
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -87,7 +71,6 @@ jobs:
       - name: Verify sample imports
         run: |
           cd samples/${{ matrix.sample }}
-          # Attempt to import the sample's main module.
           uv run python -c "
           import importlib, pathlib, sys
           src = pathlib.Path('src')
@@ -102,12 +85,11 @@ jobs:
               print('No src/ directory, skipping import check')
           "
 
-  # ═══════════════════════════════════════════════════════════════════
-  # Ollama samples — need a running Ollama server with cached models
-  # ═══════════════════════════════════════════════════════════════════
   ollama-samples:
     name: Ollama (${{ matrix.sample }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -115,10 +97,10 @@ jobs:
           - sample: provider-ollama-hello
             models: "gemma3:1b"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
         with:
           enable-cache: true
           python-version: "3.12"

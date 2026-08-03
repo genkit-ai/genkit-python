@@ -26,7 +26,7 @@ from contextvars import ContextVar
 # RealtimeSpanProcessor skips on_start/on_end exports for those traces.
 suppress_telemetry: ContextVar[bool] = ContextVar('suppress_telemetry', default=False)
 
-# TODO(https://github.com/genkit-ai/genkit/issues/5019): Investigate whether
+# TODO(https://github.com/genkit-ai/genkit-python/issues/5019): Investigate whether
 # JS also needs this ContextVar approach or if it avoids the problem through
 # a different mechanism (e.g. server-side batching, context baggage, or span
 # attribute timing differences in the JS RealtimeSpanProcessor). In JS, when

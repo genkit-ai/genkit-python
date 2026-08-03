@@ -11,7 +11,7 @@ Requires `GEMINI_API_KEY`.
 ## Run
 
 ```bash
-cd py/samples/agents
+cd samples/agents
 genkit start -- uv run testapp/server.py
 ```
 

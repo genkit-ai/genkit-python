@@ -10,7 +10,7 @@ All examples require `GEMINI_API_KEY`.
 ## Run
 
 ```bash
-cd py/samples/agents
+cd samples/agents
 uv sync
 
 # a basic example in the Dev UI

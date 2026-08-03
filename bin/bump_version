@@ -199,5 +199,5 @@ else
   echo -e "Next steps:"
   echo -e "  1. Update CHANGELOG.md with release notes"
   echo -e "  2. Open a PR to main (CI verifies build, tests, and consistency)"
-  echo -e "  3. Once merged, run: ${CYAN}py/bin/create_release $NEW_VERSION${NC}"
+  echo -e "  3. Once merged, run: ${CYAN}bin/create_release $NEW_VERSION${NC}"
 fi

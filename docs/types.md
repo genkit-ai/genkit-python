@@ -20,7 +20,6 @@ Types exported from genkit, genkit.model, genkit.embedder, genkit.plugin_api, an
 
 ::: genkit.PromptGenerateOptions
 
-::: genkit.ResumeOptions
 
 ::: genkit.ToolRunContext
 

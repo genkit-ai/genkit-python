@@ -26,8 +26,8 @@ uv run src/approval_example.py
 From repo root:
 
 ```bash
-uv run --directory py/samples/tool-interrupts python src/respond_example.py
-uv run --directory py/samples/tool-interrupts python src/approval_example.py
+uv run --directory samples/tool-interrupts python src/respond_example.py
+uv run --directory samples/tool-interrupts python src/approval_example.py
 ```
 
 Wire detail: `MESSAGE_SHAPES.md`.

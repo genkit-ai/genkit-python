@@ -31,7 +31,7 @@
 # This script will:
 #   1. Verify you're on main branch with latest changes
 #   2. Fetch release notes (from PR or --notes/--notes-file)
-#   3. Create an annotated git tag (py/v<VERSION>)
+#   3. Create an annotated git tag (v<VERSION>)
 #   4. Push the tag to origin
 #   5. Create a GitHub release
 
@@ -116,7 +116,7 @@ if [ -n "$NOTES_STRING" ] || [ -n "$NOTES_FILE" ]; then
     USE_PR_NOTES=false
 fi
 
-TAG_NAME="py/v${VERSION}"
+TAG_NAME="v${VERSION}"
 
 echo -e "${BLUE}=== Genkit Python SDK Release: v${VERSION} ===${NC}"
 echo ""
@@ -184,13 +184,13 @@ if [ "$USE_PR_NOTES" = true ]; then
     echo -e "${YELLOW}Step 4: Finding release PR...${NC}"
     if [ -z "$PR_NUMBER" ]; then
         # Auto-find the merged PR for this version
-        PR_NUMBER=$(gh pr list --repo firebase/genkit --state merged \
+        PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python-python --state merged \
             --search "Python SDK ${VERSION} in:title" \
             --json number --limit 1 | jq -r '.[0].number // empty')
         
         if [ -z "$PR_NUMBER" ]; then
             # Try searching by version in body
-            PR_NUMBER=$(gh pr list --repo firebase/genkit --state merged \
+            PR_NUMBER=$(gh pr list --repo genkit-ai/genkit-python-python --state merged \
                 --search "v${VERSION} label:python" \
                 --json number --limit 1 | jq -r '.[0].number // empty')
         fi
@@ -207,7 +207,7 @@ if [ "$USE_PR_NOTES" = true ]; then
 
     echo ""
     echo -e "${YELLOW}Step 5: Fetching PR description...${NC}"
-    gh pr view "$PR_NUMBER" --repo firebase/genkit --json body --jq '.body' > "$RELEASE_NOTES_FILE"
+    gh pr view "$PR_NUMBER" --repo genkit-ai/genkit-python-python --json body --jq '.body' > "$RELEASE_NOTES_FILE"
 
     if [ ! -s "$RELEASE_NOTES_FILE" ]; then
         echo -e "${RED}Error: PR #${PR_NUMBER} has no description${NC}"
@@ -290,7 +290,7 @@ echo "Tag: ${TAG_NAME}"
 if [ "$USE_PR_NOTES" = true ]; then
     echo "Based on PR: #${PR_NUMBER}"
 fi
-echo "Release: https://github.com/genkit-ai/genkit/releases/tag/${TAG_NAME}"
+echo "Release: https://github.com/genkit-ai/genkit-python/releases/tag/${TAG_NAME}"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "1. Go to Actions → Publish Python Package"

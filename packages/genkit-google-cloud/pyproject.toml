@@ -69,11 +69,11 @@ requires-python = ">=3.10"
 version = "0.9.0"
 
 [project.urls]
-"Bug Tracker"   = "https://github.com/genkit-ai/genkit/issues"
-Changelog       = "https://github.com/genkit-ai/genkit/blob/main/py/packages/genkit-google-cloud/CHANGELOG.md"
+"Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"
+Changelog       = "https://github.com/genkit-ai/genkit-python/blob/main/packages/genkit-google-cloud/CHANGELOG.md"
 "Documentation" = "https://firebase.google.com/docs/genkit"
-"Homepage"      = "https://github.com/genkit-ai/genkit"
-"Repository"    = "https://github.com/genkit-ai/genkit/tree/main/py"
+"Homepage"      = "https://github.com/genkit-ai/genkit-python"
+"Repository"    = "https://github.com/genkit-ai/genkit-python"
 
 [build-system]
 build-backend = "hatchling.build"

@@ -472,7 +472,7 @@ def generate(schema_path: Path, _out: Path) -> str:
 
 
 def main() -> None:
-    # From py/scripts/schema_to_typing.py -> repo root is parent.parent.parent
+    # From scripts/schema_to_typing.py -> repo root is parent.parent.parent
     top = Path(__file__).resolve().parent.parent.parent
     schema = top / 'genkit-tools' / 'genkit-schema.json'
     out = top / 'py' / 'packages' / 'genkit' / 'src' / 'genkit' / '_core' / '_typing.py'

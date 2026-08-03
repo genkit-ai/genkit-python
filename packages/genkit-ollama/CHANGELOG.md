@@ -23,7 +23,7 @@ and this project adheres to
 - `EmbeddingDefinition` is now exported from the package root
   `genkit_ollama` (previously importable only via the
   `genkit_ollama.embedders` submodule).
-- Runnable sample under `py/samples/ollama-sample/` covering chat, streaming,
+- Runnable sample under `samples/ollama-sample/` covering chat, streaming,
   tool calling, and embeddings.
 
 ### Changed
@@ -40,4 +40,4 @@ and this project adheres to
 - `top_p` from `ModelConfig` is now mapped correctly into
   `ollama.Options` (previously sent as `topP` and ignored).
 
-[Unreleased]: https://github.com/genkit-ai/genkit/compare/py/genkit-plugin-ollama-v0.6.0...HEAD
+[Unreleased]: https://github.com/genkit-ai/genkit-python/compare/genkit-plugin-ollama-v0.6.0...HEAD

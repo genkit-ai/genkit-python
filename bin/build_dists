@@ -25,7 +25,7 @@ if ((EUID == 0)); then
 fi
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-PY_DIR="${TOP_DIR}/py"
+PY_DIR="${TOP_DIR}"
 
 # Automatically discover all directories containing pyproject.toml
 # This includes packages, plugins, samples, and tests

@@ -33,7 +33,7 @@ The model gets:
 ## Run it
 
 ```bash
-cd py/samples/middleware-coding-agent
+cd samples/middleware-coding-agent
 GEMINI_API_KEY=... genkit start -- uv run src/main.py
 ```
 
@@ -51,5 +51,5 @@ it by name in your prompt.
 The agent edits `workspace/` in place. To start over:
 
 ```bash
-rm -rf py/samples/middleware-coding-agent/workspace/*
+rm -rf samples/middleware-coding-agent/workspace/*
 ```

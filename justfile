@@ -30,7 +30,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # invoked as a submodule via `mod py` from the root justfile.
 
 py_dir := source_directory()
-top_dir := parent_directory(py_dir)
+top_dir := py_dir
 
 # Default: show available commands.
 default:

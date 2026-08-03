@@ -396,7 +396,7 @@ class PartConverter:
     # User-Agent is required because many servers (e.g. Wikipedia) return
     # 403 Forbidden for the default httpx user-agent string.
     _DOWNLOAD_HEADERS: dict[str, str] = {
-        'User-Agent': 'Genkit/1.0 (https://github.com/genkit-ai/genkit; genkit@google.com)',
+        'User-Agent': 'Genkit/1.0 (https://github.com/genkit-ai/genkit-python; genkit@google.com)',
     }
 
     @classmethod

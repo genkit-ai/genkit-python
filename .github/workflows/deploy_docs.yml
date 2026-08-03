@@ -1,0 +1,59 @@
+name: Deploy Python API Docs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout genkit-python
+        uses: actions/checkout@v4
+        with:
+          path: genkit-python
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "genkit-python/.python-version"
+
+      - name: Install dependencies
+        working-directory: genkit-python
+        run: uv sync --all-extras --dev
+
+      - name: Build Docs
+        working-directory: genkit-python
+        run: uv run mkdocs build
+
+      - name: Checkout hosting-templates
+        uses: actions/checkout@v4
+        with:
+          repository: genkit-ai/hosting-templates
+          path: hosting-templates
+          # NOTE: You may need a Personal Access Token (PAT) here if hosting-templates is private.
+          # token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Copy Docs to hosting-templates
+        run: |
+          mkdir -p hosting-templates/api-ref/py-public
+          cp -R genkit-python/site/* hosting-templates/api-ref/py-public/
+
+      - name: Setup Node.js (for Firebase CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Deploy to Firebase Hosting
+        working-directory: hosting-templates
+        run: firebase deploy --only hosting:py-prod --project project-kaizen-404017
+        env:
+          # Assumes you have a FIREBASE_TOKEN set in your repo secrets
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}

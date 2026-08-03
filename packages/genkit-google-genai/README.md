@@ -119,7 +119,7 @@ for result in results.root:
 
 For comprehensive usage examples, see:
 
-- [`py/samples/google-genai-media/README.md`](../../samples/google-genai-media/README.md) - Speech, image, and video generation
-- [`py/samples/gemini-code-execution/README.md`](../../samples/gemini-code-execution/README.md) - Gemini code execution
-- [`py/samples/gemini-context-caching/README.md`](../../samples/gemini-context-caching/README.md) - Context caching for large prompts
-- [`py/samples/vertexai-imagen/README.md`](../../samples/vertexai-imagen/README.md) - Vertex AI Imagen generation
+- [`samples/google-genai-media/README.md`](../../samples/google-genai-media/README.md) - Speech, image, and video generation
+- [`samples/gemini-code-execution/README.md`](../../samples/gemini-code-execution/README.md) - Gemini code execution
+- [`samples/gemini-context-caching/README.md`](../../samples/gemini-context-caching/README.md) - Context caching for large prompts
+- [`samples/vertexai-imagen/README.md`](../../samples/vertexai-imagen/README.md) - Vertex AI Imagen generation

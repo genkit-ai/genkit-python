@@ -5,7 +5,7 @@ These samples are intentionally small and beginner-oriented. Each one tries to s
 To run the default example once:
 
 ```bash
-cd py/samples/<sample-name>
+cd samples/<sample-name>
 uv sync
 uv run src/main.py
 ```
@@ -13,7 +13,7 @@ uv run src/main.py
 To open the Dev UI and run flows interactively:
 
 ```bash
-cd py/samples/<sample-name>
+cd samples/<sample-name>
 uv sync
 genkit start -- uv run src/main.py
 ```

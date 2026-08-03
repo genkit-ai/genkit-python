@@ -37,10 +37,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           python-version: "3.12"
@@ -72,7 +72,7 @@ jobs:
       matrix:
         checker: [ty, pyrefly, pyright]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install system dependencies
         run: |
@@ -80,7 +80,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential libffi-dev cmake libjpeg-dev zlib1g-dev
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           python-version: "3.12"
@@ -111,10 +111,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           python-version: "3.12"
@@ -150,7 +150,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
       fail-fast: false
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install system dependencies
         run: |
@@ -158,7 +158,7 @@ jobs:
           sudo apt-get install -y build-essential libffi-dev cmake libjpeg-dev zlib1g-dev
 
       - name: Install uv and setup Python
-        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -184,10 +184,10 @@ jobs:
     if: ${{ always() && !failure() && !cancelled() }}
     needs: [lint-and-format, type-check, security-and-compliance, tests]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@f943a4db25e985b8772eb7b1897bb69ee3c3abf7 # v5.1.0
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           python-version: "3.12"

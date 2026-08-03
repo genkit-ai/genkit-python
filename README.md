@@ -1,28 +1,103 @@
-[Genkit](https://genkit.dev) is an open-source framework for building full-stack AI-powered applications, built and used in production by Google's Firebase. It provides SDKs for multiple programming languages with varying levels of stability:
+# Genkit Python SDK
 
-- **JavaScript/TypeScript**: Production-ready with full feature support
-- **Go**: Production-ready with full feature support
-- **Python (Alpha)**: Early development with core functionality
+Build production-ready AI applications in Python with type-safe flows, structured outputs, and integrated observability.
 
-It offers a unified interface for integrating AI models from providers like [Google](https://genkit.dev/docs/plugins/google-genai), [OpenAI](https://genkit.dev/docs/plugins/openai), [Anthropic](https://thefireco.github.io/genkit-plugins/docs/plugins/genkitx-anthropic), [Ollama](https://genkit.dev/docs/plugins/ollama/), and more. Rapidly build and deploy production-ready chatbots, automations, and recommendation systems using streamlined APIs for multimodal content, structured outputs, tool calling, and agentic workflows.
+## Quick Start
 
-Get started with just a few lines of code:
+Get started in three simple steps:
 
-```ts
-import { genkit } from 'genkit';
-import { googleAI } from '@genkit-ai/google-genai';
-
-const ai = genkit({ plugins: [googleAI()] });
-
-const { text } = await ai.generate({
-    model: googleAI.model('gemini-2.5-flash'),
-    prompt: 'Why is Firebase awesome?'
-});
+1. **Install the SDK and your preferred model provider:**
+```bash
+uv add genkit genkit-google-genai
 ```
 
-## Explore & build with Genkit
+2. **Set your API key:**
+```bash
+export GEMINI_API_KEY="your-api-key"
+```
 
-Play with AI sample apps, with visualizations of the Genkit code that powers
-them, at no cost to you.
+3. **Create your AI application:**
+```python
+from genkit import Genkit
+from genkit_google_genai import GoogleAI
 
-[Explore Genkit by Example](https://examples.genkit.dev)
+# 1. Initialize Genkit with the Google AI (Gemini) plugin
+ai = Genkit(plugins=[GoogleAI()])
+
+# 2. Define a type-safe tool
+@ai.tool(description="Get current weather for a city")
+def get_weather(city: str) -> str:
+    return f"Sunny, 72°F in {city}"
+
+# 3. Define an observable flow
+@ai.flow()
+async def plan_trip(destination: str) -> str:
+    response = await ai.generate(
+        model="googleai/gemini-flash-latest",
+        prompt=f"Suggest activities in {destination} given the weather.",
+        tools=[get_weather],
+    )
+    return response.text  # => "Based on the sunny weather in Seattle..."
+```
+
+## Why Genkit?
+
+- **Type-Safe by Design:** Leverage Python type annotations and Pydantic models for structured inputs, outputs, and tool definitions.
+- **Multi-Model Provider API:** Switch effortlessly between Google Gemini, Anthropic Claude, OpenAI, Ollama, and Vertex AI with a unified API.
+- **Integrated Observability:** Built-in OpenTelemetry tracing and evaluation metrics. Inspect spans and debug flows in real-time using the Genkit Developer UI (`genkit start`).
+- **Deploy Anywhere:** Expose flows as standard ASGI/WSGI applications compatible with FastAPI, Flask, Django, Cloud Run, or any serverless platform.
+
+---
+
+## Repository & Development Guidelines
+
+This section covers onboarding and common development workflows for contributing to the Genkit Python SDK.
+
+### Prerequisites
+- **Python 3.10+**
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/):** Fast Python package and project manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- **[just](https://github.com/casey/just#installation):** Modern command runner (`brew install just` or `cargo install just`)
+
+### Workspace Structure
+```
+py/
+├── bin/               # CI/CD and release automation scripts
+├── docs/              # Playbooks and generated API reference templates
+├── packages/          # Core framework and official integrations
+├── samples/           # Runnable example applications and demos
+├── scripts/           # Maintenance and verification scripts
+├── tests/             # Cross-package integration test suites
+├── justfile           # Command runner shortcuts (just py <command>)
+├── noxfile.py         # Multi-version test automation (3.10–3.14)
+├── pyproject.toml     # Workspace metadata and tool dependencies
+└── uv.lock            # Resolved dependency lockfile
+```
+
+### Development Commands (`just py`)
+
+From the repository root, run `just py <command>` (or `just <command>` in `py/`):
+
+- **`sync`** — Install workspace dependencies (`uv sync`).
+- **`lint`** — Run formatters, linters, and type checkers (maps to CI `lint-and-format` / `type-check`).
+- **`fmt`** — Auto-format code and fix lint errors.
+- **`test`** — Run unit tests (use `test-nox` to test Python 3.10–3.14 like CI).
+- **`check`** — Validate workspace version consistency.
+
+### Running Samples
+
+To run example applications from `samples/`, navigate to a sample directory and launch the Genkit Developer UI:
+
+```bash
+cd samples/<sample-name>
+genkit start -- uv run <entrypoint.py>
+```
+
+Open the Dev UI in your browser to interact with registered flows and agents directly.
+
+### Documentation & Maintenance
+- **API Reference:** For complete class and method signatures, see [docs/index.md](docs/index.md).
+- **Contributing & Standards:** For coding conventions, commit guidelines, and type-checking rules, see [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Release Playbook:** For maintainer release procedures, see [docs/release_playbook.md](docs/release_playbook.md).
+
+## License
+Apache 2.0

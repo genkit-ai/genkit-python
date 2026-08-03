@@ -1,0 +1,228 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Python Checks
+
+on:
+  pull_request:
+    paths:
+      - "py/**"
+      - "genkit-tools/**"
+      - ".github/workflows/python.yml"
+
+# Cancel in-progress runs for the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =============================================================================
+  # Fast checks that run quickly and catch common issues early
+  # =============================================================================
+  lint-and-format:
+    name: Lint and Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd py
+          uv sync --group lint
+
+      - name: Check lockfile is up to date
+        run: uv lock --check --directory py
+
+      - name: Format check
+        run: uv run --directory py ruff format --check --preview .
+
+      - name: Lint with ruff
+        run: uv run --directory py ruff check --preview .
+
+      - name: Run consistency checks
+        run: python3 ./scripts/check_consistency.py
+
+  # =============================================================================
+  # Type checking (runs in parallel - each checker is a separate job)
+  # =============================================================================
+  type-check:
+    name: Type Check (${{ matrix.checker }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checker: [ty, pyrefly, pyright]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libffi-dev cmake libjpeg-dev zlib1g-dev
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd py
+          uv sync --group lint
+
+      - name: Generate schema typing
+        run: ./py/bin/generate_schema_typing --ci
+
+      - name: Type check with Ty
+        if: matrix.checker == 'ty'
+        run: uv run --directory py ty check .
+
+      - name: Type check with Pyrefly
+        if: matrix.checker == 'pyrefly'
+        run: uv run --directory py pyrefly check
+
+      - name: Type check with Pyright
+        if: matrix.checker == 'pyright'
+        run: cd py && uv run pyright packages/*/src
+
+  # =============================================================================
+  # Security and compliance checks
+  # =============================================================================
+  security-and-compliance:
+    name: Security and Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd py
+          uv sync --group lint
+
+      - name: Check source file license headers
+        run: ./bin/check_license
+
+      - name: Check Python dependency licenses
+        run: uv run --directory py liccheck -s pyproject.toml
+
+      - name: Check for hardcoded secrets
+        run: |
+          cd py
+          # Check for common API key patterns
+          if grep -rE "(sk-[a-zA-Z0-9]{20,}|AIza[a-zA-Z0-9_-]{35}|AKIA[0-9A-Z]{16})" \
+              packages/ plugins/ --include="*.py" | grep -vE "test|mock|fake|example|#"; then
+            echo "Error: Potential hardcoded secrets found"
+            exit 1
+          fi
+          echo "No hardcoded secrets detected"
+
+  # =============================================================================
+  # Unit tests across multiple Python versions (runs in parallel with other jobs)
+  # =============================================================================
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # No 'needs' - runs in parallel. If lint fails, concurrency will cancel this.
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev cmake libjpeg-dev zlib1g-dev
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          cd py
+          uv sync
+
+      - name: Generate schema typing
+        run: ./py/bin/generate_schema_typing --ci
+
+      - name: Run tests
+        run: |
+          uv run --python ${{ matrix.python-version }} --active --isolated --directory py \
+            pytest -xvs --log-level=DEBUG .
+  # =============================================================================
+  # Build verification (runs after tests pass)
+  # =============================================================================
+  build:
+    name: Build Distributions
+    runs-on: ubuntu-latest
+    if: ${{ always() && !failure() && !cancelled() }}
+    needs: [lint-and-format, type-check, security-and-compliance, tests]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build and verify distributions
+        run: ./py/bin/build_dists
+
+      - name: Verify wheel contents
+        run: |
+          cd py
+          for wheel in dist/*.whl; do
+            if [[ -f "$wheel" ]]; then
+              wheel_name=$(basename "$wheel" | sed 's/-[0-9].*//')
+              # Only check publishable packages
+              if [[ "$wheel_name" == "genkit" ]] || [[ "$wheel_name" == genkit_plugin_* ]]; then
+                echo "Checking $wheel_name..."
+                # Check for py.typed
+                if ! unzip -l "$wheel" 2>/dev/null | grep -qE "py\.typed$"; then
+                  echo "Warning: $wheel_name missing py.typed"
+                fi
+                # Check for LICENSE
+                if ! unzip -l "$wheel" 2>/dev/null | grep -qE "(LICENSE|licenses/LICENSE)"; then
+                  echo "Warning: $wheel_name missing LICENSE"
+                fi
+              fi
+            fi
+          done
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: py/dist/
+          retention-days: 7

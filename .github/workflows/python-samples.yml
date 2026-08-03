@@ -64,13 +64,17 @@ jobs:
           python-version: "3.12"
 
       - name: Install sample dependencies
+        env:
+          SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd .
-          uv sync --package ${{ matrix.sample }}
+          uv sync --package "$SAMPLE_NAME"
 
       - name: Verify sample imports
+        env:
+          SAMPLE_NAME: ${{ matrix.sample }}
         run: |
-          cd samples/${{ matrix.sample }}
+          cd "samples/$SAMPLE_NAME"
           uv run python -c "
           import importlib, pathlib, sys
           src = pathlib.Path('src')
@@ -111,13 +115,17 @@ jobs:
           models: ${{ matrix.models }}
 
       - name: Install sample dependencies
+        env:
+          SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd .
-          uv sync --package ${{ matrix.sample }}
+          uv sync --package "$SAMPLE_NAME"
 
       - name: Verify sample imports
+        env:
+          SAMPLE_NAME: ${{ matrix.sample }}
         run: |
-          cd samples/${{ matrix.sample }}
+          cd "samples/$SAMPLE_NAME"
           uv run python -c "
           import importlib, pathlib
           src = pathlib.Path('src')

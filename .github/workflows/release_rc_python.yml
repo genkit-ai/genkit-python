@@ -49,9 +49,11 @@ jobs:
 
       - name: Create release branch & bump version
         id: rc
+        env:
+          TARGET_VERSION: ${{ inputs.target_version }}
         run: |
           set -e
-          TARGET="${{ inputs.target_version }}"
+          TARGET="$TARGET_VERSION"
           [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Error: target_version must be X.Y.Z"; exit 1; }
           EXISTING=$(git tag -l "v${TARGET}-rc.*" 2>/dev/null | sed -n 's/.*-rc\.\([0-9]*\)$/\1/p' | sort -n | tail -1)
           RC_NUM=$((${EXISTING:-0} + 1))
@@ -74,4 +76,5 @@ jobs:
       - name: Create tag & GitHub release
         env:
           GH_TOKEN: ${{ secrets.GENKIT_RELEASER_GITHUB_TOKEN }}
-        run: gh release create "v${{ steps.rc.outputs.new }}" --target "release/${{ steps.rc.outputs.new }}" --title "Genkit Python SDK v${{ steps.rc.outputs.new }}" --notes "Release candidate." --prerelease
+          RC_NEW: ${{ steps.rc.outputs.new }}
+        run: gh release create "v${RC_NEW}" --target "release/${RC_NEW}" --title "Genkit Python SDK v${RC_NEW}" --notes "Release candidate." --prerelease

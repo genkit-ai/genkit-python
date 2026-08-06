@@ -2,10 +2,10 @@
 # Copyright 2025 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-# Generates py/packages/genkit/src/genkit/_core/_typing.py from the JSON schema
-# using our custom generator (py/scripts/schema_to_typing.py).
+# Generates packages/genkit/src/genkit/_core/_typing.py from the JSON schema
+# using our custom generator (scripts/schema_to_typing.py).
 #
-# Usage: ./py/bin/generate_schema_typing [--ci]
+# Usage: ./bin/generate_schema_typing [--ci]
 #   --ci  Fail if the generated file differs from the committed one.
 
 set -euo pipefail
@@ -21,9 +21,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-SCHEMA_FILE="${TOP_DIR}/genkit-tools/genkit-schema.json"
-TYPING_FILE="${TOP_DIR}/py/packages/genkit/src/genkit/_core/_typing.py"
-GENERATOR="${TOP_DIR}/py/scripts/schema_to_typing.py"
+SCHEMA_FILE="${TOP_DIR}/genkit-schema.json"
+TYPING_FILE="${TOP_DIR}/packages/genkit/src/genkit/_core/_typing.py"
+GENERATOR="${TOP_DIR}/scripts/schema_to_typing.py"
+
+# Download the schema from the main genkit repository if it doesn't exist
+if [[ ! -f "$SCHEMA_FILE" ]]; then
+  echo "Downloading genkit-schema.json from github.com/genkit-ai/genkit..."
+  curl -sSL "https://raw.githubusercontent.com/genkit-ai/genkit/main/genkit-tools/genkit-schema.json" -o "$SCHEMA_FILE"
+fi
+
 
 if [[ $CI_ENABLED == "true" ]] && [[ -f $TYPING_FILE ]]; then
   BACKUP_FILE="${TYPING_FILE}.backup"
@@ -32,10 +39,10 @@ fi
 
 python3 "$GENERATOR" "$SCHEMA_FILE" "$TYPING_FILE"
 
-if [[ -x "${TOP_DIR}/py/.venv/bin/ruff" ]]; then
-  RUFF="${TOP_DIR}/py/.venv/bin/ruff"
+if [[ -x "${TOP_DIR}/.venv/bin/ruff" ]]; then
+  RUFF="${TOP_DIR}/.venv/bin/ruff"
 else
-  RUFF="uv run --directory ${TOP_DIR}/py ruff"
+  RUFF="uv run --directory ${TOP_DIR} ruff"
 fi
 
 $RUFF format "$TYPING_FILE"
@@ -45,7 +52,7 @@ $RUFF format "$TYPING_FILE"
 if [[ $CI_ENABLED == "true" ]] && [[ -f ${BACKUP_FILE:-} ]]; then
   if ! diff -q "$BACKUP_FILE" "$TYPING_FILE" >/dev/null; then
     echo "Error: Generated _typing.py differs from committed version."
-    echo "Run './py/bin/generate_schema_typing' locally and commit the result."
+    echo "Run './bin/generate_schema_typing' locally and commit the result."
     rm "$BACKUP_FILE"
     exit 1
   fi

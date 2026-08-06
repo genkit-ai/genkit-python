@@ -1,0 +1,61 @@
+name: Deploy Python API Docs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout genkit-python
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: genkit-python
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "latest"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version-file: "genkit-python/.python-version"
+
+      - name: Install dependencies
+        working-directory: genkit-python
+        run: uv sync --all-extras --dev
+
+      - name: Build Docs
+        working-directory: genkit-python
+        run: uv run mkdocs build
+
+      - name: Checkout hosting-templates
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: genkit-ai/hosting-templates
+          path: hosting-templates
+
+      - name: Copy Docs to hosting-templates
+        run: |
+          mkdir -p hosting-templates/api-ref/py-public
+          cp -R genkit-python/site/* hosting-templates/api-ref/py-public/
+
+      - name: Setup Node.js (for Firebase CLI)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Deploy to Firebase Hosting
+        working-directory: hosting-templates
+        run: firebase deploy --only hosting:py-prod --project project-kaizen-404017
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}

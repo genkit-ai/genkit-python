@@ -15,7 +15,7 @@ from pathlib import Path
 
 def get_version() -> str:
     ref = os.environ.get('GITHUB_REF_NAME', '')
-    if ref.startswith('py/v'):
+    if ref.startswith('v'):
         return ref[4:]
     core_toml = os.path.join(os.path.dirname(__file__), '..', 'packages', 'genkit', 'pyproject.toml')
     if os.path.exists(core_toml):
@@ -26,7 +26,7 @@ def get_version() -> str:
     # A wrong version silently pins every tombstone to a nonexistent release and
     # breaks installs for everyone upgrading, so refuse to guess.
     sys.exit(
-        "publish_tombstones: could not resolve the release version. Expected a 'py/v*' "
+        "publish_tombstones: could not resolve the release version. Expected a 'v*' "
         'GITHUB_REF_NAME tag or a \'version = "..."\' line in packages/genkit/pyproject.toml.'
     )
 

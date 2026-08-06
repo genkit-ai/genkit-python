@@ -54,6 +54,8 @@ dev = [
   "pip>=25.0.1",
   "nox>=2025.2.9",
   "nox-uv>=0.2.2",
+  "mkdocs-material>=9.7.7",
+  "mkdocstrings[python]>=1.0.6",
 ]
 
 lint = [

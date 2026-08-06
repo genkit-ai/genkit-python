@@ -11,27 +11,27 @@ Use the **Release Python RC** workflow in GitHub Actions:
 
 **What the workflow does:**
 
-1. Creates branch `release/py/X.Y.Z-rc.1` (one branch per RC)
+1. Creates branch `release/X.Y.Z-rc.1` (one branch per RC)
 2. Bumps all `pyproject.toml` versions from current to the RC version
 3. Commits and pushes to that branch
-4. Creates tag `py/vX.Y.Z-rc.1` pointing at the release branch
+4. Creates tag `vX.Y.Z-rc.1` pointing at the release branch
 5. Tag push triggers **Publish Python**, which builds and publishes to PyPI
 
 No PR required.
 
-**If you need to re-run publish** (e.g., it failed): Go to Actions → Publish Python → Run workflow → select the release branch (e.g., `release/py/X.Y.Z-rc.1`) from the branch dropdown → Run.
+**If you need to re-run publish** (e.g., it failed): Go to Actions → Publish Python → Run workflow → select the release branch (e.g., `release/X.Y.Z-rc.1`) from the branch dropdown → Run.
 
 ## Stable release steps
 
 1. `./bin/bump_version X.Y.Z` — bump all `pyproject.toml` files
 2. Open a PR to main with release notes in the description (CI verifies build, tests, and consistency)
 3. Merge the PR
-4. `./bin/create_release X.Y.Z` — tags `py/vX.Y.Z`, pushes tag, creates GitHub release
-5. Approve the publish at <https://github.com/genkit-ai/genkit/actions>
+4. `./bin/create_release X.Y.Z` — tags `vX.Y.Z`, pushes tag, creates GitHub release
+5. Approve the publish at <https://github.com/genkit-ai/genkit-python/actions>
 
 ## Workflow: `publish_python.yml`
 
-**Triggers:** Tag push (`py/v*`) or manual `workflow_dispatch`. When triggered by tag, it checks out the tag (which points at the release branch). When run manually, **select the release branch** (e.g., `release/py/X.Y.Z-rc.1`) from the "Use workflow from" dropdown — otherwise it will build from main.
+**Triggers:** Tag push (`v*`) or manual `workflow_dispatch`. When triggered by tag, it checks out the tag (which points at the release branch). When run manually, **select the release branch** (e.g., `release/X.Y.Z-rc.1`) from the "Use workflow from" dropdown — otherwise it will build from main.
 
 **Two jobs:** publish → verify
 

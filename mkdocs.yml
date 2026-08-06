@@ -1,0 +1,33 @@
+# Copyright 2026 Google LLC
+# SPDX-License-Identifier: Apache-2.0
+
+site_name: Genkit Python API Reference
+docs_dir: docs
+theme:
+  name: material
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: 
+            - packages/genkit/src
+            - packages/genkit/src/genkit/_ai
+            - packages/genkit/src/genkit/_core
+            - packages/genkit-ollama/src
+            - packages/genkit-google-genai/src
+            - packages/genkit-google-cloud/src
+            - packages/genkit-vertexai/src
+            - packages/genkit-fastapi/src
+            - packages/genkit-flask/src
+          options:
+            docstring_style: google
+            annotations_path: full
+            inherited_members: true
+            filters:
+              - "!^_[^_]"
+nav:
+  - API Reference:
+    - Index: index.md
+    - Types: types.md
+    - Release Playbook: release_playbook.md

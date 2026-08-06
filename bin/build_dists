@@ -25,7 +25,7 @@ if ((EUID == 0)); then
 fi
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-PY_DIR="${TOP_DIR}/py"
+PY_DIR="${TOP_DIR}"
 
 # Automatically discover all directories containing pyproject.toml
 # This includes packages, plugins, samples, and tests
@@ -47,18 +47,18 @@ echo ""
 
 for PROJECT_DIR in "${PROJECT_DIRS[@]}"; do
   uv \
-    --directory="${TOP_DIR}"/py \
+    --directory="${TOP_DIR}" \
     --project "$PROJECT_DIR" \
     build
 done
 
 # Safely handle glob expansion for filenames with spaces
-dist_files=("${TOP_DIR}"/py/dist/*)
+dist_files=("${TOP_DIR}"/dist/*)
 if [[ ! -e "${dist_files[0]}" ]]; then
   echo "Error: No distribution files found in dist/" >&2
   exit 1
 fi
-TWINE_CHECK=$(uv run --directory "${TOP_DIR}"/py twine check "${dist_files[@]}")
+TWINE_CHECK=$(uv run --directory "${TOP_DIR}" twine check "${dist_files[@]}")
 echo "$TWINE_CHECK"
 if echo "$TWINE_CHECK" | grep -q "FAIL"; then
   echo "Twine check failed."

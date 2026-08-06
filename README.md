@@ -1,6 +1,6 @@
 # Genkit Python SDK
 
-Build powerful apps with Genkit Python. Genkit is Google's open-source framework for building full-stack, AI-powered and agentic applications.
+Build powerful agentic apps with Genkit Python. Genkit is Google's open-source framework for building full-stack, AI-powered and agentic applications.
 
 ## Quick Start
 

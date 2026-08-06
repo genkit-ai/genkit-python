@@ -1,6 +1,6 @@
 # Genkit Python SDK
 
-Build production-ready AI applications and agentic workflows in Python with type-safe flows, structured outputs, and integrated observability.
+Genkit is Google's open-source framework for building full-stack, AI-powered and agentic applications. Build production-ready Python AI features with type-safe flows, structured outputs, and integrated observability.
 
 ## Quick Start
 

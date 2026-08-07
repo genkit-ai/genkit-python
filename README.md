@@ -3,7 +3,7 @@
 
 # Genkit Python SDK
 
-Build production-ready AI applications in Python with type-safe flows, structured outputs, and integrated observability.
+Genkit is Google's open-source framework for building full-stack, AI-powered and agentic applications for any platform.
 
 [Documentation](https://genkit.dev/docs/python/get-started/) | [Samples](samples/) | [Discord](https://discord.gg/qXt5zzQKpc) | [Report Issue](https://github.com/genkit-ai/genkit-python/issues)
 
@@ -182,12 +182,12 @@ Key features:
 
 ## Exploring Samples & Onboarding
 
-Browse runnable, real-world applications in [`samples/`](samples/):
+Jumpstart your app with copy-pasteable reference implementations in [`samples/`](samples/):
 
-- **[Basic Flows](samples/basic-flows)**: Text generation, structured output, and tool calling
-- **[Model Providers](samples/)**: Integrations for Gemini, Anthropic, OpenAI, Ollama, and Vertex AI
-- **[Agentic Workflows](samples/agents)**: Multi-turn agents, session memory, and approval interrupts
-- **[Web Frameworks](samples/)**: Integrations with FastAPI, Flask, and Django
+- **[Basic Flows](samples/basic-flows)**: Text generation, real-time streaming, structured Pydantic schemas, and type-safe tools
+- **[Agents](samples/agents)**: Autonomous multi-turn agents, session state persistence, and memory
+- **[Multimodal & Advanced Gemini](samples/google-genai-media)**: Multimodal media processing, context caching, and code execution
+- **[Model Evaluation](samples/evaluators)**: Automated quality evaluation, scoring metrics, and assertion suites
 
 ### Running Samples Locally
 

@@ -2264,7 +2264,6 @@ if not spec_path.resolve().exists():
 with spec_path.resolve().open() as stream:
     tests_spec = yaml.safe_load(stream)
     specs = tests_spec['tests']
-    specs = [x for x in tests_spec['tests'] if x['name'] == 'calls tools']
 
 
 @pytest.mark.parametrize(

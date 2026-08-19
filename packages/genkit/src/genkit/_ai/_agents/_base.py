@@ -176,7 +176,13 @@ class Agent(
         snapshot_id: str | None = None,
         session_id: str | None = None,
     ) -> SessionSnapshot | None:
-        """Read a snapshot by id or latest session leaf (client-visible form)."""
+        """Read a stored snapshot without starting a session.
+
+        Pass exactly one of ``snapshot_id`` or ``session_id``. A session
+        lookup returns the newest row even when that turn failed or was
+        aborted. ``chat(session_id=)`` is how you continue from the last
+        good turn.
+        """
         if self.store is None:
             return None
         return await resolve_snapshot(
@@ -188,7 +194,15 @@ class Agent(
         )
 
     async def abort_snapshot_data(self, snapshot_id: str) -> SnapshotStatus | None:
-        """Abort a running snapshot."""
+        """Abort a running snapshot.
+
+        The return is the snapshot's status from *before* this call, not after.
+        ``pending`` means the turn was still running and this call cancelled it
+        (the row is now ``aborted``). A terminal status means the turn had
+        already finished — this call did not rewrite it. ``None`` means
+        nothing was observed (no store, no row, or the store never ran the
+        abort write). This Python server always returns the previous status.
+        """
         if self.store is None:
             return None
         return await abort_snapshot_in_store(

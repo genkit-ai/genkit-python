@@ -29,7 +29,7 @@ else:
 
 from google import genai
 from google.genai import types as genai_types
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from genkit import (
     ModelInfo,
@@ -38,6 +38,12 @@ from genkit import (
 )
 from genkit.model import Error, Operation
 from genkit.plugin_api import ActionRunContext
+from genkit_google_genai.models._sdk_config import (
+    attach_leftovers,
+    dump_family_config,
+    sdk_config_error,
+    split_sdk_fields,
+)
 
 
 class VeoVersion(StrEnum):
@@ -135,28 +141,6 @@ def _extract_text(request: ModelRequest) -> str:
     return ' '.join(prompt_parts)
 
 
-def _to_veo_parameters(config: Any) -> dict[str, Any]:  # noqa: ANN401
-    """Convert config to Veo API parameters.
-
-    Args:
-        config: The model configuration (VeoConfigSchema or dict).
-
-    Returns:
-        Dictionary of Veo API parameters.
-    """
-    if config is None:
-        return {}
-
-    if isinstance(config, VeoConfigSchema):
-        params = config.model_dump(by_alias=True, exclude_none=True)
-    elif isinstance(config, dict):
-        params = {k: v for k, v in config.items() if v is not None}
-    else:
-        return {}
-
-    return params
-
-
 def _from_veo_operation(api_op: dict[str, Any]) -> Operation:
     """Convert Veo API operation to Genkit Operation.
 
@@ -235,7 +219,7 @@ class VeoModel:
         self._version = version
         self._client = client
 
-    async def start(self, request: ModelRequest, ctx: ActionRunContext) -> Operation:
+    async def start(self, request: ModelRequest[VeoConfigSchema], ctx: ActionRunContext) -> Operation:
         """Start a video generation operation (background model pattern for GoogleAI).
 
         Args:
@@ -252,12 +236,10 @@ class VeoModel:
         if not prompt:
             raise ValueError('Veo requires a text prompt')
 
-        # Call the generateVideos API
         response = await self._client.aio.models.generate_videos(
             model=self._version,
             prompt=prompt,
-            # pyrefly: ignore[bad-argument-type] - config dict matches GenerateVideosConfigDict
-            config=request.config if isinstance(request.config, dict) else None,  # pyright: ignore[reportArgumentType]
+            config=self._get_config(request),
         )
 
         # Convert to Operation
@@ -294,6 +276,22 @@ class VeoModel:
             op_dict['response'] = response.response
 
         return _from_veo_operation(op_dict)
+
+    def _get_config(self, request: ModelRequest) -> genai_types.GenerateVideosConfig | None:
+        dumped = dump_family_config(
+            config=request.config,
+            expected_type=VeoConfigSchema,
+            action_name=self._version,
+        )
+        if not dumped:
+            return None
+
+        known, leftovers = split_sdk_fields(dumped, genai_types.GenerateVideosConfig)
+        try:
+            cfg = genai_types.GenerateVideosConfig(**known) if known else genai_types.GenerateVideosConfig()
+        except ValidationError as e:
+            raise sdk_config_error(action_name=self._version, error=e) from e
+        return attach_leftovers(cfg, leftovers, nest='parameters')
 
     @property
     def metadata(self) -> dict:

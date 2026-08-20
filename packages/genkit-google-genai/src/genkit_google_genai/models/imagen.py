@@ -30,7 +30,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types as genai_types
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from genkit import (
     Media,
@@ -45,6 +45,12 @@ from genkit import (
     TextPart,
 )
 from genkit.plugin_api import ActionRunContext, tracer
+from genkit_google_genai.models._sdk_config import (
+    attach_leftovers,
+    dump_family_config,
+    sdk_config_error,
+    split_sdk_fields,
+)
 
 
 def _to_dict(obj: Any) -> Any:  # noqa: ANN401
@@ -207,20 +213,21 @@ class ImagenModel:
             )
         )
 
-    def _get_config(self, request: ModelRequest) -> genai_types.GenerateImagesConfigOrDict | None:
-        cfg = None
+    def _get_config(self, request: ModelRequest) -> genai_types.GenerateImagesConfig | None:
+        dumped = dump_family_config(
+            config=request.config,
+            expected_type=ImagenConfigSchema,
+            action_name=self._version,
+        )
+        if not dumped:
+            return None
 
-        if request.config:
-            request_config = request.config
-            ta = TypeAdapter(genai_types.GenerateImagesConfigOrDict)
-            try:
-                cfg = ta.validate_python(request_config)
-            except ValidationError as e:
-                raise ValueError(
-                    'The configuration dictionary is invalid. Refer the documentation for available fields'
-                ) from e
-
-        return cfg
+        known, leftovers = split_sdk_fields(dumped, genai_types.GenerateImagesConfig)
+        try:
+            cfg = genai_types.GenerateImagesConfig(**known) if known else genai_types.GenerateImagesConfig()
+        except ValidationError as e:
+            raise sdk_config_error(action_name=self._version, error=e) from e
+        return attach_leftovers(cfg, leftovers, nest='parameters')
 
     def _contents_from_response(self, response: genai_types.GenerateImagesResponse) -> list:
         """Retrieve contents from google-genai response.

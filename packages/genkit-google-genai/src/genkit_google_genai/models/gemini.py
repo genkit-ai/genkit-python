@@ -21,6 +21,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from genkit_google_genai.constants import is_multi_regional_location, multi_regional_base_url
+from genkit_google_genai.models._sdk_config import (
+    attach_leftovers,
+    dump_family_config,
+    sdk_config_error,
+    split_sdk_fields,
+)
 from genkit_google_genai.models.context_caching.constants import DEFAULT_TTL
 from genkit_google_genai.models.context_caching.utils import generate_cache_key, validate_context_cache_request
 
@@ -37,7 +43,7 @@ from google.auth import default as google_auth_default
 from google.auth.exceptions import DefaultCredentialsError
 from google.genai import types as genai_types
 from google.genai.errors import ClientError
-from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, WithJsonSchema
 
 from genkit import (
     Constrained,
@@ -1696,10 +1702,10 @@ class GeminiModel:
 
         The conversion follows a linear pipeline:
         1. Extract system instructions from messages
-        2. Normalize request.config into a dict (regardless of input type)
+        2. Dump the typed request.config instance into a snake_case dict
         3. Extract tool-related fields from the dict
         4. Clean Genkit-specific / unsupported keys from the dict
-        5. Build the final GenerateContentConfig
+        5. Build GenerateContentConfig from known fields; leftovers ride on extra_body
         """
         system_instruction: list[genai.types.Part] = []
 
@@ -1717,6 +1723,7 @@ class GeminiModel:
         cfg = None
         tools: list[genai_types.Tool] = []
 
+        leftovers: dict[str, Any] = {}
         if request.config:
             # 2. Normalize config into a dict
             dumped_config = self._normalize_config_to_dict(request.config)
@@ -1728,28 +1735,28 @@ class GeminiModel:
                 # 4. Clean Genkit-specific and unsupported keys
                 self._clean_unsupported_keys(dumped_config)
 
-                # 5. Build GenerateContentConfig
-                if dumped_config:
-                    cfg = genai_types.GenerateContentConfig(**dumped_config)
-                else:
-                    cfg = None
+                # 5. Build GenerateContentConfig from known fields; leftovers ride
+                # on extra_body so a newly supported key still reaches the API.
+                known, leftovers = split_sdk_fields(dumped_config, genai_types.GenerateContentConfig)
+                if known:
+                    try:
+                        cfg = genai_types.GenerateContentConfig(**known)
+                    except ValidationError as e:
+                        raise sdk_config_error(action_name=self._version, error=e) from e
 
         # Tools from top-level field and config-level fields
         tools.extend(self._get_tools(request))
 
         has_output = bool(request.output_format or request.output_schema)
 
-        if cfg is not None or tools or system_instruction or request.output_format:
+        if cfg is not None or tools or system_instruction or request.output_format or leftovers:
             if cfg is None:
                 cfg = genai_types.GenerateContentConfig()
 
             if has_output:
                 model_name = self._version
                 if request.config:
-                    if isinstance(request.config, dict):
-                        version = request.config.get('version')
-                    else:
-                        version = getattr(request.config, 'version', None)
+                    version = getattr(request.config, 'version', None)
                     if version:
                         model_name = version
 
@@ -1774,7 +1781,7 @@ class GeminiModel:
                 cfg.tools = cast(genai_types.ToolListUnion, tools)
 
             cfg.system_instruction = genai_types.Content(parts=system_instruction) if system_instruction else None
-            return cfg
+            return attach_leftovers(cfg, leftovers, nest='generationConfig')
 
         return None
 
@@ -1789,47 +1796,14 @@ class GeminiModel:
 
     def _normalize_config_to_dict(
         self,
-        config: GeminiConfigSchema | ModelConfig | dict,
+        config: GeminiConfigSchema | None,
     ) -> dict[str, Any] | None:
-        """Return the config as a snake_case dict for the rest of the pipeline.
-
-        Callers can hand us three shapes: a typed ``GeminiConfigSchema``, the
-        generic ``GenerationCommonConfig`` (which keeps plugin-specific keys
-        as alias-form extras), or a raw dict in either casing. Only the
-        plugin schema knows the alias mapping (e.g. ``codeExecution`` <->
-        ``code_execution``), so we re-validate through it whenever the input
-        isn't already one — that's what folds aliased keys onto their
-        canonical snake_case fields before tool extraction runs.
-
-        Returns ``None`` if the config has no meaningful values.
-        """
-        if isinstance(config, GeminiConfigSchema):
-            schema = config
-        elif isinstance(config, ModelConfig):
-            # Re-route through the plugin schema so the alias machinery folds
-            # any plugin-specific extras onto their canonical fields.
-            schema = self._pick_plugin_schema(config.model_dump(exclude_none=True, by_alias=True))
-        elif isinstance(config, dict):
-            schema = self._pick_plugin_schema(config)
-        else:
-            return None
-
-        dumped = schema.model_dump(exclude_none=True, by_alias=False)
-        return dumped or None
-
-    def _pick_plugin_schema(self, data: dict[str, Any]) -> GeminiConfigSchema:
-        """Validate ``data`` through whichever subclass matches the model.
-
-        Routing is purely by model name so each family gets its own
-        validation rules -- most importantly Gemma, which intentionally
-        relaxes the standard Gemini temperature bounds and would otherwise
-        reject valid configs. The per-request ``version`` override (when
-        present) takes precedence over the version this instance is bound
-        to, mirroring how the actual model name is resolved at call time.
-        """
-        model_name = data.get('version') or self._version
-        schema_cls = get_model_config_schema(model_name)
-        return schema_cls.model_validate(data)
+        """Dump a typed family config to a snake_case dict for the SDK."""
+        return dump_family_config(
+            config=config,
+            expected_type=GeminiConfigSchema,
+            action_name=self._version,
+        )
 
     def _extract_tools_from_config(
         self,

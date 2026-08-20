@@ -2259,8 +2259,6 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
 
 specs = []
 spec_path = pathlib.Path(__file__).parent / '../../../../../../tests/specs/generate.yaml'
-if not spec_path.resolve().exists():
-    spec_path = pathlib.Path(__file__).parent / '../../../../../tests/specs/generate.yaml'
 with spec_path.resolve().open() as stream:
     tests_spec = yaml.safe_load(stream)
     specs = tests_spec['tests']

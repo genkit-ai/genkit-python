@@ -31,7 +31,7 @@ from typing import Any, ClassVar, Generic, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 from pydantic.alias_generators import to_camel
-from typing_extensions import TypeVar
+from typing_extensions import TypedDict, TypeVar
 
 from genkit._core._base import GenkitModel
 from genkit._core._error import GenkitError
@@ -64,8 +64,31 @@ from genkit._core._typing import (
     ToolRequestPart,
 )
 
-ModelConfig = GenerationCommonConfig  # public name for GenerationCommonConfig
+# Runtime schema for common generate knobs. ModelConfigDict is the
+# hand-copied autocomplete list — keep the keys matching so a new knob
+# shows up in the IDE the same day it becomes legal.
+ModelConfig = GenerationCommonConfig
 ModelUsage = GenerationUsage  # public name for GenerationUsage
+
+
+class ModelConfigDict(TypedDict, extra_items=Any, total=False):
+    """Common knobs for dict-literal autocomplete on ``config={...}``.
+
+    ``None`` clears a ModelRef default. Extra keys (provider-specific) stay
+    in the bag and are forwarded.
+
+    Keys match ``GenerationCommonConfig`` / ``ModelConfig``. If a common
+    knob is added there and not here, autocomplete quietly drops it.
+    """
+
+    version: str | None
+    temperature: float | None
+    max_output_tokens: float | None
+    top_k: float | None
+    top_p: float | None
+    stop_sequences: Sequence[str] | None
+    api_key: str | None
+
 
 # TypeVars for generic types
 OutputT = TypeVar('OutputT', default=object)

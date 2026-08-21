@@ -191,6 +191,27 @@ async def test_define_prompt_with_model_ref(ai_with_echo: tuple[Genkit, EchoMode
 
 
 @pytest.mark.asyncio
+async def test_define_prompt_dict_none_clear_and_extra(
+    ai_with_echo: tuple[Genkit, EchoModel],
+) -> None:
+    """define_prompt dicts accept None-clears and extra keys the same as generate()."""
+    ai, echo = ai_with_echo
+    ref = model_ref('testEcho', config_schema=ModelConfig, config=ModelConfig(temperature=0.7))
+
+    prompt = ai.define_prompt(
+        name='echoPrompt',
+        model=ref,
+        prompt='Hello',
+        config={'temperature': None, 'banana': True},
+    )
+    await prompt()
+
+    assert echo.last_request is not None
+    assert _config_value(echo.last_request.config, 'temperature') is None
+    assert _config_value(echo.last_request.config, 'banana') is True
+
+
+@pytest.mark.asyncio
 async def test_generate_operation_with_model_ref(ai: Genkit) -> None:
     """generate_operation applies the ref's version and config, not just the name."""
     expected_operation = Operation(
@@ -928,3 +949,35 @@ async def test_prompt_alias_none_clears_ref_field(
     assert echo.last_request is not None
     assert _config_value(echo.last_request.config, 'max_output_tokens') is None
     _leftover_alias(echo.last_request.config, 'max_output_tokens', 'maxOutputTokens')
+
+
+@pytest.mark.asyncio
+async def test_same_name_string_does_not_use_constructor_ref_bag() -> None:
+    """``model='flash'`` is a name, even when the constructor ref is also flash."""
+    flash = model_ref(
+        'flash',
+        config_schema=ModelConfig,
+        version='001',
+        config=ModelConfig(temperature=0.7),
+    )
+    ai = Genkit(model=flash)
+    echo, _ = define_echo_model(ai, name='flash')
+
+    await ai.generate(model='flash', prompt='hi')
+
+    assert echo.last_request is not None
+    assert _config_value(echo.last_request.config, 'temperature') != 0.7
+    assert _config_value(echo.last_request.config, 'version') != '001'
+
+
+@pytest.mark.asyncio
+async def test_constructor_string_default_has_no_ref_bag() -> None:
+    """``Genkit(model='flash')`` is a name. Omit does not invent a config bag."""
+    ai = Genkit(model='flash')
+    echo, _ = define_echo_model(ai, name='flash')
+
+    await ai.generate(prompt='hi')
+
+    assert echo.last_request is not None
+    assert _config_value(echo.last_request.config, 'temperature') is None
+    assert _config_value(echo.last_request.config, 'version') is None

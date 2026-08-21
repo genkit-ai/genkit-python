@@ -7,7 +7,7 @@
 
 import pytest
 from genkit_openai import OpenAIConfig
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from genkit import Document, Genkit
 from genkit._core._action import ActionRunContext
@@ -87,11 +87,12 @@ async def test_matching_config_instance_passes_through(ai_and_seen: tuple[Genkit
 
 
 @pytest.mark.asyncio
-async def test_plain_basemodel_config_rejected_at_generate(ai_and_seen: tuple[Genkit, dict]) -> None:
-    """ai.generate(config=) accepts a dict or a ModelConfig. A plain BaseModel is a ValidationError here."""
-    ai, _ = ai_and_seen
-    with pytest.raises(ValidationError):
-        await ai.generate(model='conforming', prompt='hi', config=ConformingCfg(temperature=0.7))
+async def test_plain_basemodel_config_accepted_at_generate(ai_and_seen: tuple[Genkit, dict]) -> None:
+    """ai.generate(config=) accepts a dict or a BaseModel instance."""
+    ai, seen = ai_and_seen
+    await ai.generate(model='conforming', prompt='hi', config=ConformingCfg(temperature=0.7))
+    assert type(seen['config']) is ConformingCfg
+    assert seen['config'].temperature == 0.7
 
 
 @pytest.mark.asyncio
@@ -167,14 +168,12 @@ async def test_strict_config_rejects_unknown_keys_as_genkit_error(ai_and_seen: t
 
 
 @pytest.mark.asyncio
-async def test_foreign_config_class_raises_genkit_error(ai_and_seen: tuple[Genkit, dict]) -> None:
-    """ai.generate(config=OpenAIConfig(...)) on a ConformingCfg plugin is GenkitError. Pass a dict."""
-    ai, _ = ai_and_seen
-    with pytest.raises(
-        GenkitError,
-        match=r'config must be .+\.ConformingCfg or a mapping, got genkit_openai\.OpenAIConfig',
-    ):
-        await ai.generate(model='conforming', prompt='hi', config=OpenAIConfig(temperature=0.7))
+async def test_foreign_config_class_normalizes_to_conforming(ai_and_seen: tuple[Genkit, dict]) -> None:
+    """ai.generate(config=OpenAIConfig(...)) normalizes through veneer to the target plugin's config."""
+    ai, seen = ai_and_seen
+    await ai.generate(model='conforming', prompt='hi', config=OpenAIConfig(temperature=0.7))
+    assert type(seen['config']) is ConformingCfg
+    assert seen['config'].temperature == 0.7
 
 
 @pytest.mark.asyncio

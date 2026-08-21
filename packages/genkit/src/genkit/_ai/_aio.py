@@ -67,6 +67,7 @@ from genkit._ai._model import (
     ModelResponse,
     ModelResponseChunk,
     define_model,
+    resolve_model_name,
 )
 from genkit._ai._prompt import (
     ExecutablePrompt,
@@ -1406,12 +1407,11 @@ class Genkit:
     ) -> Operation:
         """Generate content using a long-running model, returning an Operation to poll."""
         # Resolve the model and check for long_running support
-        resolved_model = model or cast(str | None, self.registry.lookup_value('defaultModel', 'defaultModel'))
-        if not resolved_model:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message='No model specified for generate_operation.',
-            )
+        resolved_model = resolve_model_name(
+            model=model,
+            registry=self.registry,
+            message='No model specified for generate_operation.',
+        )
 
         model_action = await self.registry.resolve_action(ActionKind.MODEL, resolved_model)
         if not model_action:

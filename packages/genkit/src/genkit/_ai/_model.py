@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
+from dataclasses import dataclass
+from typing import Annotated, Any, TypeAlias, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -33,7 +34,7 @@ from genkit._core._action import (
 from genkit._core._error import GenkitError
 from genkit._core._model import (
     Message,
-    ModelConfig,
+    ModelConfig as ModelConfig,
     ModelRef,
     ModelRefConfigT,
     ModelRequest,
@@ -50,6 +51,161 @@ from genkit._core._typing import ActionMetadata, ModelInfo
 # Type alias for model functions (must be async)
 # Use ctx.send_chunk() for streaming
 ModelFn = Callable[[ModelRequest, ActionRunContext], Awaitable[ModelResponse[Any]]]
+
+# Veneer-facing argument shapes. Internals resolve these into ResolvedModel.
+ModelArg: TypeAlias = str | ModelRef[BaseModel]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResolvedModel:
+    """Concrete wire model name + config dict after veneer normalization."""
+
+    name: str
+    config: dict[str, Any]
+
+
+def config_field_names(schema: type[BaseModel]) -> dict[str, str]:
+    """Map each field name and alias to the Python field name."""
+    names: dict[str, str] = {}
+    for name, field in schema.model_fields.items():
+        names[name] = name
+        if field.alias:
+            names[field.alias] = name
+    return names
+
+
+def fold_config_aliases(*, config: dict[str, Any], schema: type[BaseModel]) -> dict[str, Any]:
+    """Rewrite schema aliases to field names. Unknown keys stay as written."""
+    names = config_field_names(schema)
+    return {names.get(key, key): value for key, value in config.items()}
+
+
+def overlay_config(*, layers: list[dict[str, Any]], schema: type[BaseModel]) -> dict[str, Any]:
+    """Fold each layer, last layer wins, drop ``None``.
+
+    ``maxOutputTokens`` and ``max_output_tokens`` are the same slot. Keys
+    the schema does not know pass through.
+    """
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        merged.update(fold_config_aliases(config=layer, schema=schema))
+    return {key: value for key, value in merged.items() if value is not None}
+
+
+def normalize_config(*, config: object) -> dict[str, Any]:
+    """Dump a config object or dict. Does not fold or merge.
+
+    Pydantic dumps the Python field names, including explicit ``None``.
+    Dict keys stay as written. ``api_key`` is copied back when dump omits it.
+    """
+    if config is None:
+        return {}
+    if isinstance(config, BaseModel):
+        dumped = config.model_dump(exclude_unset=True, exclude_none=False, by_alias=False)
+        # api_key is left out of JSON on purpose; copy it back so a
+        # per-request key still reaches the plugin.
+        for name in config.model_fields_set:
+            if name not in dumped:
+                dumped[name] = getattr(config, name)
+        return dumped
+    if isinstance(config, Mapping):
+        return dict(cast(Mapping[str, Any], config))
+    raise GenkitError(
+        status='INVALID_ARGUMENT',
+        message=f'config is {type(config).__name__}, expected Mapping or BaseModel.',
+    )
+
+
+def resolve_model_arg(
+    *,
+    model: object | None,
+    registry: Registry,
+    message: str = 'No model configured.',
+) -> ModelArg:
+    """Return the explicit model or the registry default (name or ModelRef).
+
+    An empty string is treated as omitted so ``model=os.getenv('MODEL')``
+    still picks up the constructor default when the env var is unset.
+    An empty constructor default is omitted the same way: not a model
+    name, and not a type error.
+    Anything else that is not a name or ModelRef is a hard error — a
+    leftover int or action must not silently run the default model.
+    """
+    if isinstance(model, ModelRef):
+        return cast(ModelArg, model)
+    if isinstance(model, str) and model:
+        return model
+    if model is not None and model != '':
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'model is {type(model).__name__}, expected str or ModelRef.',
+        )
+    resolved = registry.lookup_value('defaultModel', 'defaultModel')
+    if isinstance(resolved, ModelRef):
+        return cast(ModelArg, resolved)
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    if resolved is not None and resolved != '':
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=(f'defaultModel is {type(resolved).__name__}, expected str or ModelRef.'),
+        )
+    raise GenkitError(status='INVALID_ARGUMENT', message=message)
+
+
+def resolve_model_name(
+    *,
+    model: object | None,
+    registry: Registry,
+    message: str = 'No model configured.',
+) -> str:
+    """Return a wire model name, unwrapping a ModelRef default if needed."""
+    resolved = resolve_model_arg(model=model, registry=registry, message=message)
+    return resolved.name if isinstance(resolved, ModelRef) else resolved
+
+
+def resolve_call_model(
+    *,
+    model: object | None,
+    config: object = None,
+    registry: Registry,
+    message: str = 'No model configured.',
+) -> ResolvedModel:
+    """Resolve a name or stored ModelRef plus call-time config.
+
+    ``generate()`` / prompts with no ``model=`` still apply a registry
+    default ref's version and config. The merged bag is a dict so overlay
+    can happen; ModelRequest is what turns it back into an object.
+
+    The outgoing bag has no ``None`` values — name or ref — so the plugin
+    sees a missing key rather than null.
+    """
+    resolved = resolve_model_arg(model=model, registry=registry, message=message)
+    normalized = normalize_config(config=config)
+    if isinstance(resolved, ModelRef):
+        return resolve_model_ref(model=resolved, config=normalized)
+    return ResolvedModel(
+        name=resolved,
+        config={key: value for key, value in normalized.items() if value is not None},
+    )
+
+
+def resolve_model_ref(*, model: ModelRef[Any], config: dict[str, Any]) -> ResolvedModel:
+    """Dump layers, overlay, return name + bag.
+
+    Lowest to highest: ``ref.version``, dumped ``ref.config``, call
+    ``config``. No validation — unknown keys pass through.
+    """
+    layers: list[dict[str, Any]] = []
+    if model.version is not None:
+        layers.append({'version': model.version})
+    if model.config is not None:
+        layers.append(normalize_config(config=model.config))
+    layers.append(config)
+    return ResolvedModel(
+        name=model.name,
+        config=overlay_config(layers=layers, schema=model.config_schema),
+    )
 
 
 def model_action_metadata(
@@ -189,9 +345,10 @@ def get_request_api_key(config: Mapping[str, object] | ModelConfig | object | No
 
     if isinstance(config, Mapping):
         config_mapping = cast(Mapping[str, object], config)
-        api_key = config_mapping.get('api_key')
-        if isinstance(api_key, str) and api_key:
-            return api_key
+        for key in ('api_key', 'apiKey'):
+            api_key = config_mapping.get(key)
+            if isinstance(api_key, str) and api_key:
+                return api_key
     else:
         # Defensive fallback for plugin-specific config classes that inherit from
         # ModelConfig or expose an api_key attribute.

@@ -88,6 +88,19 @@ async def test_generate_uses_default_model(setup_test: SetupFixture) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_passes_through_camel_case_config_keys(setup_test: SetupFixture) -> None:
+    """Dict spellings are not rejected here; the plugin config schema decides."""
+    ai, echo, _ = setup_test
+
+    response = await ai.generate(prompt='hi', config={'maxOutputTokens': 100})
+
+    assert response.text.startswith('[ECHO] user: "hi"')
+    assert echo.last_request is not None
+    assert echo.last_request.config is not None
+    assert echo.last_request.config == {'maxOutputTokens': 100}
+
+
+@pytest.mark.asyncio
 async def test_generate_populates_latency_ms(setup_test: SetupFixture) -> None:
     """Test that the generate function populates latency_ms in the response."""
     ai, *_ = setup_test

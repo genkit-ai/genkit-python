@@ -17,6 +17,7 @@
 """generate() / generate_operation() against a define_background_model fake."""
 
 from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import pytest
 
@@ -339,7 +340,7 @@ async def test_define_model_returning_operation_raises(ai: Genkit) -> None:
     async def model_fn(_request: ModelRequest, _ctx: ActionRunContext) -> Operation:
         return Operation(id='sneaky', done=False)
 
-    ai.define_model(name='plain', fn=model_fn)
+    ai.define_model(name='plain', fn=cast(Any, model_fn))
 
     with pytest.raises(GenkitError, match='define_background_model') as exc_info:
         await ai.generate(model='plain', prompt='hi')
@@ -446,3 +447,31 @@ def test_model_response_eq_uses_operation_snapshot() -> None:
     failed = ModelResponse(operation=Operation(id='job1', done=True, error=Error(message='boom')))
     assert in_flight != finished
     assert finished != failed
+
+
+@pytest.mark.asyncio
+async def test_started_operation_dump_round_trips_through_check(ai: Genkit) -> None:
+    """The dump of a real start() handle reloads and polls without edits."""
+
+    async def start(_request: ModelRequest, _ctx: ActionRunContext) -> Operation:
+        return Operation(id='bg-op-123', done=False)
+
+    async def check(op: Operation) -> Operation:
+        return Operation(id=op.id, done=True)
+
+    ai.define_background_model(
+        name='bg-model',
+        start=start,
+        check=check,
+    )
+    started = await ai.generate_operation(model='bg-model', prompt='a cat video')
+    dumped = started.model_dump(by_alias=True)
+    assert 'latencyMs' not in dumped
+    assert dumped.get('metadata') in (None, {})
+
+    reloaded = Operation.model_validate(dumped)
+    updated = await ai.check_operation(reloaded)
+
+    assert updated.id == 'bg-op-123'
+    assert updated.done is True
+    assert updated.action == '/background-model/bg-model'

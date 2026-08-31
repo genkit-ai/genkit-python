@@ -25,6 +25,7 @@ from typing import Any, Generic, TypeVar
 from pydantic import BaseModel
 
 from genkit._core._action import Action, ActionKind, ActionRunContext
+from genkit._core._error import GenkitError
 from genkit._core._model import ModelRequest, ModelResponse
 from genkit._core._registry import Registry
 from genkit._core._schema import to_json_schema
@@ -48,6 +49,13 @@ def _make_action_key(action_type: ActionKind | str, name: str) -> str:
         Action key in format /{action_type}/{name}.
     """
     return f'/{action_type}/{name}'
+
+
+def stamp_operation_action(*, operation: Operation, name: str) -> None:
+    """A handle needs the start action key so check/cancel can find the job."""
+    if operation.action:
+        return
+    operation.action = _make_action_key(ActionKind.BACKGROUND_MODEL, name)
 
 
 StartModelOpFn = Callable[[ModelRequest, ActionRunContext], Awaitable[Operation]]
@@ -119,7 +127,7 @@ class BackgroundAction(Generic[OutputT]):
             An Operation with an ID to track the job.
         """
         result = await self.start_action.run(input)
-        return _ensure_operation(result.response)
+        return _ensure_operation(response=result.response, name=self.start_action.name)
 
     async def check(self, operation: Operation) -> Operation:
         """Check the status of a background operation.
@@ -131,7 +139,7 @@ class BackgroundAction(Generic[OutputT]):
             Updated Operation with current status.
         """
         result = await self.check_action.run(operation)
-        return _ensure_operation(result.response)
+        return _ensure_operation(response=result.response, name=self.check_action.name)
 
     async def cancel(self, operation: Operation) -> Operation:
         """Cancel a background operation.
@@ -148,16 +156,22 @@ class BackgroundAction(Generic[OutputT]):
             # Return operation unchanged if cancel not supported
             return operation
         result = await self.cancel_action.run(operation)
-        return _ensure_operation(result.response)
+        return _ensure_operation(response=result.response, name=self.cancel_action.name)
 
 
-def _ensure_operation(response: Any) -> Operation:  # noqa: ANN401
-    """Convert response to Operation type."""
+def missing_operation_error(*, name: str) -> GenkitError:
+    """The caller asked for a handle and this action did not return one."""
+    return GenkitError(
+        status='FAILED_PRECONDITION',
+        message=f"'{name}' did not return an operation.",
+    )
+
+
+def _ensure_operation(*, response: object, name: str) -> Operation:
+    """A start/check/cancel fn returns an Operation, not a dict."""
     if isinstance(response, Operation):
         return response
-    if isinstance(response, dict):
-        return Operation.model_validate(response)
-    raise TypeError(f'Expected Operation, got {type(response)}')
+    raise missing_operation_error(name=name)
 
 
 class DefineBackgroundModelOptions(BaseModel):

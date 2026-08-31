@@ -1596,7 +1596,7 @@ def test_define_model_with_info(setup_test: SetupFixture) -> None:
         fn=foo_model_fn,
         info=ModelInfo(
             label='Foo Bar',
-            supports=Supports(multiturn=True, tools=True, system_role=True, long_running=True),
+            supports=Supports(multiturn=True, tools=True, system_role=True),
         ),
     )
     assert action.metadata['model'] == {
@@ -1605,7 +1605,6 @@ def test_define_model_with_info(setup_test: SetupFixture) -> None:
             'multiturn': True,
             'tools': True,
             'systemRole': True,
-            'longRunning': True,
         },
     }
 
@@ -1831,20 +1830,16 @@ def test_define_background_model_with_info(setup_test: SetupFixture) -> None:
 async def test_generate_operation_with_model_info_long_running(
     setup_test: SetupFixture,
 ) -> None:
-    """Verify generate_operation succeeds for a model defined with ModelInfo(supports=Supports(long_running=True))."""
+    """Verify generate_operation succeeds for a define_background_model."""
     ai, _, _, *_ = setup_test
 
-    async def my_model(request: ModelRequest) -> ModelResponse:
-        return ModelResponse(
-            message=Message(role='model', content=[TextPart(text='done')]),
-            operation=Operation(id='op123', done=False),
-        )
+    async def start(_request: ModelRequest, _ctx: ActionRunContext) -> Operation:
+        return Operation(id='op123', done=False)
 
-    ai.define_model(
-        name='lr_model',
-        fn=my_model,
-        info=ModelInfo(supports=Supports(long_running=True)),
-    )
+    async def check(op: Operation) -> Operation:
+        return op
+
+    ai.define_background_model(name='lr_model', start=start, check=check)
 
     op = await ai.generate_operation(model='lr_model', prompt='test')
     assert op is not None

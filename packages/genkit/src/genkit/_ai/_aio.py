@@ -29,7 +29,7 @@ import threading
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
-from typing import Any, TypeVar, cast, overload
+from typing import Any, TypeVar, overload
 
 import anyio
 import uvicorn
@@ -95,6 +95,7 @@ from genkit._core._background import (
     check_operation,
     define_background_model,
     lookup_background_action,
+    missing_operation_error,
 )
 from genkit._core._channel import Channel, run_loop
 from genkit._core._dap import (
@@ -145,23 +146,6 @@ ChunkT = TypeVar('ChunkT')
 R = TypeVar('R')
 T = TypeVar('T')
 MiddlewareT = TypeVar('MiddlewareT', bound=BaseMiddleware)
-
-
-def _model_supports_long_running(model_action: Action) -> bool:
-    """Check if a model action supports long-running operations."""
-    model_info = model_action.metadata.get('model') if model_action.metadata else None
-    if not model_info:
-        return False
-    # Handle ModelInfo object
-    if hasattr(model_info, 'supports'):
-        supports = getattr(model_info, 'supports', None)
-        return bool(getattr(supports, 'long_running', False)) if supports else False
-    # Handle dict (cast needed because isinstance narrows too much for type checkers)
-    if isinstance(model_info, dict):
-        model_dict = cast(dict[str, Any], model_info)
-        supports = model_dict.get('supports')
-        return bool(supports.get('longRunning', False)) if isinstance(supports, dict) else False
-    return False
 
 
 class Genkit:
@@ -1724,8 +1708,7 @@ class Genkit:
                 message=f"Model '{resolved.name}' not found.",
             )
 
-        # Check if model supports long-running operations
-        if not _model_supports_long_running(model_action):
+        if model_action.kind != ActionKind.BACKGROUND_MODEL:
             raise GenkitError(
                 status='INVALID_ARGUMENT',
                 message=f"Model '{model_action.name}' does not support long running operations.",
@@ -1754,9 +1737,6 @@ class Genkit:
 
         # Extract operation from response
         if not hasattr(response, 'operation') or not response.operation:
-            raise GenkitError(
-                status='FAILED_PRECONDITION',
-                message=f"Model '{model_action.name}' did not return an operation.",
-            )
+            raise missing_operation_error(name=model_action.name)
 
         return response.operation

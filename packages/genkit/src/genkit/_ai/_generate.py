@@ -47,6 +47,7 @@ from genkit._core._action import (
     ActionKind,
     ActionRunContext,
 )
+from genkit._core._background import _ensure_operation, missing_operation_error, stamp_operation_action
 from genkit._core._error import GenkitError
 from genkit._core._logger import get_logger, is_debug_enabled
 from genkit._core._middleware import (
@@ -72,6 +73,7 @@ from genkit._core._typing import (
     FinishReason,
     MiddlewareRef,
     MultipartToolResponse,
+    Operation,
     Part,
     Role,
     TextPart,
@@ -636,6 +638,53 @@ class ChunkAccumulator:
             ctx.replace_on_chunk(previous)
 
 
+def box_background_start(
+    *,
+    raw: object,
+    request: ModelRequest,
+    name: str,
+    latency_ms: float | None = None,
+) -> ModelResponse:
+    """Turn a start() Operation into the ModelResponse wrap_model reads.
+
+    Timing comes from Action.run, not from the ticket.
+    """
+    op = _ensure_operation(response=raw, name=name)
+    stamp_operation_action(operation=op, name=name)
+    return ModelResponse(operation=op, request=request, latency_ms=latency_ms)
+
+
+def require_model_response(*, raw: object, name: str) -> ModelResponse:
+    """A chat model returns a ModelResponse, not a dict or a job handle."""
+    if isinstance(raw, Operation) or (isinstance(raw, ModelResponse) and raw.operation is not None):
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=(
+                f"Model '{name}' is a regular model that returns a response immediately. "
+                'Use define_background_model for background models that return operations.'
+            ),
+        )
+    if not isinstance(raw, ModelResponse):
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=f"Model '{name}' did not return a ModelResponse.",
+        )
+    return raw
+
+
+@dataclass
+class BoxedStart:
+    """The ModelResponse start() produced, before wrap_model / wrap_generate."""
+
+    response: ModelResponse | None = None
+
+
+def assert_hook_kept_operation(*, boxed: ModelResponse | None, after_hooks: ModelResponse, name: str) -> None:
+    """A hook that called start() and then dropped the ticket orphans the job."""
+    if boxed is not None and boxed.operation is not None and after_hooks.operation is None:
+        raise missing_operation_error(name=name)
+
+
 def _persist_threaded_conversation(response: ModelResponse, messages: list[Message]) -> ModelResponse:
     """Persist the threaded conversation onto the response's request.
 
@@ -662,6 +711,16 @@ async def _generate_action_turn(
     raise_if_aborted(run_ctx.abort_signal)
 
     model, tools, format_def = await resolve_parameters(registry, raw_request)
+    boxed_start = BoxedStart()
+
+    if model.kind == ActionKind.BACKGROUND_MODEL and raw_request.resume is not None:
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=(
+                f"Cannot resume background model '{model.name}'; "
+                'a background start cannot satisfy an interrupted tool turn'
+            ),
+        )
 
     raw_request, formatter = apply_format(raw_request, format_def)
 
@@ -766,14 +825,22 @@ async def _generate_action_turn(
             request = _augment_with_context(request)
 
         async def next_fn(params: ModelHookParams, c: GenerateMiddlewareContext) -> ModelResponse:
-            return (
-                await model.run(
-                    input=params.request,
-                    context=c.custom_context,
-                    on_chunk=c.on_chunk,
-                    abort_signal=c.abort_signal,
+            result = await model.run(
+                input=params.request,
+                context=c.custom_context,
+                on_chunk=c.on_chunk,
+                abort_signal=c.abort_signal,
+            )
+            raw = result.response
+            if model.kind == ActionKind.BACKGROUND_MODEL:
+                boxed_start.response = box_background_start(
+                    raw=raw,
+                    request=params.request,
+                    name=model.name,
+                    latency_ms=result.latency_ms,
                 )
-            ).response
+                return boxed_start.response
+            return require_model_response(raw=raw, name=model.name)
 
         with chunks.intercept_model_stream(ctx, role=Role.MODEL):
             model_response = await dispatch_model(
@@ -781,6 +848,11 @@ async def _generate_action_turn(
                 ctx,
                 next_fn,
             )
+        assert_hook_kept_operation(
+            boxed=boxed_start.response,
+            after_hooks=model_response,
+            name=model.name,
+        )
 
         def message_parser(msg: Message) -> Any:  # noqa: ANN401
             if formatter is None:
@@ -805,7 +877,8 @@ async def _generate_action_turn(
         response.assert_valid()
         generated_msg = response.message
 
-        if generated_msg is None:
+        # A ticket means generate is done. Don't run tools against a start handle.
+        if generated_msg is None or response.operation is not None:
             return _persist_threaded_conversation(response, turn_options.messages)
 
         # Stamp output format metadata on message so the Dev UI can render formatted JSON vs plain text.
@@ -891,7 +964,13 @@ async def _generate_action_turn(
         iteration=current_turn,
         message_index=chunks.message_index,
     )
-    return await dispatch_generate(generate_params, run_ctx, run_one_iteration)
+    result = await dispatch_generate(generate_params, run_ctx, run_one_iteration)
+    assert_hook_kept_operation(
+        boxed=boxed_start.response,
+        after_hooks=result,
+        name=model.name,
+    )
+    return result
 
 
 def apply_format(

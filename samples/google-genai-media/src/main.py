@@ -14,73 +14,43 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google GenAI media - simple examples for speech and image generation."""
+"""Speech and image are generate(). Video is generate_operation + poll."""
 
 from genkit_google_genai import GoogleAI
-from pydantic import BaseModel, Field
 
 from genkit import Genkit
 
 ai = Genkit(plugins=[GoogleAI()])
 
 
-class SpeechInput(BaseModel):
-    """Input for TTS."""
-
-    text: str = Field(default='Welcome to the Genkit media sample.', description='Text to speak')
-    voice: str = Field(default='Kore', description='Prebuilt voice name')
-
-
-class ImageInput(BaseModel):
-    """Input for image generation."""
-
-    prompt: str = Field(default='A watercolor postcard of San Francisco at sunrise', description='Image prompt')
-
-
-def _first_media_url(response: object) -> str | None:
-    """Extract media URL from first candidate message part if present."""
-    message = getattr(response, 'message', None)
-    if message is None:
-        return None
-    content = getattr(message, 'content', [])
-    for part in content:
-        media = getattr(part.root, 'media', None)
-        if media is not None and getattr(media, 'url', None):
-            return media.url
-    return None
-
-
-@ai.flow(name='generate_speech')
-async def tts_speech_generator(input: SpeechInput) -> dict[str, str | None]:
-    """Generate audio bytes with Gemini TTS."""
-
-    response = await ai.generate(
-        model='googleai/gemini-2.5-flash-preview-tts',
-        prompt=input.text,
-        config={'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': input.voice}}}},
-    )
-    return {'model': 'googleai/gemini-2.5-flash-preview-tts', 'audio_url': _first_media_url(response)}
-
-
-@ai.flow(name='generate_image')
-async def imagen_image_generator(input: ImageInput) -> dict[str, str | None]:
-    """Generate one image with Imagen."""
-
-    response = await ai.generate(
-        model='googleai/imagen-3.0-generate-002',
-        prompt=input.prompt,
-        config={'number_of_images': 1},
-    )
-    return {'model': 'googleai/imagen-3.0-generate-002', 'image_url': _first_media_url(response)}
-
-
 async def main() -> None:
-    """Run the fast media demos once."""
-    try:
-        print(await tts_speech_generator(SpeechInput()))  # noqa: T201
-        print(await imagen_image_generator(ImageInput()))  # noqa: T201
-    except Exception as error:
-        print(f'Set GEMINI_API_KEY to a valid value before running this sample directly.\n{error}')  # noqa: T201
+    # Speech: pick a TTS model, read the audio off response.media.
+    voice = await ai.generate(
+        model=GoogleAI.gemini_tts_model('gemini-2.5-flash-preview-tts'),
+        prompt='Welcome to the Genkit media sample.',
+        config={'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Kore'}}}},
+    )
+    print(voice.media[0].url if voice.media else 'no audio')
+
+    # Image: same generate(), different model.
+    poster = await ai.generate(
+        model=GoogleAI.gemini_image_model('gemini-2.5-flash-image'),
+        prompt='A watercolor postcard of San Francisco at sunrise',
+    )
+    print(poster.media[0].url if poster.media else 'no image')
+
+    # Video is a job, not a round-trip. Uncomment to wait on Veo
+    # (a couple of minutes):
+    #
+    # import asyncio
+    # operation = await ai.generate_operation(
+    #     model='googleai/veo-3.1-generate-preview',
+    #     prompt='A paper airplane gliding through a bright classroom',
+    # )
+    # while not operation.done:
+    #     await asyncio.sleep(3)
+    #     operation = await ai.check_operation(operation)
+    # print(operation.output)
 
 
 if __name__ == '__main__':

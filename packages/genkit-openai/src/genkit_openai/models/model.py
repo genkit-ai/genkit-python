@@ -46,6 +46,7 @@ from genkit_openai.models.utils import (
     DictMessageAdapter,
     MessageAdapter,
     MessageConverter,
+    extract_response_metadata,
     reraise_openai_error,
     strip_markdown_fences,
 )
@@ -372,15 +373,7 @@ class OpenAIModel:
                 cleaned_parts.append(part)
 
         if changed:
-            return ModelResponse(
-                request=request,
-                message=Message(role=response.message.role, content=cleaned_parts),
-                finish_reason=response.finish_reason,
-                finish_message=response.finish_message,
-                latency_ms=response.latency_ms,
-                usage=response.usage,
-                custom=response.custom,
-            )
+            return response.model_copy(update={'message': Message(role=response.message.role, content=cleaned_parts)})
         return response
 
     @staticmethod
@@ -489,12 +482,15 @@ class OpenAIModel:
         if not genkit_message.content and finish_reason is FinishReason.STOP:
             raise ValueError('Unable to determine content part')
 
+        metadata = extract_response_metadata(response)
         result = ModelResponse(
             request=request,
             message=genkit_message,
             finish_reason=finish_reason,
             finish_message=finish_message,
             usage=_usage_from_completion(response.usage),
+            custom=metadata or None,
+            raw=metadata or None,
         )
         return self._clean_json_response(result, request)
 
@@ -521,12 +517,14 @@ class OpenAIModel:
 
         tool_calls: dict[int, Any] = {}
         accumulated_content: list[Part] = []
+        metadata: dict[str, Any] = {}
         usage: CompletionUsage | None = None
         saw_choice = False
         raw_finish_reason: str | None = None
         refusal_fragments: list[str] = []
         failure_message: str | None = None
         async for chunk in stream:  # type: ignore
+            metadata.update(extract_response_metadata(chunk))
             # Usage rides on a final chunk that carries no choices.
             if chunk.usage is not None:
                 usage = chunk.usage
@@ -615,6 +613,8 @@ class OpenAIModel:
             finish_reason=finish_reason,
             finish_message=finish_message,
             usage=_usage_from_completion(usage),
+            custom=metadata or None,
+            raw=metadata or None,
         )
         return self._clean_json_response(result, request)
 

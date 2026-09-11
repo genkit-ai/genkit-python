@@ -516,7 +516,8 @@ class OpenAIModel:
         stream = await self._openai_client.chat.completions.create(**openai_config)
 
         tool_calls: dict[int, Any] = {}
-        accumulated_content: list[Part] = []
+        reasoning_parts: list[Part] = []
+        text_parts: list[Part] = []
         metadata: dict[str, Any] = {}
         usage: CompletionUsage | None = None
         saw_choice = False
@@ -540,53 +541,41 @@ class OpenAIModel:
                 failure_message = failure
 
             delta = choice.delta
+            parts: list[Part] = []
 
             # A refusal streams in fragments and is reported as the finish message, not content.
             if delta.refusal:
                 refusal_fragments.append(delta.refusal)
 
-            # Text content chunk
-            if delta.content:
-                message = MessageConverter.to_genkit(MessageAdapter(delta))
-                accumulated_content.extend(message.content)
-                callback(
-                    ModelResponseChunk(
-                        role=Role.MODEL,
-                        content=message.content,
-                    )
-                )
-
-            # Reasoning content chunk (DeepSeek R1 / reasoner models).
-            # Note: Pydantic models raise AttributeError for unknown fields,
-            # so getattr() with a default doesn't work. Use try-except.
-            elif reasoning_text := MessageAdapter(delta).reasoning_content:
+            # Reasoning content (DeepSeek R1 / reasoner models).
+            if reasoning_text := MessageAdapter(delta).reasoning_content:
                 reasoning_part = Part(root=ReasoningPart(reasoning=reasoning_text))
-                accumulated_content.append(reasoning_part)
-                callback(
-                    ModelResponseChunk(
-                        role=Role.MODEL,
-                        content=[reasoning_part],
-                    )
-                )
+                reasoning_parts.append(reasoning_part)
+                parts.append(reasoning_part)
 
-            # Tool call chunk (partial function call)
-            elif delta.tool_calls:
+            # Text content
+            if delta.content:
+                text_part = MessageConverter.text_part_to_genkit(delta.content)
+                text_parts.append(text_part)
+                parts.append(text_part)
+
+            # Tool calls (partial function calls)
+            if delta.tool_calls:
                 for tool_call in delta.tool_calls:
+                    fragment = (tool_call.function.arguments or '') if tool_call.function else ''
                     # Accumulate fragmented tool call arguments
                     if tool_call.index not in tool_calls:
                         tool_calls[tool_call.index] = tool_call
                     else:
                         existing = tool_calls[tool_call.index]
                         if hasattr(existing, 'function') and existing.function and tool_call.function:
-                            existing.function.arguments += tool_call.function.arguments
-                content = [
-                    MessageConverter.tool_call_to_genkit(
-                        tool_calls[tool_call.index],
-                        args_segment=tool_call.function.arguments if tool_call.function else None,
+                            existing.function.arguments = (existing.function.arguments or '') + fragment
+                    parts.append(
+                        MessageConverter.tool_call_to_genkit(tool_calls[tool_call.index], args_segment=fragment)
                     )
-                    for tool_call in delta.tool_calls
-                ]
-                callback(ModelResponseChunk(role=Role.MODEL, content=content))
+
+            if parts:
+                callback(ModelResponseChunk(role=Role.MODEL, content=parts))
 
         if not saw_choice:
             raise GenkitError(
@@ -595,6 +584,7 @@ class OpenAIModel:
                 details={'usage': _usage_from_completion(usage).model_dump(exclude_none=True)},
             )
 
+        accumulated_content: list[Part] = [*reasoning_parts, *text_parts]
         if tool_calls:
             message = MessageConverter.to_genkit(
                 DictMessageAdapter({'tool_calls': tool_calls.values(), 'role': Role.MODEL})

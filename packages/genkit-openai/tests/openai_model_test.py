@@ -26,7 +26,7 @@ import pytest
 from genkit_openai.models import OpenAIModel
 from genkit_openai.models.model import _usage_from_completion
 from genkit_openai.models.utils import strip_markdown_fences
-from genkit_openai.typing import OpenAIConfig
+from genkit_openai.typing import OpenAIConfig, ReasoningEffort
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from pydantic import BaseModel
@@ -135,6 +135,62 @@ async def test_get_openai_config_peels_genkit_keys_and_passes_the_rest() -> None
     assert 'api_key' not in body
     assert 'top_k' not in body
     assert 'version' not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('model_name', 'reasoning_effort'),
+    [
+        ('gpt-6-astra', None),
+        ('ft:o1-mini:my-org:custom', None),
+        ('my-o1-mini-deployment', None),
+        ('my-deployment', ReasoningEffort.HIGH),
+    ],
+)
+async def test_get_openai_config_uses_max_completion_tokens_for_reasoning_models(
+    model_name: str, reasoning_effort: ReasoningEffort | None
+) -> None:
+    """Reasoning models reject the deprecated max_tokens request field."""
+    model = OpenAIModel(model=model_name, client=MagicMock())
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))])],
+        config=OpenAIConfig(max_tokens=32, reasoning_effort=reasoning_effort),
+    )
+
+    body = await model._get_openai_request_config(request)
+
+    assert body['max_completion_tokens'] == 32
+    assert 'max_tokens' not in body
+
+
+@pytest.mark.asyncio
+async def test_get_openai_config_keeps_max_tokens_for_legacy_models() -> None:
+    """Legacy OpenAI-compatible models continue to receive max_tokens."""
+    model = OpenAIModel(model='gpt-4o', client=MagicMock())
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))])],
+        config=OpenAIConfig(max_tokens=32),
+    )
+
+    body = await model._get_openai_request_config(request)
+
+    assert body['max_tokens'] == 32
+    assert 'max_completion_tokens' not in body
+
+
+@pytest.mark.asyncio
+async def test_get_openai_config_prefers_explicit_max_completion_tokens() -> None:
+    """An explicit modern token limit wins when both fields are configured."""
+    model = OpenAIModel(model='gpt-4o', client=MagicMock())
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))])],
+        config=OpenAIConfig(max_tokens=32, max_completion_tokens=64),
+    )
+
+    body = await model._get_openai_request_config(request)
+
+    assert body['max_completion_tokens'] == 64
+    assert 'max_tokens' not in body
 
 
 @pytest.mark.asyncio

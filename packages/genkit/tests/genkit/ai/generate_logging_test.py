@@ -9,7 +9,7 @@ import pytest
 import structlog
 from structlog.testing import capture_logs
 
-from genkit import Genkit, Message, ModelResponse
+from genkit import Genkit, Message, ModelResponse, Part
 from genkit._ai._generate import generate_action
 from genkit._ai._model import resolve_model_arg
 from genkit._ai._testing import define_programmable_model
@@ -17,17 +17,13 @@ from genkit._ai._tools import Interrupt, restart_tool
 from genkit._core._environment import GENKIT_ENV
 from genkit._core._error import GenkitError
 from genkit._core._logger import GENKIT_LOG, get_logger
-from genkit._core._model import GenerateActionOptions
+from genkit._core._model import GenerateActionOptions, Resume
 from genkit._core._registry import Registry
 from genkit._core._typing import (
     FinishReason,
     GenerateActionOutputConfig,
-    Part,
-    Resume,
     Role,
-    TextPart,
     ToolRequest,
-    ToolRequestPart,
 )
 
 BLOB = 'A' * 1_000_000
@@ -57,7 +53,7 @@ async def _generate_once() -> None:
     pm, _ = define_programmable_model(ai)
     pm.responses = [
         ModelResponse(
-            message=Message(role=Role.MODEL, content=[TextPart(text='hello there')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('hello there')]),
             custom={'audio': BLOB},
             raw={'audio': BLOB},
         )
@@ -109,7 +105,7 @@ async def test_blocked_finish_still_logs_model_responded(monkeypatch: pytest.Mon
         ModelResponse(
             finish_reason=FinishReason.BLOCKED,
             finish_message='safety',
-            message=Message(role=Role.MODEL, content=[TextPart(text='nope')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('nope')]),
         )
     ]
 
@@ -135,7 +131,7 @@ async def test_leftover_logs_failed_finish_reason(monkeypatch: pytest.MonkeyPatc
     pm.responses = [
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[TextPart(text='not json')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('not json')]),
         )
     ]
 
@@ -190,7 +186,7 @@ async def test_abnormal_finish_skips_output_parsing(monkeypatch: pytest.MonkeyPa
     pm, _ = define_programmable_model(ai)
     pm.responses = [
         ModelResponse(
-            message=Message(role=Role.MODEL, content=[TextPart(text='nope')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('nope')]),
             finish_reason=FinishReason.BLOCKED,
             finish_message='safety',
         )
@@ -201,7 +197,7 @@ async def test_abnormal_finish_skips_output_parsing(monkeypatch: pytest.MonkeyPa
             ai.registry,
             GenerateActionOptions(
                 model='programmableModel',
-                messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+                messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
                 output=GenerateActionOutputConfig(format='json'),
             ),
         )
@@ -223,7 +219,7 @@ async def test_other_finish_does_not_warn_as_abnormal(monkeypatch: pytest.Monkey
     pm, _ = define_programmable_model(ai)
     pm.responses = [
         ModelResponse(
-            message=Message(role=Role.MODEL, content=[TextPart(text='{"ok": true}')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('{"ok": true}')]),
             finish_reason=FinishReason.OTHER,
         )
     ]
@@ -233,7 +229,7 @@ async def test_other_finish_does_not_warn_as_abnormal(monkeypatch: pytest.Monkey
             ai.registry,
             GenerateActionOptions(
                 model='programmableModel',
-                messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+                messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
                 output=GenerateActionOutputConfig(format='json'),
             ),
         )
@@ -251,7 +247,7 @@ async def test_schema_mismatch_logs_when_debug_enabled(monkeypatch: pytest.Monke
     pm, _ = define_programmable_model(ai)
     pm.responses = [
         ModelResponse(
-            message=Message(role=Role.MODEL, content=[TextPart(text='not json')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('not json')]),
             finish_reason=FinishReason.STOP,
         )
     ]
@@ -261,7 +257,7 @@ async def test_schema_mismatch_logs_when_debug_enabled(monkeypatch: pytest.Monke
             ai.registry,
             GenerateActionOptions(
                 model='programmableModel',
-                messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+                messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
                 output=GenerateActionOutputConfig(format='json'),
             ),
         )
@@ -288,7 +284,7 @@ async def test_tool_interrupt_logs(monkeypatch: pytest.MonkeyPatch) -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='hold', input={}, ref='1')))],
+                content=[Part(tool_request=ToolRequest(name='hold', input={}, ref='1'))],
             ),
             finish_reason=FinishReason.STOP,
         )
@@ -299,7 +295,7 @@ async def test_tool_interrupt_logs(monkeypatch: pytest.MonkeyPatch) -> None:
             ai.registry,
             GenerateActionOptions(
                 model='programmableModel',
-                messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+                messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
                 tools=['hold'],
             ),
         )
@@ -330,7 +326,7 @@ async def test_restarted_tool_interrupt_logs(monkeypatch: pytest.MonkeyPatch) ->
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='hold', input={}, ref='1')))],
+                content=[Part(tool_request=ToolRequest(name='hold', input={}, ref='1'))],
             ),
             finish_reason=FinishReason.STOP,
         )
@@ -339,7 +335,7 @@ async def test_restarted_tool_interrupt_logs(monkeypatch: pytest.MonkeyPatch) ->
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['hold'],
         ),
     )
@@ -376,12 +372,12 @@ async def test_tool_stream_callback_failure_fails_generate(monkeypatch: pytest.M
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='echo', input={}, ref='1')))],
+                content=[Part(tool_request=ToolRequest(name='echo', input={}, ref='1'))],
             ),
             finish_reason=FinishReason.STOP,
         ),
         ModelResponse(
-            message=Message(role=Role.MODEL, content=[TextPart(text='done')]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
             finish_reason=FinishReason.STOP,
         ),
     ]
@@ -395,7 +391,7 @@ async def test_tool_stream_callback_failure_fails_generate(monkeypatch: pytest.M
             ai.registry,
             GenerateActionOptions(
                 model='programmableModel',
-                messages=[Message(role=Role.USER, content=[TextPart(text='hi')])],
+                messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
                 tools=['echo'],
             ),
             on_chunk=on_chunk,

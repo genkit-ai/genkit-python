@@ -47,17 +47,15 @@ Note:
 
 import pytest
 
-from genkit import Genkit, Message, ModelResponse
+from genkit import Genkit, Message, ModelResponse, Part
 from genkit._core._action import ActionRunContext
 from genkit._core._error import GenkitError
 from genkit._core._model import ModelRequest
 from genkit._core._typing import (
     ModelInfo,
     Operation,
-    Part,
     Role,
     Supports,
-    TextPart,
 )
 
 
@@ -97,7 +95,7 @@ async def test_generate_operation_model_no_long_running_support(ai: Genkit) -> N
         return ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=TextPart(text='Hello'))],
+                content=[Part.from_text('Hello')],
             ),
         )
 
@@ -129,7 +127,7 @@ async def test_generate_operation_model_no_supports_info(ai: Genkit) -> None:
         return ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=TextPart(text='Hello'))],
+                content=[Part.from_text('Hello')],
             ),
         )
 
@@ -146,7 +144,7 @@ def test_define_model_rejects_long_running(ai: Genkit) -> None:
 
     async def model_fn(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
         return ModelResponse(
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='Hello'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('Hello')]),
         )
 
     with pytest.raises(GenkitError, match='define_background_model') as exc_info:

@@ -51,7 +51,6 @@ from genkit import (
     ModelRequest,
     Part,
     Role,
-    TextPart,
 )
 from genkit.plugin_api import GENKIT_CLIENT_HEADER
 
@@ -935,8 +934,8 @@ async def test_system_prompt_handling() -> None:
 
     request = ModelRequest(
         messages=[
-            Message(role=Role.SYSTEM, content=[Part(root=TextPart(text='You are a helpful assistant'))]),
-            Message(role=Role.USER, content=[Part(root=TextPart(text='Hello'))]),
+            Message(role=Role.SYSTEM, content=[Part.from_text('You are a helpful assistant')]),
+            Message(role=Role.USER, content=[Part.from_text('Hello')]),
         ],
         config=None,
     )

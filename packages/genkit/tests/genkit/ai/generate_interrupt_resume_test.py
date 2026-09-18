@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from genkit import Genkit, Message, MiddlewareRef, ModelResponse
+from genkit import Genkit, Message, MiddlewareRef, ModelResponse, Part
 from genkit._ai._generate import generate_action
 from genkit._ai._testing import define_programmable_model
 from genkit._ai._tools import (
@@ -22,14 +22,8 @@ from genkit._ai._tools import (
     restart_tool,
 )
 from genkit._core._error import GenkitError
-from genkit._core._model import GenerateActionOptions
-from genkit._core._typing import (
-    FinishReason,
-    Media,
-    MediaPart,
-    Part,
-    Resume,
-)
+from genkit._core._model import GenerateActionOptions, Resume
+from genkit._core._typing import FinishReason
 from genkit.middleware import BaseMiddleware, GenerateMiddlewareContext, ToolHookParams
 
 
@@ -56,7 +50,7 @@ def _gen_opts(
 
 
 def _png() -> Part:
-    return Part(root=MediaPart(media=Media(content_type='image/png', url='data:image/png;base64,abc')))
+    return Part.from_media('data:image/png;base64,abc', content_type='image/png')
 
 
 WIRE_PNG = {'media': {'contentType': 'image/png', 'url': 'data:image/png;base64,abc'}}
@@ -277,6 +271,73 @@ async def test_resume_respond_trp_gets_resolved_interrupt_and_tool_trp() -> None
             'content': [{'text': 'after resume'}],
         },
     ]
+
+
+async def _interrupted_generate() -> tuple[Genkit, ModelResponse]:
+    ai = Genkit()
+    pm, _ = define_programmable_model(ai)
+
+    @ai.tool(name='intr')
+    async def intr(_: dict) -> str:  # noqa: ARG001
+        raise Interrupt({'reason': 'x'})
+
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message.model_validate({
+                'role': 'model',
+                'content': [
+                    {'text': 'call'},
+                    {'toolRequest': {'ref': 'r1', 'name': 'intr', 'input': {}}},
+                ],
+            }),
+        )
+    )
+    first = await generate_action(
+        ai.registry,
+        _gen_opts(ai, tools=['intr'], messages=[Message.model_validate({'role': 'user', 'content': [{'text': 'hi'}]})]),
+    )
+    assert first.finish_reason == FinishReason.INTERRUPTED
+    return ai, first
+
+
+@pytest.mark.asyncio
+async def test_resume_respond_text_part_raises() -> None:
+    """resume_respond needs a tool response part."""
+    ai, first = await _interrupted_generate()
+    with pytest.raises(ValueError, match='tool response'):
+        await ai.generate(
+            model='programmableModel',
+            messages=list(first.messages),
+            tools=['intr'],
+            resume_respond=Part.from_text('hi'),
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_respond_list_text_part_raises() -> None:
+    """resume_respond rejects a list of text parts."""
+    ai, first = await _interrupted_generate()
+    with pytest.raises(ValueError, match='tool response'):
+        await ai.generate(
+            model='programmableModel',
+            messages=list(first.messages),
+            tools=['intr'],
+            resume_respond=[Part.from_text('hi')],
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_restart_text_part_raises() -> None:
+    """resume_restart needs a tool request part."""
+    ai, first = await _interrupted_generate()
+    with pytest.raises(ValueError, match='tool request'):
+        await ai.generate(
+            model='programmableModel',
+            messages=list(first.messages),
+            tools=['intr'],
+            resume_restart=Part.from_text('hi'),
+        )
 
 
 @pytest.mark.asyncio
@@ -625,8 +686,8 @@ async def test_mixed_resume_one_respond_one_restart() -> None:
         },
     ]
 
-    ia = next(p for p in first.interrupts if p.tool_request.name == 'a')
-    ib = next(p for p in first.interrupts if p.tool_request.name == 'b')
+    ia = next(p for p in first.interrupts if p.tool_request is not None and p.tool_request.name == 'a')
+    ib = next(p for p in first.interrupts if p.tool_request is not None and p.tool_request.name == 'b')
 
     second = await generate_action(
         ai.registry,
@@ -847,7 +908,7 @@ async def _screenshot_confirm_interrupted() -> tuple[Genkit, Any]:
     """Screenshot finishes with a PNG; confirm interrupts. Caller resumes or mutates the stash."""
     ai = Genkit()
     pm, _ = define_programmable_model(ai)
-    png = Part(root=MediaPart(media=Media(content_type='image/png', url='data:image/png;base64,abc')))
+    png = Part.from_media('data:image/png;base64,abc', content_type='image/png')
 
     @ai.tool(name='confirm')
     async def confirm(_: dict) -> None:  # noqa: ARG001
@@ -890,9 +951,9 @@ async def _screenshot_confirm_interrupted() -> tuple[Genkit, Any]:
 
 def _with_shot_pending(first: Any, **pending: object) -> list[Message]:
     messages = [m.model_copy(deep=True) for m in first.messages]
-    root = messages[1].content[1].root
-    assert root.metadata is not None
-    root.metadata.update(pending)
+    part = messages[1].content[1]
+    assert part.metadata is not None
+    part.metadata.update(pending)
     return messages
 
 
@@ -900,7 +961,7 @@ def _with_shot_pending(first: Any, **pending: object) -> list[Message]:
 async def test_mixed_interrupt_preserves_sibling_media_on_resume() -> None:
     """Screenshot finishes with a PNG; confirm interrupts. Resume must still send the PNG."""
     ai, first = await _screenshot_confirm_interrupted()
-    shot_meta = first.messages[1].content[1].root.metadata
+    shot_meta = first.messages[1].content[1].metadata
     assert shot_meta is not None
     assert shot_meta.get('pendingOutput') == {'ok': True, 'label': 'lab'}
     assert shot_meta.get('pendingContent') == [
@@ -919,11 +980,11 @@ async def test_mixed_interrupt_preserves_sibling_media_on_resume() -> None:
     )
     assert second.finish_reason == FinishReason.STOP
     tool_msg = next(m for m in second.messages if m.role == 'tool')
-    shot_resp = tool_msg.content[1].root.tool_response
+    shot_resp = tool_msg.content[1].tool_response
     assert shot_resp is not None
     assert shot_resp.output == {'ok': True, 'label': 'lab'}
     assert shot_resp.content == [{'media': {'contentType': 'image/png', 'url': 'data:image/png;base64,abc'}}]
-    assert tool_msg.content[1].root.metadata == {'src': 'cam', 'source': 'pending'}
+    assert tool_msg.content[1].metadata == {'src': 'cam', 'source': 'pending'}
 
 
 @pytest.mark.asyncio
@@ -943,6 +1004,28 @@ async def test_resume_rejects_hollow_pending_content() -> None:
     assert ei.value.status == 'INVALID_ARGUMENT'
     assert 'screenshot' in ei.value.original_message
     assert 'pendingContent' in ei.value.original_message
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_text_and_media_pending_content() -> None:
+    """A saved conversation whose pending screenshot is caption plus image on one part must fail on resume."""
+    ai, first = await _screenshot_confirm_interrupted()
+    with pytest.raises(GenkitError) as ei:
+        await generate_action(
+            ai.registry,
+            _gen_opts(
+                ai,
+                tools=['confirm', 'screenshot'],
+                messages=_with_shot_pending(
+                    first,
+                    pendingContent=[{'text': 'caption', 'media': {'url': 'https://x'}}],
+                ),
+                resume=Resume(respond=[respond_to_interrupt({'approved': True}, interrupt=first.interrupts[0])]),
+            ),
+        )
+    assert ei.value.status == 'INVALID_ARGUMENT'
+    assert 'pendingContent' in ei.value.original_message
+    assert 'exactly one' in str(ei.value)
 
 
 @pytest.mark.asyncio
@@ -1027,7 +1110,7 @@ async def _restart_screenshot(*, with_passthrough: bool = False) -> tuple[Any, A
         ),
     )
     tool_msg = next(m for m in second.messages if m.role == 'tool')
-    return tool_msg.content[0].root.tool_response, tool_msg.content[0].root.metadata
+    return tool_msg.content[0].tool_response, tool_msg.content[0].metadata
 
 
 @pytest.mark.asyncio

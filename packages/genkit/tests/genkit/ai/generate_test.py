@@ -12,9 +12,9 @@ from typing import Any, cast
 
 import pytest
 import yaml
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from genkit import ActionKind, Document, Genkit, Message, MiddlewareRef, ModelResponse, ModelResponseChunk
+from genkit import ActionKind, Document, Genkit, Message, MiddlewareRef, ModelResponse, ModelResponseChunk, Part
 from genkit._ai._generate import ChunkAccumulator, _augment_with_context, generate_action
 from genkit._ai._model import text_from_content, text_from_message
 from genkit._ai._testing import (
@@ -24,18 +24,12 @@ from genkit._ai._testing import (
 )
 from genkit._ai._tools import Interrupt, ToolRunContext, define_tool
 from genkit._core._error import GenkitError
-from genkit._core._model import GenerateActionOptions, ModelRequest
+from genkit._core._model import GenerateActionOptions, ModelRequest, Resume
 from genkit._core._registry import Registry
 from genkit._core._typing import (
-    DocumentPart,
     FinishReason,
-    Part,
-    Resume,
     Role,
-    TextPart,
     ToolRequest,
-    ToolRequestPart,
-    ToolResponsePart,
 )
 from genkit.middleware import (
     BaseMiddleware,
@@ -95,7 +89,7 @@ async def test_simple_text_generate_request(
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='bye'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('bye')]),
         )
     )
 
@@ -106,13 +100,93 @@ async def test_simple_text_generate_request(
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
         ),
     )
 
     assert response.text == 'bye'
+
+
+@pytest.mark.asyncio
+async def test_generate_user_from_text_model_from_text_reads_without_root(
+    setup_test: tuple[Genkit, ProgrammableModel],
+) -> None:
+    ai, pm = setup_test
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('hello')]),
+        )
+    )
+
+    response = await ai.generate(
+        model='programmableModel',
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+    )
+
+    assert response.message is not None
+    assert response.message.content[0].text == 'hello'
+    assert response.message.content[0].media is None
+
+
+@pytest.mark.asyncio
+async def test_generate_user_text_and_media_model_sees_both_parts(
+    setup_test: tuple[Genkit, ProgrammableModel],
+) -> None:
+    ai, pm = setup_test
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
+        )
+    )
+
+    await ai.generate(
+        model='programmableModel',
+        messages=[
+            Message(
+                role=Role.USER,
+                content=[
+                    Part.from_text('caption'),
+                    Part.from_media('https://example.com/x.png'),
+                ],
+            )
+        ],
+    )
+
+    assert pm.last_request is not None
+    parts = pm.last_request.messages[0].content
+    assert parts[0].text == 'caption'
+    assert parts[1].media is not None
+    assert parts[1].media.url == 'https://example.com/x.png'
+    assert parts[1].text is None
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_chunk_text_from_factory_part(
+    setup_test: tuple[Genkit, ProgrammableModel],
+) -> None:
+    ai, pm = setup_test
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('hi')]),
+        )
+    )
+    pm.chunks = [
+        [
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('h')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('i')]),
+        ],
+    ]
+
+    stream_result = ai.generate_stream(model='programmableModel', prompt='do it')
+    texts: list[str] = []
+    async for chunk in stream_result.stream:
+        texts.append(chunk.text)
+    assert texts == ['h', 'i']
 
 
 @pytest.mark.asyncio
@@ -125,7 +199,7 @@ async def test_simulates_doc_grounding(
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='bye'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('bye')]),
         )
     )
 
@@ -136,22 +210,20 @@ async def test_simulates_doc_grounding(
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
-            docs=[Document(content=[DocumentPart(TextPart(text='doc content 1'))])],
+            docs=[Document(content=[Part.from_text('doc content 1')])],
         ),
     )
 
     grounded_msg = Message(
         role=Role.USER,
         content=[
-            Part(TextPart(text='hi')),
-            Part(
-                root=TextPart(
-                    text='\n\nUse the following information to complete your task:' + '\n\n- [0]: doc content 1\n\n',
-                    metadata={'purpose': 'context'},
-                )
+            Part.from_text('hi'),
+            Part.from_text(
+                '\n\nUse the following information to complete your task:' + '\n\n- [0]: doc content 1\n\n',
+                metadata={'purpose': 'context'},
             ),
         ],
     )
@@ -164,7 +236,7 @@ async def test_simulates_doc_grounding(
     # docs ride along as structured data, not inlined into the message.
     assert response.request is not None
     assert response.request.messages is not None
-    assert response.request.messages[0] == Message(role=Role.USER, content=[Part(TextPart(text='hi'))])
+    assert response.request.messages[0] == Message(role=Role.USER, content=[Part.from_text('hi')])
     assert response.request.docs is not None
 
 
@@ -177,7 +249,7 @@ def test_augment_with_context_ignores_no_docs() -> None:
     """No docs -> request returned unchanged (same object identity)."""
     req = ModelRequest(
         messages=[
-            Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))]),
+            Message(role=Role.USER, content=[Part.from_text('hi')]),
         ],
     )
 
@@ -190,11 +262,11 @@ def test_augment_with_context_adds_docs_as_context() -> None:
     """Docs are injected as a context-purpose part appended to the last user message."""
     req = ModelRequest(
         messages=[
-            Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))]),
+            Message(role=Role.USER, content=[Part.from_text('hi')]),
         ],
         docs=[
-            Document(content=[DocumentPart(root=TextPart(text='doc content 1'))]),
-            Document(content=[DocumentPart(root=TextPart(text='doc content 2'))]),
+            Document(content=[Part.from_text('doc content 1')]),
+            Document(content=[Part.from_text('doc content 2')]),
         ],
     )
 
@@ -205,32 +277,30 @@ def test_augment_with_context_adds_docs_as_context() -> None:
             Message(
                 role=Role.USER,
                 content=[
-                    Part(root=TextPart(text='hi')),
-                    Part(
-                        root=TextPart(
-                            text='\n\nUse the following information to complete '
-                            + 'your task:\n\n'
-                            + '- [0]: doc content 1\n'
-                            + '- [1]: doc content 2\n\n',
-                            metadata={'purpose': 'context'},
-                        )
+                    Part.from_text('hi'),
+                    Part.from_text(
+                        '\n\nUse the following information to complete '
+                        + 'your task:\n\n'
+                        + '- [0]: doc content 1\n'
+                        + '- [1]: doc content 2\n\n',
+                        metadata={'purpose': 'context'},
                     ),
                 ],
             )
         ],
         docs=[
-            Document(content=[DocumentPart(root=TextPart(text='doc content 1'))]),
-            Document(content=[DocumentPart(root=TextPart(text='doc content 2'))]),
+            Document(content=[Part.from_text('doc content 1')]),
+            Document(content=[Part.from_text('doc content 2')]),
         ],
     )
 
 
 def test_augment_with_context_does_not_mutate_input() -> None:
     """Input request and its messages are not mutated; helper returns a deepcopy."""
-    original_user_msg = Message(role=Role.USER, content=[Part(root=TextPart(text='hi'))])
+    original_user_msg = Message(role=Role.USER, content=[Part.from_text('hi')])
     req = ModelRequest(
         messages=[original_user_msg],
-        docs=[Document(content=[DocumentPart(root=TextPart(text='doc content 1'))])],
+        docs=[Document(content=[Part.from_text('doc content 1')])],
     )
     original_content_len = len(original_user_msg.content)
 
@@ -254,18 +324,13 @@ def test_augment_with_context_skips_when_context_already_rendered() -> None:
             Message(
                 role=Role.USER,
                 content=[
-                    Part(
-                        root=TextPart(
-                            text='this is already context',
-                            metadata={'purpose': 'context'},
-                        )
-                    ),
-                    Part(root=TextPart(text='hi')),
+                    Part.from_text('this is already context', metadata={'purpose': 'context'}),
+                    Part.from_text('hi'),
                 ],
             ),
         ],
         docs=[
-            Document(content=[DocumentPart(root=TextPart(text='doc content 1'))]),
+            Document(content=[Part.from_text('doc content 1')]),
         ],
     )
 
@@ -286,18 +351,13 @@ def test_augment_with_context_with_purpose_part() -> None:
             Message(
                 role=Role.USER,
                 content=[
-                    Part(
-                        root=TextPart(
-                            text='insert context here',
-                            metadata={'purpose': 'context', 'pending': True},
-                        )
-                    ),
-                    Part(root=TextPart(text='hi')),
+                    Part.from_text('insert context here', metadata={'purpose': 'context', 'pending': True}),
+                    Part.from_text('hi'),
                 ],
             ),
         ],
         docs=[
-            Document(content=[DocumentPart(root=TextPart(text='doc content 1'))]),
+            Document(content=[Part.from_text('doc content 1')]),
         ],
     )
 
@@ -308,20 +368,18 @@ def test_augment_with_context_with_purpose_part() -> None:
             Message(
                 role=Role.USER,
                 content=[
-                    Part(
-                        root=TextPart(
-                            text='\n\nUse the following information to complete '
-                            + 'your task:\n\n'
-                            + '- [0]: doc content 1\n\n',
-                            metadata={'purpose': 'context'},
-                        )
+                    Part.from_text(
+                        '\n\nUse the following information to complete '
+                        + 'your task:\n\n'
+                        + '- [0]: doc content 1\n\n',
+                        metadata={'purpose': 'context'},
                     ),
-                    Part(root=TextPart(text='hi')),
+                    Part.from_text('hi'),
                 ],
             )
         ],
         docs=[
-            Document(content=[DocumentPart(root=TextPart(text='doc content 1'))]),
+            Document(content=[Part.from_text('doc content 1')]),
         ],
     )
 
@@ -351,7 +409,7 @@ class PreMiddleware(BaseMiddleware):
             ModelHookParams(
                 request=ModelRequest(
                     messages=[
-                        Message(role=Role.USER, content=[Part(TextPart(text=f'PRE {txt}'))]),
+                        Message(role=Role.USER, content=[Part.from_text(f'PRE {txt}')]),
                     ],
                 ),
             ),
@@ -372,7 +430,7 @@ class PostMiddleware(BaseMiddleware):
         txt = text_from_message(resp.message)
         return ModelResponse(
             finish_reason=resp.finish_reason,
-            message=Message(role=Role.USER, content=[Part(TextPart(text=f'{txt} POST'))]),
+            message=Message(role=Role.USER, content=[Part.from_text(f'{txt} POST')]),
         )
 
 
@@ -442,7 +500,7 @@ class ConfiguredPrefixMiddleware(BaseMiddleware[_PrefixConfig]):
             ModelHookParams(
                 request=ModelRequest(
                     messages=[
-                        Message(role=Role.USER, content=[Part(TextPart(text=f'{self.config.prefix} {txt}'))]),
+                        Message(role=Role.USER, content=[Part.from_text(f'{self.config.prefix} {txt}')]),
                     ],
                 ),
             ),
@@ -518,7 +576,7 @@ async def test_ai_middleware_decorator_registers_on_the_app() -> None:
                 ModelHookParams(
                     request=ModelRequest(
                         messages=[
-                            Message(role=Role.USER, content=[Part(TextPart(text=f'{self.config.prefix} {txt}'))]),
+                            Message(role=Role.USER, content=[Part.from_text(f'{self.config.prefix} {txt}')]),
                         ],
                     ),
                 ),
@@ -612,7 +670,7 @@ async def test_util_generate_action_runs_use_middleware() -> None:
     action_response = await action.run(
         GenerateActionOptions(
             model='echoModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             use=[MiddlewareRef(name='configured_prefix_mw', config={'prefix': '[DEV-UI]'})],
         ),
     )
@@ -716,7 +774,7 @@ async def test_generate_applies_middleware() -> None:
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
             use=[MiddlewareRef(name='pre_mw'), MiddlewareRef(name='post_mw')],
@@ -739,7 +797,7 @@ async def test_generate_middleware_next_fn_args_optional() -> None:
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
             use=[MiddlewareRef(name='post_mw')],
@@ -776,7 +834,7 @@ class InjectContextMiddleware(BaseMiddleware):
                     messages=[
                         Message(
                             role=Role.USER,
-                            content=[Part(TextPart(text=f'{txt} {ctx.custom_context}'))],
+                            content=[Part.from_text(f'{txt} {ctx.custom_context}')],
                         ),
                     ],
                 ),
@@ -805,7 +863,7 @@ async def test_generate_middleware_can_modify_context() -> None:
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
             use=[MiddlewareRef(name='add_ctx'), MiddlewareRef(name='inject_ctx')],
@@ -833,7 +891,7 @@ async def test_generate_middleware_can_modify_stream() -> None:
                 ctx.send_chunk(
                     ModelResponseChunk(
                         role=Role.MODEL,
-                        content=[Part(TextPart(text='something extra before'))],
+                        content=[Part.from_text('something extra before')],
                     )
                 )
 
@@ -844,7 +902,7 @@ async def test_generate_middleware_can_modify_stream() -> None:
                     downstream(
                         ModelResponseChunk(
                             role=Role.MODEL,
-                            content=[Part(TextPart(text=f'intercepted: {text_from_content(chunk.content)}'))],
+                            content=[Part.from_text(f'intercepted: {text_from_content(chunk.content)}')],
                         )
                     )
 
@@ -855,7 +913,7 @@ async def test_generate_middleware_can_modify_stream() -> None:
                 ctx.send_chunk(
                     ModelResponseChunk(
                         role=Role.MODEL,
-                        content=[Part(TextPart(text='something extra after'))],
+                        content=[Part.from_text('something extra after')],
                     )
                 )
             return resp
@@ -865,14 +923,14 @@ async def test_generate_middleware_can_modify_stream() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='bye'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('bye')]),
         )
     )
     pm.chunks = [
         [
-            ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='1'))]),
-            ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='2'))]),
-            ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='3'))]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('1')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('2')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('3')]),
         ]
     ]
 
@@ -888,7 +946,7 @@ async def test_generate_middleware_can_modify_stream() -> None:
             messages=[
                 Message(
                     role=Role.USER,
-                    content=[Part(TextPart(text='hi'))],
+                    content=[Part.from_text('hi')],
                 ),
             ],
             use=[MiddlewareRef(name='mod_stream_mw')],
@@ -937,7 +995,7 @@ async def test_stream_interception_chains_across_model_and_generate_hooks() -> N
                     downstream(
                         ModelResponseChunk(
                             role=Role.MODEL,
-                            content=[Part(TextPart(text=text.upper()))],
+                            content=[Part.from_text(text.upper())],
                         )
                     )
 
@@ -961,7 +1019,7 @@ async def test_stream_interception_chains_across_model_and_generate_hooks() -> N
                     downstream(
                         ModelResponseChunk(
                             role=Role.MODEL,
-                            content=[Part(TextPart(text=f'[{text}]'))],
+                            content=[Part.from_text(f'[{text}]')],
                         )
                     )
 
@@ -976,7 +1034,7 @@ async def test_stream_interception_chains_across_model_and_generate_hooks() -> N
                 finish_reason=resp.finish_reason,
                 message=Message(
                     role=Role.MODEL,
-                    content=[Part(TextPart(text=f'modified_result: {original_text}'))],
+                    content=[Part.from_text(f'modified_result: {original_text}')],
                 ),
             )
 
@@ -985,13 +1043,13 @@ async def test_stream_interception_chains_across_model_and_generate_hooks() -> N
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='chunk1chunk2'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('chunk1chunk2')]),
         )
     )
     pm.chunks = [
         [
-            ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='chunk1'))]),
-            ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='chunk2'))]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('chunk1')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('chunk2')]),
         ]
     ]
 
@@ -1005,7 +1063,7 @@ async def test_stream_interception_chains_across_model_and_generate_hooks() -> N
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='test streaming mw'))]),
+                Message(role=Role.USER, content=[Part.from_text('test streaming mw')]),
             ],
             use=[MiddlewareRef(name='chain_stream_mw')],
         ),
@@ -1081,14 +1139,14 @@ async def test_wrap_generate_called_per_turn() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
     response = await generate_action(
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             use=[MiddlewareRef(name='track_gen')],
         ),
     )
@@ -1100,21 +1158,21 @@ async def test_wrap_generate_called_per_turn() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='testTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='testTool', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='final'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('final')]),
         )
     )
     response2 = await generate_action(
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['testTool'],
             use=[MiddlewareRef(name='track_gen2')],
         ),
@@ -1135,7 +1193,9 @@ async def test_wrap_tool_called_on_tool_execution() -> None:
             ctx: GenerateMiddlewareContext,
             next_fn: Callable[[ToolHookParams, GenerateMiddlewareContext], Awaitable[MultipartToolResponse]],
         ) -> MultipartToolResponse:
-            tool_names.append(params.tool_request_part.tool_request.name)
+            tool_req = params.tool_request_part.tool_request
+            assert tool_req is not None
+            tool_names.append(tool_req.name)
             return await next_fn(params, ctx)
 
     class ToolTrackerPlugin(MiddlewarePlugin):
@@ -1155,14 +1215,14 @@ async def test_wrap_tool_called_on_tool_execution() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='myTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='myTool', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
 
@@ -1170,13 +1230,37 @@ async def test_wrap_tool_called_on_tool_execution() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['myTool'],
             use=[MiddlewareRef(name='track_tool')],
         ),
     )
     assert response.text == 'done'
     assert tool_names == ['myTool']
+
+
+def test_wrap_tool_params_from_tool_request() -> None:
+    scratch = Registry()
+
+    async def fn() -> str:
+        return ''
+
+    tool = define_tool(scratch, fn, name='lookup').action()
+    params = ToolHookParams(tool_request_part=Part.from_tool_request(name='lookup'), tool=tool)
+    assert params.tool_request_part.tool_request is not None
+    assert params.tool_request_part.tool_request.name == 'lookup'
+    assert params.tool_request_part.text is None
+
+
+def test_wrap_tool_params_text_part_raises() -> None:
+    scratch = Registry()
+
+    async def fn() -> str:
+        return ''
+
+    tool = define_tool(scratch, fn, name='lookup').action()
+    with pytest.raises(ValidationError, match='tool request'):
+        ToolHookParams(tool_request_part=Part.from_text('hi'), tool=tool)
 
 
 @pytest.mark.asyncio
@@ -1196,14 +1280,14 @@ async def test_generate_context_reaches_tool_run() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
 
@@ -1211,7 +1295,7 @@ async def test_generate_context_reaches_tool_run() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['ctxTool'],
         ),
         context={'user_id': 'u-123'},
@@ -1233,20 +1317,16 @@ async def test_generate_resume_context_reaches_tool_run() -> None:
         seen.append(dict(ctx.context))
         return 'resumed_value'
 
-    intr_trp = ToolRequestPart(
-        tool_request=ToolRequest(name='ctx_res_tool', ref='ref-abc', input={}),
-        metadata={'interrupt': True},
-    )
-    restart_trp = ToolRequestPart(
-        tool_request=ToolRequest(name='ctx_res_tool', ref='ref-abc', input={'approved': True}),
-        metadata={'resumed': True},
+    intr_trp = Part.from_tool_request(name='ctx_res_tool', ref='ref-abc', input={}, metadata={'interrupt': True})
+    restart_trp = Part.from_tool_request(
+        name='ctx_res_tool', ref='ref-abc', input={'approved': True}, metadata={'resumed': True}
     )
 
     pm, _ = define_programmable_model(ai)
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='all done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('all done')]),
         )
     )
 
@@ -1255,8 +1335,8 @@ async def test_generate_resume_context_reaches_tool_run() -> None:
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='hi'))]),
-                Message(role=Role.MODEL, content=[Part(root=intr_trp)]),
+                Message(role=Role.USER, content=[Part.from_text('hi')]),
+                Message(role=Role.MODEL, content=[intr_trp]),
             ],
             tools=['ctx_res_tool'],
             resume=Resume(restart=[restart_trp]),
@@ -1297,14 +1377,14 @@ async def test_wrap_tool_middleware_custom_context_reaches_tool_run() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
 
@@ -1312,7 +1392,7 @@ async def test_wrap_tool_middleware_custom_context_reaches_tool_run() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['ctxTool'],
             use=[MiddlewareRef(name='enrich_tool_ctx')],
         ),
@@ -1370,14 +1450,14 @@ async def test_wrap_tool_custom_context_visible_to_generate_and_model_on_next_tu
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='ctxTool', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
 
@@ -1386,7 +1466,7 @@ async def test_wrap_tool_custom_context_visible_to_generate_and_model_on_next_tu
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['ctxTool'],
             use=[MiddlewareRef(name='enrich_and_track')],
         ),
@@ -1437,7 +1517,7 @@ async def test_middleware_wrap_tool_interrupt_handled_as_interrupt_not_crash() -
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='blockedTool', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='blockedTool', input={}, ref='r1'))],
             ),
         )
     )
@@ -1446,7 +1526,7 @@ async def test_middleware_wrap_tool_interrupt_handled_as_interrupt_not_crash() -
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='do it'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('do it')])],
             tools=['blockedTool'],
             use=[MiddlewareRef(name='interrupt_all')],
         ),
@@ -1454,13 +1534,11 @@ async def test_middleware_wrap_tool_interrupt_handled_as_interrupt_not_crash() -
     assert response.finish_reason == FinishReason.INTERRUPTED
     assert response.message is not None
     interrupt_parts = [
-        p
-        for p in response.message.content
-        if isinstance(p.root, ToolRequestPart) and p.root.metadata and 'interrupt' in p.root.metadata
+        p for p in response.message.content if p.tool_request is not None and p.metadata and 'interrupt' in p.metadata
     ]
     assert len(interrupt_parts) == 1
-    assert interrupt_parts[0].root.metadata is not None
-    assert interrupt_parts[0].root.metadata['interrupt'] == {'blocked': True}
+    assert interrupt_parts[0].metadata is not None
+    assert interrupt_parts[0].metadata['interrupt'] == {'blocked': True}
 
 
 @pytest.mark.asyncio
@@ -1496,9 +1574,7 @@ async def test_middleware_contributed_tools_available_to_model() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[
-                    Part(root=ToolRequestPart(tool_request=ToolRequest(name='middleware_tool', input={}, ref='r1')))
-                ],
+                content=[Part(tool_request=ToolRequest(name='middleware_tool', input={}, ref='r1'))],
             ),
         )
     )
@@ -1506,7 +1582,7 @@ async def test_middleware_contributed_tools_available_to_model() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
         )
     )
 
@@ -1514,7 +1590,7 @@ async def test_middleware_contributed_tools_available_to_model() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             use=[MiddlewareRef(name='tool_provider_mw')],
         ),
     )
@@ -1581,7 +1657,7 @@ async def test_middleware_in_one_call_share_an_isolated_registry() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='ok'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
         )
     )
 
@@ -1589,7 +1665,7 @@ async def test_middleware_in_one_call_share_an_isolated_registry() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             use=[
                 MiddlewareRef(name='provider_mw'),
                 MiddlewareRef(name='looker_mw'),
@@ -1654,7 +1730,7 @@ async def test_queue_drain_streams_each_message_at_one_index() -> None:
             next_fn: Callable[[ToolHookParams, GenerateMiddlewareContext], Awaitable[MultipartToolResponse]],
         ) -> MultipartToolResponse:
             result = await next_fn(params, ctx)
-            self._queued.append(Message(role=Role.USER, content=[Part(TextPart(text='extra-context'))]))
+            self._queued.append(Message(role=Role.USER, content=[Part.from_text('extra-context')]))
             return result
 
     pm, _ = define_programmable_model(ai)
@@ -1667,14 +1743,14 @@ async def test_queue_drain_streams_each_message_at_one_index() -> None:
         ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name='trigger', input={}, ref='r1')))],
+                content=[Part(tool_request=ToolRequest(name='trigger', input={}, ref='r1'))],
             ),
         )
     )
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='final'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('final')]),
         )
     )
 
@@ -1683,7 +1759,7 @@ async def test_queue_drain_streams_each_message_at_one_index() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='go'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('go')])],
             tools=['trigger'],
             use=[MiddlewareRef(name='enqueuing_mw')],
         ),
@@ -1731,29 +1807,31 @@ async def test_restart_path_routes_through_wrap_tool_middleware() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='final'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('final')]),
         )
     )
 
-    interrupt_part = ToolRequestPart(
-        tool_request=ToolRequest(name='approveMe', input={}, ref='r1'),
-        metadata={'interrupt': True},
-    )
+    interrupt_part = Part.from_tool_request(name='approveMe', input={}, ref='r1', metadata={'interrupt': True})
 
     response = await generate_action(
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='do it'))]),
-                Message(role=Role.MODEL, content=[Part(root=interrupt_part)]),
+                Message(role=Role.USER, content=[Part.from_text('do it')]),
+                Message(
+                    role=Role.MODEL,
+                    content=[interrupt_part],
+                ),
             ],
             tools=['approveMe'],
             use=[MiddlewareRef(name='recording_mw')],
             resume=Resume(
                 restart=[
-                    ToolRequestPart(
-                        tool_request=ToolRequest(name='approveMe', input={}, ref='r1'),
+                    Part.from_tool_request(
+                        name='approveMe',
+                        input={},
+                        ref='r1',
                         metadata={'resumed': {'tool_approved': True}},
                     )
                 ],
@@ -1793,10 +1871,7 @@ async def test_restart_reinterrupt_surfaces_underlying_reason() -> None:
     async def sensitive_tool() -> str:
         return 'done'
 
-    interrupt_part = ToolRequestPart(
-        tool_request=ToolRequest(name='sensitiveTool', input={}, ref='r1'),
-        metadata={'interrupt': True},
-    )
+    interrupt_part = Part.from_tool_request(name='sensitiveTool', input={}, ref='r1', metadata={'interrupt': True})
 
     with pytest.raises(GenkitError) as ei:
         await generate_action(
@@ -1804,18 +1879,18 @@ async def test_restart_reinterrupt_surfaces_underlying_reason() -> None:
             GenerateActionOptions(
                 model='programmableModel',
                 messages=[
-                    Message(role=Role.USER, content=[Part(TextPart(text='do it'))]),
-                    Message(role=Role.MODEL, content=[Part(root=interrupt_part)]),
+                    Message(role=Role.USER, content=[Part.from_text('do it')]),
+                    Message(
+                        role=Role.MODEL,
+                        content=[interrupt_part],
+                    ),
                 ],
                 tools=['sensitiveTool'],
                 use=[MiddlewareRef(name='approval_mw')],
                 resume=Resume(
                     # Restart without toolApproved — middleware re-interrupts.
                     restart=[
-                        ToolRequestPart(
-                            tool_request=ToolRequest(name='sensitiveTool', input={}, ref='r1'),
-                            metadata={'resumed': True},
-                        )
+                        Part.from_tool_request(name='sensitiveTool', input={}, ref='r1', metadata={'resumed': True})
                     ],
                 ),
             ),
@@ -1852,22 +1927,10 @@ async def test_parallel_tool_requests_all_complete() -> None:
             message=Message(
                 role=Role.MODEL,
                 content=[
-                    Part(TextPart(text='call three')),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_a', ref='ref-a', input={}),
-                        )
-                    ),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_b', ref='ref-b', input={}),
-                        )
-                    ),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_c', ref='ref-c', input={}),
-                        )
-                    ),
+                    Part.from_text('call three'),
+                    Part(tool_request=ToolRequest(name='tool_a', ref='ref-a', input={})),
+                    Part(tool_request=ToolRequest(name='tool_b', ref='ref-b', input={})),
+                    Part(tool_request=ToolRequest(name='tool_c', ref='ref-c', input={})),
                 ],
             ),
         )
@@ -1875,7 +1938,7 @@ async def test_parallel_tool_requests_all_complete() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='after_tools'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('after_tools')]),
         )
     )
 
@@ -1884,7 +1947,7 @@ async def test_parallel_tool_requests_all_complete() -> None:
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='hi'))]),
+                Message(role=Role.USER, content=[Part.from_text('hi')]),
             ],
             tools=['tool_a', 'tool_b', 'tool_c'],
         ),
@@ -1915,11 +1978,7 @@ async def test_generate_inline_tool_without_root_registration() -> None:
             message=Message(
                 role=Role.MODEL,
                 content=[
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='inline_yell', ref='ref-y', input={}),
-                        )
-                    ),
+                    Part(tool_request=ToolRequest(name='inline_yell', ref='ref-y', input={})),
                 ],
             ),
         )
@@ -1927,7 +1986,7 @@ async def test_generate_inline_tool_without_root_registration() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='after_inline'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('after_inline')]),
         )
     )
 
@@ -1966,22 +2025,10 @@ async def test_parallel_tool_requests_one_interrupt_keeps_pending_output_for_oth
             message=Message(
                 role=Role.MODEL,
                 content=[
-                    Part(TextPart(text='call three')),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_a', ref='ref-a', input={}),
-                        )
-                    ),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_b', ref='ref-b', input={}),
-                        )
-                    ),
-                    Part(
-                        root=ToolRequestPart(
-                            tool_request=ToolRequest(name='tool_c', ref='ref-c', input={}),
-                        )
-                    ),
+                    Part.from_text('call three'),
+                    Part(tool_request=ToolRequest(name='tool_a', ref='ref-a', input={})),
+                    Part(tool_request=ToolRequest(name='tool_b', ref='ref-b', input={})),
+                    Part(tool_request=ToolRequest(name='tool_c', ref='ref-c', input={})),
                 ],
             ),
         )
@@ -1992,7 +2039,7 @@ async def test_parallel_tool_requests_one_interrupt_keeps_pending_output_for_oth
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='hi'))]),
+                Message(role=Role.USER, content=[Part.from_text('hi')]),
             ],
             tools=['tool_a', 'tool_b', 'tool_c'],
         ),
@@ -2002,16 +2049,13 @@ async def test_parallel_tool_requests_one_interrupt_keeps_pending_output_for_oth
     assert response.message is not None
     parts = response.message.content
     assert len(parts) == 4
-    assert parts[0].root == TextPart(text='call three')
-    a_root = parts[1].root
-    b_root = parts[2].root
-    c_root = parts[3].root
-    assert isinstance(a_root, ToolRequestPart)
-    assert isinstance(b_root, ToolRequestPart)
-    assert isinstance(c_root, ToolRequestPart)
-    assert a_root.metadata and a_root.metadata.get('pendingOutput') == 'a_ok'
-    assert b_root.metadata and b_root.metadata.get('interrupt') == {'stop': True}
-    assert c_root.metadata and c_root.metadata.get('pendingOutput') == 'c_ok'
+    assert parts[0].text == 'call three'
+    assert parts[1].tool_request is not None
+    assert parts[2].tool_request is not None
+    assert parts[3].tool_request is not None
+    assert parts[1].metadata and parts[1].metadata.get('pendingOutput') == 'a_ok'
+    assert parts[2].metadata and parts[2].metadata.get('interrupt') == {'stop': True}
+    assert parts[3].metadata and parts[3].metadata.get('pendingOutput') == 'c_ok'
 
 
 @pytest.mark.asyncio
@@ -2028,7 +2072,7 @@ async def test_generate_and_model_middleware_execution_order() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='response'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('response')]),
         )
     )
 
@@ -2064,7 +2108,7 @@ async def test_generate_and_model_middleware_execution_order() -> None:
         execution_order.append('modelExecution')
         return ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='response'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('response')]),
         )
 
     pm.response_cb = model_side_effect
@@ -2072,7 +2116,7 @@ async def test_generate_and_model_middleware_execution_order() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             use=[MiddlewareRef(name='order_mw')],
         ),
     )
@@ -2115,14 +2159,12 @@ async def test_generate_model_tool_middleware_ordering_across_turns() -> None:
             return ModelResponse(
                 message=Message(
                     role=Role.MODEL,
-                    content=[
-                        Part(root=ToolRequestPart(tool_request=ToolRequest(name='orderTool', input={}, ref='r1')))
-                    ],
+                    content=[Part(tool_request=ToolRequest(name='orderTool', input={}, ref='r1'))],
                 ),
             )
         return ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='final response'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('final response')]),
         )
 
     pm.response_cb = model_side_effect
@@ -2171,7 +2213,7 @@ async def test_generate_model_tool_middleware_ordering_across_turns() -> None:
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
-            messages=[Message(role=Role.USER, content=[Part(TextPart(text='hi'))])],
+            messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
             tools=['orderTool'],
             use=[MiddlewareRef(name='full_order_mw')],
         ),
@@ -2222,31 +2264,29 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
     pm.responses.append(
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(TextPart(text='done after restart'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('done after restart')]),
         )
     )
 
     # Simulate: model previously called injectedTool, it was interrupted,
     # now we resume with restart.
-    interrupt_part = ToolRequestPart(
-        tool_request=ToolRequest(name='injectedTool', input={}, ref='r1'),
-        metadata={'interrupt': True},
-    )
+    interrupt_part = Part.from_tool_request(name='injectedTool', input={}, ref='r1', metadata={'interrupt': True})
 
     response = await generate_action(
         ai.registry,
         GenerateActionOptions(
             model='programmableModel',
             messages=[
-                Message(role=Role.USER, content=[Part(TextPart(text='do it'))]),
-                Message(role=Role.MODEL, content=[Part(root=interrupt_part)]),
+                Message(role=Role.USER, content=[Part.from_text('do it')]),
+                Message(
+                    role=Role.MODEL,
+                    content=[interrupt_part],
+                ),
             ],
             use=[MiddlewareRef(name='tool_injector_mw')],
             resume=Resume(
                 restart=[
-                    ToolRequestPart(
-                        tool_request=ToolRequest(name='injectedTool', input={}, ref='r1'),
-                    )
+                    Part.from_tool_request(name='injectedTool', input={}, ref='r1'),
                 ],
             ),
         ),
@@ -2371,7 +2411,7 @@ def clean_schema(d: object) -> object:
 def test_chunk_accumulator_make_kwargs_only() -> None:
     """``ChunkAccumulator.make`` requires keyword-only arguments."""
     acc = ChunkAccumulator(message_index=0, formatter=None)
-    raw_chunk = ModelResponseChunk(role=Role.MODEL, content=[Part(TextPart(text='hi'))])
+    raw_chunk = ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('hi')])
 
     with pytest.raises(TypeError):
         acc.make(Role.MODEL, raw_chunk)  # type: ignore[misc]
@@ -2455,7 +2495,7 @@ async def test_generate_returns_on_blocked_finish() -> None:
         ModelResponse(
             finish_reason=FinishReason.BLOCKED,
             finish_message='safety',
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='nope'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('nope')]),
         )
     ]
 
@@ -2501,7 +2541,7 @@ async def test_generate_aborted_with_content_preserves_terminal_message() -> Non
         ModelResponse(
             finish_reason=FinishReason.ABORTED,
             finish_message='interrupted by provider',
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='partial text'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('partial text')]),
         )
     ]
 
@@ -2549,7 +2589,7 @@ async def test_generate_schema_failure_preserves_history() -> None:
     pm.responses = [
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='not json'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('not json')]),
         )
     ]
 
@@ -2590,7 +2630,7 @@ async def test_generate_blocked_after_tool_turn_keeps_prior_history() -> None:
     assert response.finish_message == 'safety'
     assert response.message is None
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL]
-    assert response.messages[1].tool_requests[0].tool_request.ref == 'r1'
+    assert _tool_request(response.messages[1]).ref == 'r1'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1].role == Role.TOOL
 
@@ -2610,7 +2650,7 @@ async def test_generate_blocked_with_content_after_tool_turn_preserves_refusal()
         ModelResponse(
             finish_reason=FinishReason.BLOCKED,
             finish_message='safety',
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='cannot continue'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('cannot continue')]),
         ),
     ]
 
@@ -2622,7 +2662,7 @@ async def test_generate_blocked_with_content_after_tool_turn_preserves_refusal()
     assert response.message is not None
     assert response.message.text == 'cannot continue'
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL, Role.MODEL]
-    assert response.messages[1].tool_requests[0].tool_request.ref == 'r1'
+    assert _tool_request(response.messages[1]).ref == 'r1'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1] == response.message
 
@@ -2632,14 +2672,20 @@ def _model_calls_tool(*, name: str, ref: str) -> ModelResponse:
         finish_reason=FinishReason.STOP,
         message=Message(
             role=Role.MODEL,
-            content=[Part(root=ToolRequestPart(tool_request=ToolRequest(name=name, input={}, ref=ref)))],
+            content=[Part(tool_request=ToolRequest(name=name, input={}, ref=ref))],
         ),
     )
 
 
+def _tool_request(message: Message) -> ToolRequest:
+    assert message.tool_requests
+    req = message.tool_requests[0].tool_request
+    assert req is not None
+    return req
+
+
 def _tool_output(message: Message) -> object:
-    part = message.content[0].root
-    assert isinstance(part, ToolResponsePart)
+    part = message.content[0]
     assert part.tool_response is not None
     return part.tool_response.output
 
@@ -2658,7 +2704,7 @@ async def test_generate_successful_tool_turn_preserves_full_history() -> None:
         _model_calls_tool(name='lookup', ref='r1'),
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='the weather is 72F'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('the weather is 72F')]),
         ),
     ]
 
@@ -2670,7 +2716,7 @@ async def test_generate_successful_tool_turn_preserves_full_history() -> None:
     assert response.message.text == 'the weather is 72F'
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL, Role.MODEL]
     assert response.messages[0].text == 'weather?'
-    assert response.messages[1].tool_requests[0].tool_request.name == 'lookup'
+    assert _tool_request(response.messages[1]).name == 'lookup'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1] == response.message
 
@@ -2694,7 +2740,7 @@ async def test_generate_completes_within_max_turns_and_preserves_all_rounds() ->
         _model_calls_tool(name='step_two', ref='r2'),
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='all finished'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('all finished')]),
         ),
     ]
 
@@ -2712,9 +2758,9 @@ async def test_generate_completes_within_max_turns_and_preserves_all_rounds() ->
         Role.MODEL,
     ]
     assert response.messages[0].text == 'run both'
-    assert response.messages[1].tool_requests[0].tool_request.name == 'step_one'
+    assert _tool_request(response.messages[1]).name == 'step_one'
     assert _tool_output(response.messages[2]) == 'done 1'
-    assert response.messages[3].tool_requests[0].tool_request.name == 'step_two'
+    assert _tool_request(response.messages[3]).name == 'step_two'
     assert _tool_output(response.messages[4]) == 'done 2'
     assert response.messages[-1] == response.message
 
@@ -2736,7 +2782,7 @@ async def test_generate_schema_failure_after_tool_turn_preserves_history() -> No
         _model_calls_tool(name='lookup', ref='r1'),
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='not json'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('not json')]),
         ),
     ]
 
@@ -2753,7 +2799,7 @@ async def test_generate_schema_failure_after_tool_turn_preserves_history() -> No
     assert response.message is not None
     assert response.message.text == 'not json'
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL, Role.MODEL]
-    assert response.messages[1].tool_requests[0].tool_request.name == 'lookup'
+    assert _tool_request(response.messages[1]).name == 'lookup'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1] == response.message
 
@@ -2780,7 +2826,7 @@ async def test_max_turns_after_tool_turn_drops_unanswered_request() -> None:
     assert 'maximum tool call iterations' in response.finish_message
     assert response.message is None
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL]
-    assert response.messages[1].tool_requests[0].tool_request.ref == 'r1'
+    assert _tool_request(response.messages[1]).ref == 'r1'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1].role == Role.TOOL
 
@@ -2806,7 +2852,7 @@ async def test_unknown_tool_after_tool_turn_drops_unanswered_request() -> None:
     assert response.finish_message == 'Tool ghost not found'
     assert response.message is None
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL]
-    assert response.messages[1].tool_requests[0].tool_request.ref == 'r1'
+    assert _tool_request(response.messages[1]).ref == 'r1'
     assert _tool_output(response.messages[2]) == '72F'
     assert response.messages[-1].role == Role.TOOL
 
@@ -2823,7 +2869,7 @@ async def test_generate_returns_typed_output_when_schema_matches() -> None:
     pm.responses = [
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='{"title": "Soup"}'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('{"title": "Soup"}')]),
         )
     ]
 
@@ -2840,7 +2886,7 @@ async def test_generate_enum_off_list_is_error_finish() -> None:
     pm.responses = [
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='MAYBE'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('MAYBE')]),
         )
     ]
 
@@ -2862,7 +2908,7 @@ async def test_generate_array_of_scalars() -> None:
     pm.responses = [
         ModelResponse(
             finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part(root=TextPart(text='["a", "b"]'))]),
+            message=Message(role=Role.MODEL, content=[Part.from_text('["a", "b"]')]),
         )
     ]
 

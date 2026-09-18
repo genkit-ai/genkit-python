@@ -51,7 +51,7 @@ from genkit_google_genai.models.gemini import (
 from genkit_google_genai.models.imagen import ImagenConfigSchema
 from genkit_google_genai.models.veo import VeoConfig, VeoModel
 
-from genkit import ActionKind, Genkit, GenkitError, Message, ModelRequest, Part, Role, TextPart
+from genkit import ActionKind, Genkit, GenkitError, Message, ModelRequest, Part, Role
 from genkit.model import Operation
 from genkit.plugin_api import Action, to_json_schema
 
@@ -765,7 +765,7 @@ async def test_veo_start_stamps_background_action_key(mock_list_models: MagicMoc
     assert start is not None
     assert check is not None
 
-    request = ModelRequest(messages=[Message(role=Role.USER, content=[Part(root=TextPart(text='a clip'))])])
+    request = ModelRequest(messages=[Message(role=Role.USER, content=[Part.from_text('a clip')])])
     with patch.object(VeoModel, 'start', new=AsyncMock(return_value=Operation(id='ops/1'))):
         started = await start.run(request)
     assert started.response.action == '/background-model/vertexai/veo-3.0-generate-001'

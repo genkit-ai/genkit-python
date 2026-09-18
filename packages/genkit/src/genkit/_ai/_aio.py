@@ -104,7 +104,7 @@ from genkit._core._middleware import (
     GenerateMiddleware,
     _validate_middleware_key_segment,
 )
-from genkit._core._model import Document, ModelConfigDict, ModelRef, ModelRefConfigT
+from genkit._core._model import Document, EmbedRequest, ModelConfigDict, ModelRef, ModelRefConfigT, Part
 from genkit._core._plugin import Plugin
 from genkit._core._protocols import SessionLike
 from genkit._core._reflection import ReflectionServer, ServerSpec, create_reflection_asgi_app
@@ -114,16 +114,12 @@ from genkit._core._tracing import SpanMetadata, run_in_new_span
 from genkit._core._typing import (
     BaseDataPoint,
     Embedding,
-    EmbedRequest,
     EvalRequest,
     EvalResponse,
     MiddlewareRef,
     ModelInfo,
     Operation,
-    Part,
     ToolChoice,
-    ToolRequestPart,
-    ToolResponsePart,
 )
 
 from ._decorators import _FlowDecorator, _FlowDecoratorWithChunk
@@ -1015,8 +1011,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelConfigDict,
         max_turns: int | None = None,
@@ -1042,8 +1038,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1069,8 +1065,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelConfigDict,
         max_turns: int | None = None,
@@ -1096,8 +1092,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1121,8 +1117,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: BaseModel | ModelConfigDict | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1203,8 +1199,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelConfigDict,
         max_turns: int | None = None,
@@ -1231,8 +1227,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1259,8 +1255,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelConfigDict,
         max_turns: int | None = None,
@@ -1287,8 +1283,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1313,8 +1309,8 @@ class Genkit:
         tools: Sequence[str | Tool] | None = None,
         return_tool_requests: bool | None = None,
         tool_choice: ToolChoice | None = None,
-        resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-        resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         config: BaseModel | ModelConfigDict | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
@@ -1428,7 +1424,7 @@ class Genkit:
         response = (
             await embed_action.run(
                 EmbedRequest(
-                    input=documents,  # pyright: ignore[reportArgumentType]
+                    input=documents,
                     options=final_options,
                 )
             )

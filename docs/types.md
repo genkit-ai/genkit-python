@@ -20,7 +20,6 @@ Types exported from genkit, genkit.model, genkit.embedder, genkit.plugin_api, an
 
 ::: genkit.PromptGenerateOptions
 
-
 ::: genkit.ToolRunContext
 
 ::: genkit.StreamResponse
@@ -37,15 +36,7 @@ Types exported from genkit, genkit.model, genkit.embedder, genkit.plugin_api, an
 
 ::: genkit.Part
 
-::: genkit.TextPart
-
-::: genkit.MediaPart
-
 ::: genkit.Media
-
-::: genkit.CustomPart
-
-::: genkit.ReasoningPart
 
 ::: genkit.Role
 
@@ -53,19 +44,13 @@ Types exported from genkit, genkit.model, genkit.embedder, genkit.plugin_api, an
 
 ::: genkit.ToolRequest
 
-::: genkit.ToolRequestPart
-
 ::: genkit.ToolResponse
-
-::: genkit.ToolResponsePart
 
 ::: genkit.ToolDefinition
 
 ::: genkit.ToolChoice
 
 ::: genkit.Document
-
-::: genkit.DocumentPart
 
 ::: genkit.EmbedderRef
 

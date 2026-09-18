@@ -66,19 +66,21 @@ from genkit._core._channel import Channel
 from genkit._core._error import GenkitError
 from genkit._core._logger import get_logger
 from genkit._core._middleware import BaseMiddleware, middleware_class_index
-from genkit._core._model import Document, GenerateActionOptions, Message, OutputConfig
+from genkit._core._model import (
+    Document,
+    GenerateActionOptions,
+    Message,
+    OutputConfig,
+    Part,
+    resume_options_to_resume,
+)
 from genkit._core._registry import Registry
 from genkit._core._schema import to_json_schema
 from genkit._core._typing import (
     GenerateActionOutputConfig,
     MiddlewareRef,
-    Part,
-    Resume,
     Role,
-    TextPart,
     ToolChoice,
-    ToolRequestPart,
-    ToolResponsePart,
 )
 
 ModelStreamingCallback = StreamingCallback
@@ -101,36 +103,6 @@ class OutputOptions(TypedDict, total=False):
     constrained: bool | None
 
 
-def _normalize_resume_respond_parts(
-    value: ToolResponsePart | list[ToolResponsePart] | None,
-) -> list[ToolResponsePart] | None:
-    if value is None:
-        return None
-    return list(value) if isinstance(value, list) else [value]
-
-
-def _normalize_resume_restart_parts(
-    value: ToolRequestPart | list[ToolRequestPart] | None,
-) -> list[ToolRequestPart] | None:
-    if value is None:
-        return None
-    return list(value) if isinstance(value, list) else [value]
-
-
-def resume_options_to_resume(
-    *,
-    resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None,
-    resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None,
-    resume_metadata: dict[str, Any] | None = None,
-) -> Resume | None:
-    """Build wire Resume from flat keyword options (``generate`` / prompts)."""
-    respond = _normalize_resume_respond_parts(resume_respond)
-    restart = _normalize_resume_restart_parts(resume_restart)
-    if respond is None and restart is None and resume_metadata is None:
-        return None
-    return Resume(respond=respond, restart=restart, metadata=resume_metadata)
-
-
 class PromptGenerateOptions(TypedDict, total=False):
     """Runtime options for prompt execution (config, tools, messages, etc.)."""
 
@@ -142,8 +114,8 @@ class PromptGenerateOptions(TypedDict, total=False):
     resources: list[str] | None
     tool_choice: ToolChoice | None
     output: OutputOptions | None
-    resume_respond: ToolResponsePart | list[ToolResponsePart] | None
-    resume_restart: ToolRequestPart | list[ToolRequestPart] | None
+    resume_respond: Part | list[Part] | None
+    resume_restart: Part | list[Part] | None
     resume_metadata: dict[str, Any] | None
     return_tool_requests: bool | None
     max_turns: int | None
@@ -235,8 +207,8 @@ class PromptConfig(BaseModel):
     tool_choice: ToolChoice | None = None
     use: Sequence[BaseMiddleware | MiddlewareRef] | None = None
     docs: list[Document] | None = None
-    resume_respond: ToolResponsePart | list[ToolResponsePart] | None = None
-    resume_restart: ToolRequestPart | list[ToolRequestPart] | None = None
+    resume_respond: Part | list[Part] | None = None
+    resume_restart: Part | list[Part] | None = None
     resume_metadata: dict[str, Any] | None = None
     resources: list[str] | None = None
 
@@ -739,7 +711,6 @@ async def to_generate_request(registry: Registry, options: GenerateActionOptions
         constrained=options.output.constrained if options.output else None,
     )
     return ModelRequest(
-        # Field validators auto-wrap MessageData -> Message and DocumentData -> Document
         messages=options.messages,  # type: ignore[arg-type]
         config=options.config if options.config is not None else {},  # type: ignore[arg-type]
         docs=options.docs if options.docs else None,  # type: ignore[arg-type]
@@ -757,7 +728,7 @@ def _normalize_prompt_arg(
         return []
     if isinstance(prompt, str):
         # Part is a RootModel, so we pass content via 'root' parameter
-        return [Part(root=TextPart(text=prompt))]
+        return [Part.from_text(prompt)]
     elif isinstance(prompt, list):
         return prompt
     elif isinstance(prompt, Part):  # pyright: ignore[reportUnnecessaryIsInstance]

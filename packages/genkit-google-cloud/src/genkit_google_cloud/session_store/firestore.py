@@ -69,7 +69,7 @@ from genkit._ai._agents._session_stores._util import (
     session_id_of,
 )
 from genkit._ai._json_patch import apply_json_patch, diff_json
-from genkit._core._error import GenkitError
+from genkit._core._error import GenkitError, RuntimeErrorReason
 from genkit._core._loop_cache import _loop_local_client
 from genkit._core._model import SessionSnapshot, SessionState
 from genkit._core._typing import (
@@ -395,6 +395,29 @@ async def _translate_txn_errors(
         raise _to_genkit_error(e) from e
 
 
+def _illegal_doc_id_reason(name: str) -> RuntimeErrorReason | None:
+    if name == 'session_id':
+        return RuntimeErrorReason.INVALID_SESSION_ID
+    if name == 'snapshot_id':
+        return RuntimeErrorReason.INVALID_SNAPSHOT_ID
+    return None
+
+
+def _is_invalid_firestore_id(value: str | None) -> bool:
+    """Check if an id violates Firestore document path rules."""
+    if not value:
+        return True  # None or empty
+    if value != value.strip():
+        return True  # Leading, trailing, or whitespace-only
+    if '/' in value:
+        return True  # Slashes address subcollections instead of this document
+    if value in ('.', '..'):
+        return True  # Reserved relative path segments
+    if value.startswith('__') and value.endswith('__'):
+        return True  # Reserved dunder names (__id__, etc.)
+    return False
+
+
 def _validate_doc_id(value: str | None, name: str) -> None:
     """Reject ids that Firestore would treat as path structure, not a document id.
 
@@ -404,15 +427,21 @@ def _validate_doc_id(value: str | None, name: str) -> None:
     Leading or trailing whitespace is also rejected so save and get agree on
     what counts as a valid id. Validating up front turns these failure modes
     into a typed error.
+
+    A missing session_id (None) or an empty string is not a malformed id,
+    but rather a missing one.
     """
-    if (
-        not value
-        or value != value.strip()
-        or not value.strip()
-        or '/' in value
-        or value in ('.', '..')
-        or (value.startswith('__') and value.endswith('__'))
-    ):
+    if name == 'session_id':
+        if value is None:
+            return
+        if value == '':
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message="FirestoreSessionStore requires 'sessionId' on the snapshot.",
+                reason=RuntimeErrorReason.SESSION_ID_REQUIRED,
+            )
+
+    if _is_invalid_firestore_id(value):
         raise GenkitError(
             status='INVALID_ARGUMENT',
             message=(
@@ -420,6 +449,7 @@ def _validate_doc_id(value: str | None, name: str) -> None:
                 "must be a non-empty Firestore document id (no '/', not '.', '..', or "
                 '__reserved__, no leading/trailing whitespace).'
             ),
+            reason=_illegal_doc_id_reason(name),
         )
 
 
@@ -967,17 +997,21 @@ class FirestoreSessionStore(SessionStore[StateT], SnapshotSubscriber, Generic[St
                 raise _UserCodeError() from e
             if next_snapshot is None:
                 return None
-            _validate_doc_id(next_snapshot.session_id, 'session_id')
+            if next_snapshot.session_id is not None:
+                _validate_doc_id(next_snapshot.session_id, 'session_id')
             if next_snapshot.parent_id:
                 _validate_doc_id(next_snapshot.parent_id, 'parent_id')
 
             sid = next_snapshot.snapshot_id
             session_id = session_id_of(next_snapshot)
-            if not session_id:
+            if session_id is None:
                 raise GenkitError(
                     status='INVALID_ARGUMENT',
                     message="FirestoreSessionStore requires 'sessionId' on the snapshot.",
+                    reason=RuntimeErrorReason.SESSION_ID_REQUIRED,
                 )
+            if next_snapshot.session_id is None:
+                _validate_doc_id(session_id, 'session_id')
             assert sid is not None
 
             _pointer_ref = self._pointer_ref(session_id, prefix)

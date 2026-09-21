@@ -44,6 +44,7 @@ dependencies = [
   "genkit>=0.13.0,<2",
   "mcp>=1.26.0,<2",
   "pydantic>=2.10.5",
+  "starlette>=0.46.1",
 ]
 description = "Model Context Protocol for Genkit. Exposes MCP servers' tools as Genkit tools and serves Genkit tools over MCP."
 keywords = [

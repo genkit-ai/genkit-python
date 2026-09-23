@@ -144,7 +144,6 @@ class ActionKind(StrEnum):
     MODEL = 'model'
     PROMPT = 'prompt'
     RERANKER = 'reranker'
-    RESOURCE = 'resource'
     RETRIEVER = 'retriever'
     # Catalog key for tools. Action.run / Dev UI see the multipart envelope.
     TOOL = 'tool.v2'
@@ -458,8 +457,6 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             config_schema if isinstance(config_schema, type) and issubclass(config_schema, BaseModel) else None
         )
         self._span_metadata: dict[str, SpanAttributeValue] = span_metadata or {}
-        # Optional matcher function for resource actions
-        self.matches: Callable[[object], bool] | None = None
 
         # All action handlers must be async
         if not inspect.iscoroutinefunction(fn):

@@ -29,8 +29,7 @@ from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-from genkit.plugin_api import AdjustingTraceExporter, RedactedSpan
-
+from ._adjusting_exporter import AdjustingTraceExporter, RedactedSpan
 from .action import action_telemetry
 from .constants import (
     MIN_SPAN_DURATION_NS,
@@ -225,7 +224,6 @@ class GcpAdjustingTraceExporter(AdjustingTraceExporter):
                 features_telemetry.tick(span, self._log_input_and_output, self._project_id)
 
                 # Set root state explicitly
-                # (matches JS: span.attributes['genkit:rootState'] = span.attributes['genkit:state'])
                 state = attrs.get('genkit:state')
                 if state:
                     new_attrs = dict(attrs)

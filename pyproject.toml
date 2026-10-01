@@ -82,6 +82,7 @@ lint = [
   "grpcio-reflection>=1.68.0",
   "gunicorn>=22.0.0",
   "hypercorn>=0.17.0",
+  "opentelemetry-exporter-otlp>=1.29.0",
   "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
   "opentelemetry-instrumentation-asgi>=0.41b0",
   "opentelemetry-instrumentation-fastapi>=0.41b0",
@@ -156,6 +157,7 @@ google-genai-deep-research = { workspace = true }
 google-genai-media   = { workspace = true }
 middleware           = { workspace = true }
 ollama-sample        = { workspace = true }
+otel-jaeger          = { workspace = true }
 output-formats       = { workspace = true }
 prompts              = { workspace = true }
 tool-interrupts      = { workspace = true }

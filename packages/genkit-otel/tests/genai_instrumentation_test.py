@@ -16,19 +16,32 @@
 
 import asyncio
 from collections.abc import Mapping
+from typing import get_args
 
 import pytest
 from genkit_otel import GenAiInstrumentation
 from genkit_otel._gen_ai_attributes import (
+    CAPTURE_CONTENT_ENV_VAR,
+    GEN_AI_OPERATION_DETAILS_EVENT,
     GenAiAttr,
     GenkitAttr,
 )
+from opentelemetry._logs import LogRecord
 from opentelemetry.trace import StatusCode
 
 from genkit import FinishReason, Interrupt, Part, Role
 from genkit._core._model import OutputConfig
 from genkit.model import Candidate, Message, ModelRequest, ModelResponse, ModelUsage
 from genkit.telemetry import SpanMetadata, SpanNext
+
+
+def test_content_capturing_mode_is_on_the_package_door() -> None:
+    """from genkit_otel import gives GenAiInstrumentation and the ContentCapturingMode type."""
+    import genkit_otel
+    from genkit_otel import ContentCapturingMode
+
+    assert genkit_otel.__all__ == ['ContentCapturingMode', 'GenAiInstrumentation']
+    assert get_args(ContentCapturingMode) == ('NO_CONTENT', 'SPAN_ONLY', 'EVENT_ONLY', 'SPAN_AND_EVENT')
 
 
 def _model_request(
@@ -70,6 +83,22 @@ async def _run_model(
         SpanMetadata(name=name, action_type='model', input=input),
         fn,
     )
+
+
+def _event_names(harness) -> list[str | None]:
+    names: list[str | None] = []
+    for record in harness.logs.get_finished_logs():
+        inner = getattr(record, 'log_record', record)
+        names.append(getattr(inner, 'event_name', None))
+    return names
+
+
+def _operation_details_record(harness) -> LogRecord | None:
+    for record in harness.logs.get_finished_logs():
+        log_record = getattr(record, 'log_record', record)
+        if log_record.event_name == GEN_AI_OPERATION_DETAILS_EVENT:
+            return log_record
+    return None
 
 
 @pytest.mark.asyncio
@@ -167,6 +196,79 @@ async def test_does_not_capture_content_by_default(harness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_span_only_captures_content_on_span_not_event(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(
+            messages=[
+                Message(role=Role.SYSTEM, content=[Part.from_text('Be nice')]),
+                Message(role=Role.USER, content=[Part.from_text('hello')]),
+            ]
+        ),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    input_messages = harness.attr(span, GenAiAttr.INPUT_MESSAGES)
+    assert isinstance(input_messages, str)
+    assert 'hello' in input_messages
+    assert 'Be nice' in harness.attr(span, GenAiAttr.SYSTEM_INSTRUCTIONS)
+    assert 'ok' in harness.attr(span, GenAiAttr.OUTPUT_MESSAGES)
+    assert GEN_AI_OPERATION_DETAILS_EVENT not in _event_names(harness)
+
+
+@pytest.mark.asyncio
+async def test_span_only_skips_input_when_request_messages_is_none(harness) -> None:
+    """A model request with messages=None still writes the span and does not crash."""
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        ModelRequest.model_construct(messages=None),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+
+
+@pytest.mark.asyncio
+async def test_event_only_emits_event_not_span_content(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='EVENT_ONLY')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('hello')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    assert GEN_AI_OPERATION_DETAILS_EVENT in _event_names(harness)
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+    record = _operation_details_record(harness)
+    assert record is not None
+    assert record.trace_id == span.context.trace_id
+    assert record.span_id == span.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_span_and_event_writes_both(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('hello')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert 'hello' in harness.attr(span, GenAiAttr.INPUT_MESSAGES)
+    assert GEN_AI_OPERATION_DETAILS_EVENT in _event_names(harness)
+
+
+@pytest.mark.asyncio
 async def test_nests_flow_and_model_into_one_trace(harness) -> None:
     instr = harness.instrumentation()
 
@@ -229,6 +331,64 @@ async def test_tool_span_emitted_for_tool_v2_when_enabled(harness) -> None:
     assert span is not None
     assert harness.attr(span, GenAiAttr.OPERATION_NAME) == 'execute_tool'
     assert harness.attr(span, GenAiAttr.TOOL_NAME) == 'weather'
+    assert harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS) is None
+    assert harness.attr(span, GenAiAttr.TOOL_CALL_RESULT) is None
+
+
+async def _run_weather_tool(instr, *, query: str = 'the recipe') -> None:
+    async def lookup(span=None):
+        return 'classified'
+
+    await instr.run_in_new_span(
+        SpanMetadata(name='lookup', action_type='tool.v2', input={'query': query}),
+        lookup,
+    )
+
+
+@pytest.mark.asyncio
+async def test_span_only_records_tool_arguments_and_result_on_span(harness) -> None:
+    """SPAN_ONLY + emit_tool_spans writes tool args and result on the execute_tool span, not an event."""
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY', emit_tool_spans=True)
+    await _run_weather_tool(instr)
+    span = harness.span_named('execute_tool lookup')
+    assert span is not None
+    assert 'the recipe' in harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS)
+    assert 'classified' in harness.attr(span, GenAiAttr.TOOL_CALL_RESULT)
+    assert GEN_AI_OPERATION_DETAILS_EVENT not in _event_names(harness)
+
+
+@pytest.mark.asyncio
+async def test_event_only_records_tool_arguments_on_event_not_span(harness) -> None:
+    """EVENT_ONLY + emit_tool_spans writes tool args and result on the operation.details event, not the span."""
+    instr = harness.instrumentation(content_capturing_mode='EVENT_ONLY', emit_tool_spans=True)
+    await _run_weather_tool(instr)
+    span = harness.span_named('execute_tool lookup')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS) is None
+    assert harness.attr(span, GenAiAttr.TOOL_CALL_RESULT) is None
+    record = _operation_details_record(harness)
+    assert record is not None
+    attrs = dict(record.attributes or {})
+    assert 'the recipe' in attrs[GenAiAttr.TOOL_CALL_ARGUMENTS]
+    assert 'classified' in attrs[GenAiAttr.TOOL_CALL_RESULT]
+    assert record.trace_id == span.context.trace_id
+    assert record.span_id == span.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_span_and_event_records_tool_arguments_on_span_and_event(harness) -> None:
+    """SPAN_AND_EVENT + emit_tool_spans writes tool args and result on the span and the event."""
+    instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT', emit_tool_spans=True)
+    await _run_weather_tool(instr)
+    span = harness.span_named('execute_tool lookup')
+    assert span is not None
+    assert 'the recipe' in harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS)
+    assert 'classified' in harness.attr(span, GenAiAttr.TOOL_CALL_RESULT)
+    record = _operation_details_record(harness)
+    assert record is not None
+    attrs = dict(record.attributes or {})
+    assert 'the recipe' in attrs[GenAiAttr.TOOL_CALL_ARGUMENTS]
+    assert 'classified' in attrs[GenAiAttr.TOOL_CALL_RESULT]
 
 
 @pytest.mark.asyncio
@@ -287,6 +447,30 @@ async def test_capture_action_io_records_raw_io_on_all_span_types(harness) -> No
 
 
 @pytest.mark.asyncio
+async def test_captures_legacy_candidates_message(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    legacy = ModelResponse(
+        finish_reason=FinishReason.STOP,
+        candidates=[
+            Candidate(
+                index=0,
+                finish_reason=FinishReason.STOP,
+                message=Message(role=Role.MODEL, content=[Part.from_text('legacy answer')]),
+            )
+        ],
+    )
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(),
+        lambda span=None: _awaitable(legacy),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert 'legacy answer' in harness.attr(span, GenAiAttr.OUTPUT_MESSAGES)
+
+
+@pytest.mark.asyncio
 async def test_reports_tool_calls_from_legacy_candidates(harness) -> None:
     instr = harness.instrumentation()
     legacy = ModelResponse(
@@ -331,6 +515,74 @@ async def test_classifies_model_action_as_chat(harness) -> None:
     )
     assert harness.span_named('chat gemini-flash-latest') is not None
     assert harness.span_named('googleai/gemini-flash-latest') is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_mode_overrides_env(harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CAPTURE_CONTENT_ENV_VAR, 'EVENT_ONLY')
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('secret')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert 'secret' in harness.attr(span, GenAiAttr.INPUT_MESSAGES)
+    assert GEN_AI_OPERATION_DETAILS_EVENT not in _event_names(harness)
+
+
+@pytest.mark.asyncio
+async def test_explicit_no_content_overrides_env(harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CAPTURE_CONTENT_ENV_VAR, 'SPAN_AND_EVENT')
+    instr = harness.instrumentation(content_capturing_mode='NO_CONTENT')
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('secret')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+    assert GEN_AI_OPERATION_DETAILS_EVENT not in _event_names(harness)
+
+
+@pytest.mark.asyncio
+async def test_omitted_mode_uses_env(harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CAPTURE_CONTENT_ENV_VAR, 'SPAN_ONLY')
+    instr = GenAiInstrumentation(
+        tracer=harness.tracer_provider.get_tracer('test'),
+        meter=harness.meter_provider.get_meter('test'),
+        otel_logger=harness.logger_provider.get_logger('test'),
+    )
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('secret')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert 'secret' in harness.attr(span, GenAiAttr.INPUT_MESSAGES)
+
+
+def test_unknown_content_capturing_mode_on_constructor_raises() -> None:
+    """GenAiInstrumentation(content_capturing_mode='bogus') raises ValueError."""
+    with pytest.raises(ValueError, match='unknown content_capturing_mode'):
+        GenAiInstrumentation(content_capturing_mode='bogus')  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_invalid_env_token_defaults_to_no_content(harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CAPTURE_CONTENT_ENV_VAR, 'bogus')
+    instr = GenAiInstrumentation(
+        tracer=harness.tracer_provider.get_tracer('test'),
+        meter=harness.meter_provider.get_meter('test'),
+        otel_logger=harness.logger_provider.get_logger('test'),
+    )
+    assert instr.content_capturing_mode == 'NO_CONTENT'
 
 
 @pytest.mark.asyncio
@@ -430,3 +682,171 @@ async def test_cancellation_does_not_record_error_status(harness) -> None:
     assert span is not None
     assert span.status.status_code != StatusCode.ERROR
     assert not any(event.name == 'exception' for event in span.events)
+
+
+@pytest.mark.asyncio
+async def test_model_failure_does_not_leak_prompt_content_under_no_content(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='NO_CONTENT')
+
+    async def fail_body(span=None):
+        raise RuntimeError('upstream API error 500')
+
+    with pytest.raises(RuntimeError, match='upstream API error 500'):
+        await _run_model(
+            instr,
+            'googleai/gemini-flash-latest',
+            _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('secret user medical info')])]),
+            fail_body,
+        )
+
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code == StatusCode.ERROR
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+    assert harness.attr(span, GenAiAttr.OUTPUT_MESSAGES) is None
+    assert harness.attr(span, GenAiAttr.SYSTEM_INSTRUCTIONS) is None
+    assert harness.attr(span, GenkitAttr.INPUT) is None
+    assert harness.attr(span, GenkitAttr.OUTPUT) is None
+
+
+@pytest.mark.asyncio
+async def test_interrupt_does_not_leak_prompt_content_under_no_content(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='NO_CONTENT')
+
+    async def interrupt_body(span=None):
+        raise Interrupt({'reason': 'human approval required'})
+
+    with pytest.raises(Interrupt):
+        await _run_model(
+            instr,
+            'googleai/gemini-flash-latest',
+            _model_request(
+                messages=[Message(role=Role.USER, content=[Part.from_text('wire $50,000 to routing 12345')])]
+            ),
+            interrupt_body,
+        )
+
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code != StatusCode.ERROR
+    assert harness.attr(span, 'genkit.interrupted') is True
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+    assert harness.attr(span, GenAiAttr.OUTPUT_MESSAGES) is None
+    assert harness.attr(span, GenkitAttr.INPUT) is None
+
+
+@pytest.mark.asyncio
+async def test_tool_arguments_pii_isolation_under_no_content(harness) -> None:
+    instr = harness.instrumentation(
+        content_capturing_mode='NO_CONTENT',
+        emit_tool_spans=True,
+    )
+
+    # 1. Model response requesting a tool with sensitive arguments
+    tool_call_response = ModelResponse(
+        finish_reason=FinishReason.STOP,
+        message=Message(
+            role=Role.MODEL,
+            content=[Part.from_tool_request('update_user', input={'ssn': '000-12-3456', 'salary': 150000})],
+        ),
+    )
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('update user record')])]),
+        lambda span=None: _awaitable(tool_call_response),
+    )
+    model_span = harness.span_named('chat gemini-flash-latest')
+    assert model_span is not None
+    assert harness.attr(model_span, GenAiAttr.INPUT_MESSAGES) is None
+    assert harness.attr(model_span, GenAiAttr.OUTPUT_MESSAGES) is None
+
+    # 2. Tool execution itself
+    async def tool_fn(span=None):
+        return {'status': 'updated'}
+
+    await instr.run_in_new_span(
+        SpanMetadata(name='update_user', action_type='tool.v2', input={'ssn': '000-12-3456', 'salary': 150000}),
+        tool_fn,
+    )
+    tool_span = harness.span_named('execute_tool update_user')
+    assert tool_span is not None
+    assert harness.attr(tool_span, GenkitAttr.INPUT) is None
+    assert harness.attr(tool_span, GenkitAttr.OUTPUT) is None
+    assert harness.attr(tool_span, GenAiAttr.TOOL_CALL_ARGUMENTS) is None
+    assert harness.attr(tool_span, GenAiAttr.TOOL_CALL_RESULT) is None
+
+
+@pytest.mark.asyncio
+async def test_inline_data_uri_is_truncated_when_content_capture_enabled(harness) -> None:
+    instr = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    large_b64 = 'A' * 50_000
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(
+            messages=[
+                Message(
+                    role=Role.USER,
+                    content=[Part.from_media(url=f'data:image/jpeg;base64,{large_b64}', content_type='image/jpeg')],
+                )
+            ]
+        ),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    input_messages = harness.attr(span, GenAiAttr.INPUT_MESSAGES)
+    assert isinstance(input_messages, str)
+    assert '<omitted 50000 bytes>' in input_messages
+    assert large_b64 not in input_messages
+
+
+@pytest.mark.asyncio
+async def test_system_instructions_isolation_and_redaction(harness) -> None:
+    system_prompt = 'You are a proprietary financial compliance officer. Internal rules: Rule#42'
+    req = _model_request(
+        messages=[
+            Message(role=Role.SYSTEM, content=[Part.from_text(system_prompt)]),
+            Message(role=Role.USER, content=[Part.from_text('audit my transaction')]),
+        ]
+    )
+
+    # NO_CONTENT: system prompt must NOT appear anywhere
+    instr_off = harness.instrumentation(content_capturing_mode='NO_CONTENT')
+    await _run_model(instr_off, 'googleai/gemini-flash-latest', req, lambda span=None: _awaitable(_model_response()))
+    span_off = harness.span_named('chat gemini-flash-latest')
+    assert span_off is not None
+    assert harness.attr(span_off, GenAiAttr.SYSTEM_INSTRUCTIONS) is None
+    assert harness.attr(span_off, GenAiAttr.INPUT_MESSAGES) is None
+
+    # SPAN_ONLY: system prompt isolated in system_instructions, not duplicated in input_messages
+    instr_on = harness.instrumentation(content_capturing_mode='SPAN_ONLY')
+    await _run_model(instr_on, 'googleai/gemini-flash-latest', req, lambda span=None: _awaitable(_model_response()))
+    span_on = harness.span_named('chat gemini-flash-latest')
+    assert span_on is not None
+    sys_attr = harness.attr(span_on, GenAiAttr.SYSTEM_INSTRUCTIONS)
+    input_attr = harness.attr(span_on, GenAiAttr.INPUT_MESSAGES)
+    assert isinstance(sys_attr, str) and system_prompt in sys_attr
+    assert isinstance(input_attr, str) and system_prompt not in input_attr
+
+
+@pytest.mark.asyncio
+async def test_default_construction_enforces_dual_pii_barriers(harness) -> None:
+    instr = harness.instrumentation()
+    assert instr.content_capturing_mode == 'NO_CONTENT'
+    assert instr.capture_action_io is False
+
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(messages=[Message(role=Role.USER, content=[Part.from_text('secret prompt')])]),
+        lambda span=None: _awaitable(_model_response()),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.INPUT_MESSAGES) is None
+    assert harness.attr(span, GenAiAttr.OUTPUT_MESSAGES) is None
+    assert harness.attr(span, GenAiAttr.SYSTEM_INSTRUCTIONS) is None
+    assert harness.attr(span, GenkitAttr.INPUT) is None
+    assert harness.attr(span, GenkitAttr.OUTPUT) is None

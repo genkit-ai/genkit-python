@@ -453,10 +453,28 @@ class GeminiConfigSchema(ModelConfig):
     stop_sequences: list[str] | None = Field(default=None, alias='stopSequences', description='Stop sequences.')
 
 
+class SpeakerVoiceConfigSchema(BaseModel):
+    """Speaker voice config schema."""
+
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    speaker: str | None = None
+    voice_config: VoiceConfigSchema | None = Field(None, alias='voiceConfig')
+
+
+class MultiSpeakerVoiceConfigSchema(BaseModel):
+    """Multi-speaker voice config schema."""
+
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    speaker_voice_configs: list[SpeakerVoiceConfigSchema] | None = Field(None, alias='speakerVoiceConfigs')
+
+
 class SpeechConfigSchema(BaseModel):
     """Speech config schema."""
 
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
     voice_config: VoiceConfigSchema | None = Field(None, alias='voiceConfig')
+    language_code: str | None = Field(None, alias='languageCode')
+    multi_speaker_voice_config: MultiSpeakerVoiceConfigSchema | None = Field(None, alias='multiSpeakerVoiceConfig')
 
     http_options: Any | None = Field(None, exclude=True)
     tools: Any | None = Field(None, exclude=True)
@@ -465,10 +483,24 @@ class SpeechConfigSchema(BaseModel):
     response_json_schema: Any | None = Field(None, exclude=True)
 
 
+DEFAULT_TTS_VOICE_NAME = 'Kore'
+"""Prebuilt voice sent when a TTS model that needs one gets a request naming no voice."""
+
+_GEMINI_API_TTS_MODELS_NEEDING_VOICE = frozenset({'gemini-3.1-flash-tts-preview'})
+"""Gemini API TTS models that reject a request naming no voice. On Vertex AI every TTS model gets the default."""
+
+
 class GeminiTtsConfigSchema(GeminiConfigSchema):
     """Gemini TTS Config Schema."""
 
-    speech_config: SpeechConfigSchema | None = Field(None, alias='speechConfig')
+    speech_config: SpeechConfigSchema | None = Field(
+        None,
+        alias='speechConfig',
+        description=(
+            'Speech synthesis settings. Without a voice config or a multi-speaker voice config, '
+            f'models that reject a request without a voice get the {DEFAULT_TTS_VOICE_NAME} prebuilt voice.'
+        ),
+    )
 
 
 class GeminiImageConfigSchema(GeminiConfigSchema):
@@ -554,6 +586,16 @@ GEMINI_2_5_FLASH_PREVIEW_04_17 = ModelInfo(
         constrained=Constrained.ALL,
         output=['text', 'json'],
     ),
+)
+
+GEMINI_2_5_PRO = ModelInfo(
+    label='Google AI - Gemini 2.5 Pro',
+    supports=GEMINI_TEXT_SUPPORTS,
+)
+
+GEMINI_2_5_FLASH = ModelInfo(
+    label='Google AI - Gemini 2.5 Flash',
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH_LITE = ModelInfo(
@@ -671,6 +713,11 @@ GEMINI_3_1_FLASH_LITE = ModelInfo(
     ),
 )
 
+GEMINI_FLASH_LITE_LATEST = ModelInfo(
+    label='Google AI - Gemini Flash Lite Latest',
+    supports=GEMINI_TEXT_SUPPORTS,
+)
+
 GEMINI_IMAGE_SUPPORTS = Supports(
     multiturn=True,
     media=True,
@@ -710,6 +757,51 @@ GEMINI_2_5_FLASH_IMAGE_PREVIEW = ModelInfo(
     supports=GEMINI_IMAGE_SUPPORTS,
 )
 
+GEMINI_TTS_SUPPORTS = Supports(
+    multiturn=False,
+    media=False,
+    tools=False,
+    tool_choice=False,
+    system_role=False,
+    constrained=Constrained.NONE,
+    output=['media'],
+)
+
+GEMINI_2_5_FLASH_PREVIEW_TTS = ModelInfo(
+    label='Google AI - Gemini 2.5 Flash Preview TTS',
+    supports=GEMINI_TTS_SUPPORTS,
+)
+
+GEMINI_2_5_PRO_PREVIEW_TTS = ModelInfo(
+    label='Google AI - Gemini 2.5 Pro Preview TTS',
+    supports=GEMINI_TTS_SUPPORTS,
+)
+
+GEMINI_3_1_FLASH_TTS_PREVIEW = ModelInfo(
+    label='Google AI - Gemini 3.1 Flash TTS Preview',
+    supports=GEMINI_TTS_SUPPORTS,
+)
+
+GEMMA_SUPPORTS = Supports(
+    multiturn=True,
+    media=True,
+    tools=True,
+    tool_choice=True,
+    system_role=True,
+    constrained=Constrained.ALL,
+    output=['text', 'json'],
+)
+
+GEMMA_4_26B_A4B_IT = ModelInfo(
+    label='Google AI - Gemma 4 26B A4B IT',
+    supports=GEMMA_SUPPORTS,
+)
+
+GEMMA_4_31B_IT = ModelInfo(
+    label='Google AI - Gemma 4 31B IT',
+    supports=GEMMA_SUPPORTS,
+)
+
 GENERIC_GEMINI_MODEL = ModelInfo(
     label='Google AI - Gemini',
     supports=Supports(
@@ -725,15 +817,7 @@ GENERIC_GEMINI_MODEL = ModelInfo(
 
 GENERIC_TTS_MODEL = ModelInfo(
     label='Google AI - Gemini TTS',
-    supports=Supports(
-        multiturn=False,
-        media=False,
-        tools=False,
-        tool_choice=False,
-        system_role=False,
-        constrained=Constrained.NONE,
-        output=['media'],
-    ),
+    supports=GEMINI_TTS_SUPPORTS,
 )
 
 GENERIC_IMAGE_MODEL = ModelInfo(
@@ -751,15 +835,7 @@ GENERIC_IMAGE_MODEL = ModelInfo(
 
 GENERIC_GEMMA_MODEL = ModelInfo(
     label='Google AI - Gemma',
-    supports=Supports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=Constrained.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMMA_SUPPORTS,
 )
 
 
@@ -778,6 +854,7 @@ class VertexAIGeminiVersion(StrEnum, metaclass=Deprecations):  # pyrefly: ignore
     GEMINI_2_5_FLASH_LITE = 'gemini-2.5-flash-lite'
     GEMINI_2_5_FLASH_PREVIEW_TTS = 'gemini-2.5-flash-preview-tts'
     GEMINI_2_5_PRO_PREVIEW_TTS = 'gemini-2.5-pro-preview-tts'
+    GEMINI_3_1_FLASH_TTS_PREVIEW = 'gemini-3.1-flash-tts-preview'
     GEMINI_3_PRO_IMAGE = 'gemini-3-pro-image'
     GEMINI_3_1_FLASH_IMAGE = 'gemini-3.1-flash-image'
     GEMINI_3_PRO_IMAGE_PREVIEW = 'gemini-3-pro-image-preview'
@@ -809,6 +886,7 @@ class GoogleAIGeminiVersion(StrEnum, metaclass=Deprecations):  # pyrefly: ignore
     GEMINI_2_5_FLASH_LITE = 'gemini-2.5-flash-lite'
     GEMINI_2_5_FLASH_PREVIEW_TTS = 'gemini-2.5-flash-preview-tts'
     GEMINI_2_5_PRO_PREVIEW_TTS = 'gemini-2.5-pro-preview-tts'
+    GEMINI_3_1_FLASH_TTS_PREVIEW = 'gemini-3.1-flash-tts-preview'
     GEMINI_3_PRO_IMAGE = 'gemini-3-pro-image'
     GEMINI_3_1_FLASH_IMAGE = 'gemini-3.1-flash-image'
     GEMINI_3_1_FLASH_IMAGE_PREVIEW = 'gemini-3.1-flash-image-preview'
@@ -823,6 +901,8 @@ class GoogleAIGeminiVersion(StrEnum, metaclass=Deprecations):  # pyrefly: ignore
     GEMMA_3_27B_IT = 'gemma-3-27b-it'
     GEMMA_3_4B_IT = 'gemma-3-4b-it'
     GEMMA_3N_E4B_IT = 'gemma-3n-e4b-it'
+    GEMMA_4_26B_A4B_IT = 'gemma-4-26b-a4b-it'
+    GEMMA_4_31B_IT = 'gemma-4-31b-it'
 
 
 # Quote autocomplete needs a Literal. The version enums above and the
@@ -833,6 +913,7 @@ KnownGemini: TypeAlias = Literal[
     'gemini-2.5-pro',
     'gemini-2.5-flash-lite',
     'gemini-flash-latest',
+    'gemini-flash-lite-latest',
     'gemini-pro-latest',
     'gemini-3-flash-preview',
     'gemini-3-pro-preview',
@@ -851,6 +932,7 @@ KnownGemini: TypeAlias = Literal[
 KnownGeminiTts: TypeAlias = Literal[
     'gemini-2.5-flash-preview-tts',
     'gemini-2.5-pro-preview-tts',
+    'gemini-3.1-flash-tts-preview',
 ]
 KnownGeminiImage: TypeAlias = Literal[
     'gemini-2.5-flash-image',
@@ -866,6 +948,8 @@ KnownGemma: TypeAlias = Literal[
     'gemma-3-12b-it',
     'gemma-3-27b-it',
     'gemma-3n-e4b-it',
+    'gemma-4-26b-a4b-it',
+    'gemma-4-31b-it',
 ]
 
 
@@ -884,7 +968,10 @@ _add_model(GEMINI_2_5_PRO_EXP_03_25, ['gemini-2.5-pro-exp-03-25'])
 _add_model(GEMINI_2_5_PRO_PREVIEW_03_25, ['gemini-2.5-pro-preview-03-25'])
 _add_model(GEMINI_2_5_PRO_PREVIEW_05_06, ['gemini-2.5-pro-preview-05-06'])
 _add_model(GEMINI_2_5_FLASH_PREVIEW_04_17, ['gemini-2.5-flash-preview-04-17'])
+_add_model(GEMINI_2_5_PRO, ['gemini-2.5-pro'])
+_add_model(GEMINI_2_5_FLASH, ['gemini-2.5-flash'])
 _add_model(GEMINI_2_5_FLASH_LITE, ['gemini-2.5-flash-lite'])
+_add_model(GEMINI_FLASH_LITE_LATEST, ['gemini-flash-lite-latest'])
 _add_model(GEMINI_3_FLASH_PREVIEW, ['gemini-3-flash-preview'])
 _add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview', 'gemini-pro-latest'])
 _add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash', 'gemini-flash-latest'])
@@ -900,6 +987,11 @@ _add_model(GEMINI_3_1_FLASH_IMAGE_PREVIEW, ['gemini-3.1-flash-image-preview'])
 _add_model(GEMINI_3_PRO_IMAGE_PREVIEW, ['gemini-3-pro-image-preview'])
 _add_model(GEMINI_2_5_FLASH_IMAGE_PREVIEW, ['gemini-2.5-flash-image-preview'])
 _add_model(GEMINI_2_5_FLASH_IMAGE, ['gemini-2.5-flash-image'])
+_add_model(GEMINI_2_5_FLASH_PREVIEW_TTS, ['gemini-2.5-flash-preview-tts'])
+_add_model(GEMINI_2_5_PRO_PREVIEW_TTS, ['gemini-2.5-pro-preview-tts'])
+_add_model(GEMINI_3_1_FLASH_TTS_PREVIEW, ['gemini-3.1-flash-tts-preview'])
+_add_model(GEMMA_4_26B_A4B_IT, ['gemma-4-26b-a4b-it'])
+_add_model(GEMMA_4_31B_IT, ['gemma-4-31b-it'])
 
 # Frozen at import so quote-autocomplete tests do not see ids that
 # resolve() writes into SUPPORTED_MODELS later.
@@ -1352,17 +1444,32 @@ class GeminiModel:
         # prompts into configuration object
         request_cfg = await self._genkit_to_googleai_cfg(request=request)
 
-        # TTS models require response_modalities: ["AUDIO"]
+        # TTS models require response_modalities: ["AUDIO"]; some reject a request that names no voice
         if is_tts_model(model_name):
             if not request_cfg:
                 request_cfg = genai_types.GenerateContentConfig()
-            request_cfg.response_modalities = ['AUDIO']
+            if not request_cfg.response_modalities:
+                request_cfg.response_modalities = ['AUDIO']
+            if self._tts_needs_default_voice(model_name):
+                speech = request_cfg.speech_config
+                if speech is None:
+                    speech = genai_types.SpeechConfig()
+                    request_cfg.speech_config = speech
+                if (
+                    not isinstance(speech, str)
+                    and speech.voice_config is None
+                    and speech.multi_speaker_voice_config is None
+                ):
+                    speech.voice_config = genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=DEFAULT_TTS_VOICE_NAME)
+                    )
 
         # Image models require response_modalities: ["TEXT", "IMAGE"]
         if is_image_model(model_name):
             if not request_cfg:
                 request_cfg = genai_types.GenerateContentConfig()
-            request_cfg.response_modalities = ['TEXT', 'IMAGE']
+            if not request_cfg.response_modalities:
+                request_cfg.response_modalities = ['TEXT', 'IMAGE']
 
         # Resolve the client before building messages so context-cache
         # operations run against the same (possibly overridden) region as the
@@ -1394,6 +1501,19 @@ class GeminiModel:
         response.usage = self._create_usage_stats(request=request, response=response)
 
         return response
+
+    def _tts_needs_default_voice(self, model_name: str) -> bool:
+        """Whether a TTS request that names no voice is sent the default voice.
+
+        Args:
+            model_name: The TTS model the request goes to.
+
+        Returns:
+            True on Vertex AI, and for the Gemini API models in ``_GEMINI_API_TTS_MODELS_NEEDING_VOICE``.
+        """
+        if self._client.vertexai:
+            return True
+        return model_name.split('/')[-1].lower() in _GEMINI_API_TTS_MODELS_NEEDING_VOICE
 
     async def _resolve_request_client(
         self, request: ModelRequest, context: dict[str, Any] | None = None

@@ -36,6 +36,7 @@ from genkit_google_genai.models.gemini import (
     GeminiTtsConfigSchema,
     GemmaConfigSchema,
     GoogleAIGeminiVersion,
+    SpeechConfigSchema,
     VertexAIGeminiVersion,
     _to_finish_reason,
     get_model_config_schema,
@@ -70,6 +71,19 @@ ALL_VERSIONS = list(GoogleAIGeminiVersion) + list(VertexAIGeminiVersion)
 IMAGE_GENERATION_VERSIONS = [GoogleAIGeminiVersion.GEMINI_2_5_FLASH]
 
 
+def _kore_speech_config() -> genai.types.SpeechConfig:
+    return genai.types.SpeechConfig(
+        voice_config=genai.types.VoiceConfig(prebuilt_voice_config=genai.types.PrebuiltVoiceConfig(voice_name='Kore'))
+    )
+
+
+def _expected_gemini_api_tts_config(version: str) -> genai.types.GenerateContentConfig:
+    # On the Gemini API only 3.1 TTS gets the default voice.
+    if version == 'gemini-3.1-flash-tts-preview':
+        return genai.types.GenerateContentConfig(response_modalities=['AUDIO'], speech_config=_kore_speech_config())
+    return genai.types.GenerateContentConfig(response_modalities=['AUDIO'])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('version', [x for x in ALL_VERSIONS])
 async def test_generate_text_response(mocker: MockerFixture, version: str) -> None:
@@ -91,6 +105,7 @@ async def test_generate_text_response(mocker: MockerFixture, version: str) -> No
     resp = genai.types.GenerateContentResponse(candidates=[candidate])
 
     googleai_client_mock = mocker.AsyncMock()
+    googleai_client_mock.vertexai = False
     googleai_client_mock.aio.models.generate_content.return_value = resp
 
     gemini = GeminiModel(version, googleai_client_mock)
@@ -100,7 +115,7 @@ async def test_generate_text_response(mocker: MockerFixture, version: str) -> No
 
     # Determine expected config based on model type
     if is_tts_model(version):
-        expected_config = genai.types.GenerateContentConfig(response_modalities=['AUDIO'])
+        expected_config = _expected_gemini_api_tts_config(version)
     elif is_image_model(version):
         expected_config = genai.types.GenerateContentConfig(response_modalities=['TEXT', 'IMAGE'])
     else:
@@ -140,6 +155,7 @@ async def test_generate_stream_text_response(mocker: MockerFixture, version: str
     resp = genai.types.GenerateContentResponse(candidates=[candidate])
 
     googleai_client_mock = mocker.AsyncMock()
+    googleai_client_mock.vertexai = False
     googleai_client_mock.aio.models.generate_content_stream.__aiter__.side_effect = [resp]
     on_chunk_mock = mocker.MagicMock()
     gemini = GeminiModel(version, googleai_client_mock)
@@ -149,7 +165,7 @@ async def test_generate_stream_text_response(mocker: MockerFixture, version: str
 
     # Determine expected config based on model type
     if is_tts_model(version):
-        expected_config = genai.types.GenerateContentConfig(response_modalities=['AUDIO'])
+        expected_config = _expected_gemini_api_tts_config(version)
     elif is_image_model(version):
         expected_config = genai.types.GenerateContentConfig(response_modalities=['TEXT', 'IMAGE'])
     else:
@@ -552,7 +568,7 @@ async def test_generate_with_system_instructions(mocker: MockerFixture) -> None:
         (
             'gemini-2.5-flash-preview-tts',
             ModelInfo(
-                label='Google AI - Gemini TTS',
+                label='Google AI - Gemini 2.5 Flash Preview TTS',
                 supports=Supports(
                     multiturn=False,
                     media=False,
@@ -624,6 +640,97 @@ def test_vertexai_gemini_3_x_text_models_register_real_capabilities(model_name: 
     assert model_info.supports.tool_choice is True
     assert model_info.supports.constrained == Constrained.ALL
     assert model_info.supports.output == ['text', 'json']
+
+
+@pytest.mark.parametrize(
+    ('model_name', 'expected_label'),
+    [
+        ('gemini-2.5-pro', 'Google AI - Gemini 2.5 Pro'),
+        ('gemini-2.5-flash', 'Google AI - Gemini 2.5 Flash'),
+        ('gemini-flash-lite-latest', 'Google AI - Gemini Flash Lite Latest'),
+    ],
+)
+def test_stable_gemini_text_models_register_real_capabilities(model_name: str, expected_label: str) -> None:
+    """Stable text ids resolve to their own ModelInfo, not the generic fallback.
+
+    The fallback (DEFAULT_SUPPORTS_MODEL) leaves ``output`` unset and labels the id verbatim,
+    so the label and ``output == ['text', 'json']`` together prove real metadata.
+    """
+    model_info = google_model_info(model_name)
+
+    assert model_info.label == expected_label
+    assert model_info.supports is not None
+    assert model_info.supports.tools is True
+    assert model_info.supports.tool_choice is True
+    assert model_info.supports.system_role is True
+    assert model_info.supports.constrained == Constrained.ALL
+    assert model_info.supports.output == ['text', 'json']
+
+
+@pytest.mark.parametrize(
+    ('model_name', 'expected_label'),
+    [
+        ('gemini-2.5-flash-preview-tts', 'Google AI - Gemini 2.5 Flash Preview TTS'),
+        ('gemini-2.5-pro-preview-tts', 'Google AI - Gemini 2.5 Pro Preview TTS'),
+        ('gemini-3.1-flash-tts-preview', 'Google AI - Gemini 3.1 Flash TTS Preview'),
+    ],
+)
+def test_tts_models_register_per_name_capabilities(model_name: str, expected_label: str) -> None:
+    """Each TTS id carries its own label instead of sharing the generic TTS entry."""
+    model_info = google_model_info(model_name)
+
+    assert model_info.label == expected_label
+    assert model_info.supports == Supports(
+        multiturn=False,
+        media=False,
+        tools=False,
+        tool_choice=False,
+        system_role=False,
+        constrained=Constrained.NONE,
+        output=['media'],
+    )
+    assert get_model_config_schema(model_name) is GeminiTtsConfigSchema
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'gemini-2.5-flash-preview-tts',
+        'gemini-2.5-pro-preview-tts',
+        'gemini-3.1-flash-tts-preview',
+        'gemini-9.9-flash-preview-tts',
+    ],
+)
+def test_tts_models_do_not_advertise_system_role(model_name: str) -> None:
+    """TTS ignores system instructions, so no TTS entry advertises a system role."""
+    supports = google_model_info(model_name).supports
+
+    assert supports is not None
+    assert supports.system_role is False
+
+
+@pytest.mark.parametrize(
+    ('model_name', 'expected_label'),
+    [
+        ('gemma-4-26b-a4b-it', 'Google AI - Gemma 4 26B A4B IT'),
+        ('gemma-4-31b-it', 'Google AI - Gemma 4 31B IT'),
+    ],
+)
+def test_gemma_4_models_register_per_name_capabilities(model_name: str, expected_label: str) -> None:
+    """Each gemma-4 id carries its own label instead of sharing the generic Gemma entry."""
+    model_info = google_model_info(model_name)
+
+    assert model_info.label == expected_label
+    assert model_info.supports == Supports(
+        multiturn=True,
+        media=True,
+        tools=True,
+        tool_choice=True,
+        system_role=True,
+        constrained=Constrained.ALL,
+        output=['text', 'json'],
+    )
+    assert get_model_config_schema(model_name) is GemmaConfigSchema
 
 
 @pytest.fixture
@@ -1155,6 +1262,7 @@ async def test_gemini_model__tts_json_output_skips_constrained_config() -> None:
     ('version', 'expected_schema'),
     [
         ('gemini-2.5-flash-preview-tts', GeminiTtsConfigSchema),
+        ('gemini-3.1-flash-tts-preview', GeminiTtsConfigSchema),
         ('gemini-2.0-flash-preview-image-generation', GeminiImageConfigSchema),
         ('gemini-3-pro-image', GeminiImageConfigSchema),
         ('gemini-3.1-flash-image', GeminiImageConfigSchema),
@@ -1163,6 +1271,7 @@ async def test_gemini_model__tts_json_output_skips_constrained_config() -> None:
         ('gemini-2.5-flash-image', GeminiImageConfigSchema),
         ('gemini-2.5-flash-image-preview', GeminiImageConfigSchema),
         ('gemma-2-27b-it', GemmaConfigSchema),
+        ('gemma-4-31b-it', GemmaConfigSchema),
         ('gemini-2.0-flash-001', GeminiConfigSchema),
     ],
 )
@@ -1283,3 +1392,269 @@ def test_to_finish_reason_image_other_and_unexpected_tool() -> None:
     assert _to_finish_reason('NO_IMAGE') == FinishReason.OTHER
     assert _to_finish_reason('IMAGE_OTHER') == FinishReason.OTHER
     assert _to_finish_reason('UNEXPECTED_TOOL_CALL') == FinishReason.OTHER
+
+
+@pytest.fixture
+def tts_model_instance() -> GeminiModel:
+    """Common initialization of a TTS GeminiModel."""
+    return GeminiModel(
+        version='gemini-2.5-flash-preview-tts',
+        client=MagicMock(spec=genai.Client),
+    )
+
+
+def test_speech_config_schema_declares_sdk_fields() -> None:
+    """Language code and multi-speaker voice config validate as typed fields, by name or alias."""
+    config = SpeechConfigSchema.model_validate({
+        'language_code': 'en-US',
+        'multiSpeakerVoiceConfig': {
+            'speakerVoiceConfigs': [
+                {'speaker': 'Alice', 'voice_config': {'prebuilt_voice_config': {'voice_name': 'Kore'}}},
+            ]
+        },
+    })
+
+    assert config.language_code == 'en-US'
+    assert config.multi_speaker_voice_config is not None
+    speakers = config.multi_speaker_voice_config.speaker_voice_configs
+    assert speakers is not None
+    assert speakers[0].speaker == 'Alice'
+    assert speakers[0].voice_config is not None
+    assert speakers[0].voice_config.prebuilt_voice_config is not None
+    assert speakers[0].voice_config.prebuilt_voice_config.voice_name == 'Kore'
+
+
+def test_tts_config_json_schema_exposes_speech_config_fields() -> None:
+    """The Dev UI schema lists every speech config field the SDK accepts."""
+    schema = GeminiTtsConfigSchema.model_json_schema(by_alias=True)
+    speech = schema['$defs']['SpeechConfigSchema']['properties']
+
+    assert {'voiceConfig', 'languageCode', 'multiSpeakerVoiceConfig'} <= set(speech)
+
+
+def test_speech_config_schema_populates_by_field_name() -> None:
+    """The speech config validates from snake_case field names, not only aliases."""
+    config = SpeechConfigSchema.model_validate({'voice_config': {'prebuilt_voice_config': {'voice_name': 'Kore'}}})
+
+    assert config.voice_config is not None
+    assert config.voice_config.prebuilt_voice_config is not None
+    assert config.voice_config.prebuilt_voice_config.voice_name == 'Kore'
+
+
+@pytest.mark.asyncio
+async def test_gemini_model__speech_config_keeps_language_code(
+    tts_model_instance: GeminiModel,
+) -> None:
+    """A language code on the speech config reaches the SDK config."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({
+            'speechConfig': {
+                'languageCode': 'en-US',
+                'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Kore'}},
+            }
+        }),
+    )
+
+    cfg = await tts_model_instance._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert isinstance(cfg.speech_config, genai_types.SpeechConfig)
+    assert cfg.speech_config.language_code == 'en-US'
+    assert cfg.speech_config.voice_config is not None
+
+
+@pytest.mark.asyncio
+async def test_gemini_model__speech_config_keeps_multi_speaker_voice_config(
+    tts_model_instance: GeminiModel,
+) -> None:
+    """A multi-speaker voice config on the speech config reaches the SDK config."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({
+            'speechConfig': {
+                'multiSpeakerVoiceConfig': {
+                    'speakerVoiceConfigs': [
+                        {'speaker': 'Alice', 'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Kore'}}},
+                    ]
+                }
+            }
+        }),
+    )
+
+    cfg = await tts_model_instance._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert isinstance(cfg.speech_config, genai_types.SpeechConfig)
+    assert cfg.speech_config.multi_speaker_voice_config is not None
+    speakers = cfg.speech_config.multi_speaker_voice_config.speaker_voice_configs
+    assert speakers is not None
+    assert [s.speaker for s in speakers] == ['Alice']
+
+
+@pytest.mark.asyncio
+async def test_gemini_model__unknown_speech_config_key_is_rejected(
+    tts_model_instance: GeminiModel,
+) -> None:
+    """An unknown speech config key is reported instead of silently dropped."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({'speechConfig': {'languageCodes': 'en-US'}}),
+    )
+
+    with pytest.raises(GenkitError) as exc_info:
+        await tts_model_instance._genkit_to_googleai_cfg(request)
+
+    assert exc_info.value.status == 'INVALID_ARGUMENT'
+    assert 'speech_config' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_generate_keeps_caller_response_modalities_on_tts_model(mocker: MockerFixture) -> None:
+    """A TTS model keeps the response modalities the caller asked for."""
+    version = 'gemini-2.5-flash-preview-tts'
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({'responseModalities': ['AUDIO', 'TEXT']}),
+    )
+    candidate = genai.types.Candidate(content=genai.types.Content(parts=[genai.types.Part(text='ok')]))
+    client_mock = mocker.AsyncMock()
+    client_mock.aio.models.generate_content.return_value = genai.types.GenerateContentResponse(candidates=[candidate])
+
+    await GeminiModel(version, client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert sent_config.response_modalities == ['AUDIO', 'TEXT']
+
+
+@pytest.mark.asyncio
+async def test_generate_keeps_caller_response_modalities_on_image_model(mocker: MockerFixture) -> None:
+    """An image model keeps the response modalities the caller asked for."""
+    version = 'gemini-2.5-flash-image'
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiImageConfigSchema.model_validate({'responseModalities': ['IMAGE']}),
+    )
+    candidate = genai.types.Candidate(content=genai.types.Content(parts=[genai.types.Part(text='ok')]))
+    client_mock = mocker.AsyncMock()
+    client_mock.aio.models.generate_content.return_value = genai.types.GenerateContentResponse(candidates=[candidate])
+
+    await GeminiModel(version, client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert sent_config.response_modalities == ['IMAGE']
+
+
+def _tts_client_mock(mocker: MockerFixture, *, vertexai: bool) -> AsyncMock:
+    candidate = genai.types.Candidate(content=genai.types.Content(parts=[genai.types.Part(text='ok')]))
+    client_mock = mocker.AsyncMock()
+    client_mock.vertexai = vertexai
+    client_mock.aio.models.generate_content.return_value = genai.types.GenerateContentResponse(candidates=[candidate])
+    return client_mock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('version', 'vertexai'),
+    [
+        ('gemini-3.1-flash-tts-preview', False),
+        ('gemini-3.1-flash-tts-preview', True),
+        ('gemini-2.5-flash-preview-tts', True),
+    ],
+)
+async def test_generate_defaults_the_tts_voice_where_one_is_needed(
+    mocker: MockerFixture, version: str, vertexai: bool
+) -> None:
+    """A TTS request without a speech config gets the default voice on Vertex AI and for 3.1 TTS."""
+    request = ModelRequest(messages=[Message(role=Role.USER, content=[Part.from_text('hi')])])
+    client_mock = _tts_client_mock(mocker, vertexai=vertexai)
+
+    await GeminiModel(version, client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert isinstance(sent_config.speech_config, genai_types.SpeechConfig)
+    assert sent_config.speech_config.voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config.voice_name == 'Kore'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'version', ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts', 'gemini-3.8-flash-tts']
+)
+async def test_generate_sends_no_voice_to_gemini_api_tts_that_picks_its_own(
+    mocker: MockerFixture, version: str
+) -> None:
+    """On the Gemini API, a TTS model that accepts a voiceless request is sent no speech config."""
+    request = ModelRequest(messages=[Message(role=Role.USER, content=[Part.from_text('hi')])])
+    client_mock = _tts_client_mock(mocker, vertexai=False)
+
+    await GeminiModel(version, client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert sent_config.response_modalities == ['AUDIO']
+    assert sent_config.speech_config is None
+
+
+@pytest.mark.asyncio
+async def test_generate_defaults_the_tts_voice_next_to_a_language_code(mocker: MockerFixture) -> None:
+    """A speech config that sets only a language code still gets the default voice."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({'speechConfig': {'languageCode': 'en-US'}}),
+    )
+    client_mock = _tts_client_mock(mocker, vertexai=False)
+
+    await GeminiModel('gemini-3.1-flash-tts-preview', client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert isinstance(sent_config.speech_config, genai_types.SpeechConfig)
+    assert sent_config.speech_config.language_code == 'en-US'
+    assert sent_config.speech_config.voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config.voice_name == 'Kore'
+
+
+@pytest.mark.asyncio
+async def test_generate_keeps_the_caller_tts_voice(mocker: MockerFixture) -> None:
+    """A voice named by the caller is sent unchanged where the default would otherwise apply."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({
+            'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Puck'}}}
+        }),
+    )
+    client_mock = _tts_client_mock(mocker, vertexai=True)
+
+    await GeminiModel('gemini-2.5-flash-preview-tts', client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert isinstance(sent_config.speech_config, genai_types.SpeechConfig)
+    assert sent_config.speech_config.voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config is not None
+    assert sent_config.speech_config.voice_config.prebuilt_voice_config.voice_name == 'Puck'
+
+
+@pytest.mark.asyncio
+async def test_generate_adds_no_voice_to_a_multi_speaker_config(mocker: MockerFixture) -> None:
+    """A multi-speaker voice config is sent without a single-voice config beside it."""
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=GeminiTtsConfigSchema.model_validate({
+            'speechConfig': {
+                'multiSpeakerVoiceConfig': {
+                    'speakerVoiceConfigs': [
+                        {'speaker': 'Alice', 'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Kore'}}},
+                    ]
+                }
+            }
+        }),
+    )
+    client_mock = _tts_client_mock(mocker, vertexai=True)
+
+    await GeminiModel('gemini-2.5-flash-preview-tts', client_mock).generate(request, ActionRunContext())
+
+    sent_config = client_mock.aio.models.generate_content.call_args.kwargs['config']
+    assert isinstance(sent_config.speech_config, genai_types.SpeechConfig)
+    assert sent_config.speech_config.voice_config is None
+    assert sent_config.speech_config.multi_speaker_voice_config is not None

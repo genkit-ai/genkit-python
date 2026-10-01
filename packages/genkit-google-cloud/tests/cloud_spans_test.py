@@ -31,7 +31,7 @@ from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from genkit import ActionKind, Genkit
+from genkit import Genkit
 from genkit._core._action import Action
 from genkit._core._environment import GENKIT_ENV
 from genkit._core._telemetry._instrumentation import (
@@ -42,6 +42,7 @@ from genkit._core._telemetry._instrumentation import (
 )
 from genkit._core._telemetry._log_exporter import reset_log_export
 from genkit._core._telemetry.http import GenkitBuiltinInstrumentation
+from genkit.plugin_api import ActionKind
 from genkit.telemetry import configure_instrumentation
 
 
@@ -135,7 +136,7 @@ async def test_enable_google_cloud_telemetry_mints_ids_and_sends_the_action_to_c
 
 
 @pytest.mark.asyncio
-async def test_configure_genai_then_enable_sends_one_span_to_cloud() -> None:
+async def test_enable_google_cloud_telemetry_does_not_install_genai_instrumentation_twice() -> None:
     """configure_instrumentation(GenAiInstrumentation()) then enable(): Cloud sees one joke span."""
     yours = GenAiInstrumentation()
     configure_instrumentation(yours)

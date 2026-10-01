@@ -94,7 +94,15 @@ from genkit._core._middleware import (
     GenerateMiddleware,
     _validate_middleware_key_segment,
 )
-from genkit._core._model import Document, EmbedRequest, ModelConfigDict, ModelRef, ModelRefConfigT, Part
+from genkit._core._model import (
+    Document,
+    EmbedRequest,
+    ModelConfigDict,
+    ModelRef,
+    ModelRefConfigT,
+    Part,
+    ToolChoice,
+)
 from genkit._core._plugin import Plugin
 from genkit._core._protocols import SessionLike
 from genkit._core._reflection import ReflectionServer, ServerSpec, create_reflection_asgi_app
@@ -111,7 +119,6 @@ from genkit._core._typing import (
     MiddlewareRef,
     ModelInfo,
     Operation,
-    ToolChoice,
 )
 
 from ._decorators import _FlowDecorator, _FlowDecoratorWithChunk
@@ -1473,7 +1480,7 @@ class Genkit:
         """Evaluate a dataset using the specified evaluator.
 
         Example:
-            from genkit.evaluator import BaseDataPoint
+            from genkit import BaseDataPoint
 
             results = await ai.evaluate(
                 evaluator='my_eval',

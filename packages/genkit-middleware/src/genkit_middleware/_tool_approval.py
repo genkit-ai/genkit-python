@@ -22,9 +22,10 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
+from genkit import MultipartToolResponse
 from genkit._ai._tools import Interrupt
 from genkit._core._action import ActionKind
-from genkit.middleware import BaseMiddleware, GenerateMiddlewareContext, MultipartToolResponse, ToolHookParams
+from genkit.middleware import BaseMiddleware, GenerateMiddlewareContext, ToolHookParams
 from genkit.telemetry import SpanContext, run_in_new_span
 
 

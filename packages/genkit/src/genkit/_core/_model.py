@@ -27,7 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
-from typing import Any, ClassVar, Generic, cast
+from typing import Any, ClassVar, Generic, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -69,7 +69,6 @@ from genkit._core._typing import (
     Resume as ResumeData,
     Role,
     SnapshotStatus,
-    ToolChoice,
     ToolDefinition,
     ToolRequest,
     ToolResponse,
@@ -81,6 +80,9 @@ from genkit._core._typing import (
 # shows up in the IDE the same day it becomes legal.
 ModelConfig = GenerationCommonConfig
 ModelUsage = GenerationUsage  # public name for GenerationUsage
+
+# what callers pass as tool_choice; they type the string, not an enum.
+ToolChoice = Literal['auto', 'required', 'none']
 
 # A termination known to carry no conforming output. Every path that would
 # parse a response against its output schema consults this first: a schema
@@ -935,7 +937,7 @@ class ModelRequest(GenkitModel, Generic[ModelRequestConfigT]):
     types (Message, Document) for helpers like ``.text``.
 
     Example:
-        from genkit.plugin_api import ModelConfig
+        from genkit.model import ModelConfig
 
         class GeminiConfig(ModelConfig):
             safety_settings: dict[str, str] | None = None

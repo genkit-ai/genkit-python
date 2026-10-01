@@ -17,7 +17,6 @@
 """Model protocol types for plugin authors; application code should call :class:`genkit.Genkit` ``generate``."""
 
 from genkit._ai._model import (
-    ModelConfigDict,
     model,
     model_action_metadata,
     model_ref,
@@ -25,23 +24,18 @@ from genkit._ai._model import (
 from genkit._core._background import BackgroundAction, background_model
 from genkit._core._model import (
     Candidate,
-    Document,
     GenerateActionOptions,
-    Message,
+    ModelConfig,
     ModelRef,
     ModelRequest,
-    ModelResponse,
-    ModelResponseChunk,
     ModelUsage,
-    Part,
+    OutputConfig,
     get_basic_usage_stats,
 )
 from genkit._core._typing import (
     Constrained,
-    Error,
-    FinishReason,
     ModelInfo,
-    Operation,
+    OperationError,
     Stage,
     Supports,
     ToolDefinition,
@@ -50,19 +44,16 @@ from genkit._core._typing import (
 )
 
 __all__ = [
-    # Request/Response types
+    # Request types
     'BackgroundAction',
+    'GenerateActionOptions',
     'ModelRequest',
-    'ModelResponse',
-    'ModelResponseChunk',
+    'OutputConfig',
     # Usage and metadata
     'ModelUsage',
     'Candidate',
-    'FinishReason',
-    'GenerateActionOptions',
-    # Error and operation
-    'Error',
-    'Operation',
+    # Long-running operations
+    'OperationError',
     # Tool types
     'ToolRequest',
     'ToolDefinition',
@@ -77,14 +68,9 @@ __all__ = [
     'background_model',
     'model_action_metadata',
     'model_ref',
+    'get_basic_usage_stats',
     # Reference types
     'ModelRef',
     # Config
-    'ModelConfigDict',
-    # Message
-    'Document',
-    'Message',
-    'Part',
-    # Usage
-    'get_basic_usage_stats',
+    'ModelConfig',
 ]

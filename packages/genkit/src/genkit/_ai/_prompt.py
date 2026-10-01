@@ -72,6 +72,7 @@ from genkit._core._model import (
     Message,
     OutputConfig,
     Part,
+    ToolChoice,
     resume_options_to_resume,
 )
 from genkit._core._registry import Registry
@@ -80,7 +81,6 @@ from genkit._core._typing import (
     GenerateActionOutputConfig,
     MiddlewareRef,
     Role,
-    ToolChoice,
 )
 
 ModelStreamingCallback = StreamingCallback
@@ -259,7 +259,7 @@ class ExecutablePrompt(Generic[InputT, OutputT]):
         self._return_tool_requests = return_tool_requests
         self._metadata = metadata
         self._tools = tools
-        self._tool_choice = tool_choice
+        self._tool_choice: ToolChoice | None = tool_choice
         self._use = use
         self._docs = docs
         self._cache_prompt: PromptCache = PromptCache()
@@ -655,7 +655,7 @@ async def to_generate_options(
         config=config,
         tools=tools_refs,
         return_tool_requests=call.return_tool_requests,
-        tool_choice=call.tool_choice,
+        tool_choice=call.tool_choice if call.tool_choice else None,
         output=output,
         max_turns=call.max_turns,
         docs=merged_docs,  # type: ignore[arg-type]

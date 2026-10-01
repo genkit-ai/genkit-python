@@ -61,15 +61,14 @@ from google.genai.types import HttpOptions, HttpOptionsDict, Model as GenaiModel
 from pydantic import BaseModel
 
 import genkit_google_genai.constants as const
-from genkit import ModelInfo
-from genkit._core._action import ActionRunContext
-from genkit._core._model import ModelRequest, ModelResponse
+from genkit import ActionRunContext, ModelResponse, Operation
 from genkit.embedder import EmbedderRef, embedder, embedder_action_metadata
 from genkit.evaluator import EvalFnResponse, EvalRequest
 from genkit.model import (
     BackgroundAction,
+    ModelInfo,
     ModelRef,
-    Operation,
+    ModelRequest,
     background_model,
     model,
     model_action_metadata,

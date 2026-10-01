@@ -429,7 +429,7 @@ class GenerateActionOptionsData(GenkitModel):
     docs: list[DocumentData] | None = None
     tools: list[str] | None = None
     resources: list[str] | None = None
-    tool_choice: ToolChoice | None = None
+    tool_choice: Literal['auto', 'required', 'none'] | None = None
     config: Any | None = Field(default=None)
     output: GenerateActionOutputConfig | None = None
     resume: Resume | None = None
@@ -567,7 +567,7 @@ class Operation(GenkitModel):
     id: str = Field(...)
     done: bool | None = None
     output: Any | None = Field(default=None)
-    error: Error | None = None
+    error: OperationError | None = None
     metadata: Metadata | None = None
 
 
@@ -996,8 +996,8 @@ class Supports(GenkitModel):
     long_running: bool | None = None
 
 
-class Error(GenkitModel):
-    """Model for error data."""
+class OperationError(GenkitModel):
+    """Model for operationerror data."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(alias_generator=to_camel, extra='allow', populate_by_name=True)
     message: str = Field(...)
@@ -1091,14 +1091,6 @@ class Stage(StrEnum):
     UNSTABLE = 'unstable'
     LEGACY = 'legacy'
     DEPRECATED = 'deprecated'
-
-
-class ToolChoice(StrEnum):
-    """Tool choice for generation (auto, required, none)."""
-
-    AUTO = 'auto'
-    REQUIRED = 'required'
-    NONE = 'none'
 
 
 class MediaModel(RootModel[Any]):

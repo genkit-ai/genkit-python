@@ -17,20 +17,14 @@
 """Google-Genai embedder model."""
 
 import json
-import sys
 from typing import Any, cast
-
-if sys.version_info < (3, 11):
-    from strenum import StrEnum
-else:
-    from enum import StrEnum
 
 from google import genai
 from google.genai import types as genai_types
 
-from genkit import Document, Embedding, EmbedRequest, EmbedResponse, Part
-from genkit._core._model import as_document
-from genkit.embedder import EmbedderInfo, EmbedderSupports
+from genkit import Document, Embedding, Part
+from genkit._core._compat import StrEnum
+from genkit.embedder import EmbedderInfo, EmbedderSupports, EmbedRequest, EmbedResponse
 from genkit_google_genai.models._routing import strip_ref_prefixes
 from genkit_google_genai.models.utils import PartConverter
 
@@ -267,8 +261,6 @@ class Embedder:
         multiple videos raise, since the API would otherwise silently keep only
         the last of each.
         """
-        doc = as_document(doc)
-
         instance: dict[str, Any] = {}
         text_parts: list[str] = []
         for p in doc.content:
@@ -369,7 +361,6 @@ class Embedder:
         """
         request_contents: list[genai.types.Content] = []
         for doc in request.input:
-            doc = as_document(doc)
             content_parts: list[genai.types.Part] = []
             for p in doc.content:
                 part = p if isinstance(p, Part) else Part.model_validate(p)

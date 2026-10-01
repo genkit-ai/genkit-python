@@ -15,7 +15,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from genkit import ActionKind, Document, Genkit, Message, MiddlewareRef, ModelResponse, ModelResponseChunk, Part
+from genkit import Document, Genkit, Message, ModelResponse, ModelResponseChunk, MultipartToolResponse, Part
 from genkit._ai._formats._types import FormatDef, Formatter, FormatterConfig
 from genkit._ai._generate import DEFAULT_MAX_TURNS, ChunkAccumulator, augment_with_context, generate_action
 from genkit._ai._model import text_from_content, text_from_message
@@ -34,7 +34,6 @@ from genkit._core._typing import (
     GenerateActionOutputConfig,
     GenerationUsage,
     Role,
-    ToolChoice,
     ToolRequest,
 )
 from genkit.middleware import (
@@ -42,11 +41,11 @@ from genkit.middleware import (
     GenerateHookParams,
     GenerateMiddleware,
     GenerateMiddlewareContext,
+    MiddlewareRef,
     ModelHookParams,
-    MultipartToolResponse,
     ToolHookParams,
 )
-from genkit.plugin_api import MiddlewarePlugin, new_middleware
+from genkit.plugin_api import ActionKind, MiddlewarePlugin, new_middleware
 
 
 def _to_dict(obj: object) -> object:
@@ -4497,7 +4496,7 @@ async def test_generate_on_chunk_failure_echoes_full_request() -> None:
             docs=[Document(content=[Part.from_text('doc content 1')])],
             config={'temperature': 0.5},
             tools=['testTool'],
-            tool_choice=ToolChoice.REQUIRED,
+            tool_choice='required',
             output=GenerateActionOutputConfig(format='json'),
         ),
         on_chunk=on_chunk,
@@ -4509,7 +4508,7 @@ async def test_generate_on_chunk_failure_echoes_full_request() -> None:
     assert request.docs, 'docs dropped from echoed request'
     assert request.config == {'temperature': 0.5}, 'config dropped from echoed request'
     assert request.tools, 'tools dropped from echoed request'
-    assert request.tool_choice == ToolChoice.REQUIRED, 'tool_choice dropped from echoed request'
+    assert request.tool_choice == 'required', 'tool_choice dropped from echoed request'
     assert request.output is not None
     assert request.output.format == 'json', 'output dropped from echoed request'
 

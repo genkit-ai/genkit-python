@@ -17,25 +17,7 @@
 """Gemini models."""
 
 import asyncio
-import sys
 from datetime import datetime, timedelta, timezone
-
-from genkit_google_genai.constants import is_multi_regional_location, multi_regional_base_url
-from genkit_google_genai.models._sdk_config import (
-    attach_leftovers,
-    dump_family_config,
-    sdk_config_error,
-    split_sdk_fields,
-)
-from genkit_google_genai.models._secrets import context_api_key, reject_request_config_api_key
-from genkit_google_genai.models.context_caching.constants import DEFAULT_TTL
-from genkit_google_genai.models.context_caching.utils import generate_cache_key, validate_context_cache_request
-
-if sys.version_info < (3, 11):
-    from strenum import StrEnum
-else:
-    from enum import StrEnum
-
 from functools import cached_property
 from typing import Annotated, Any, Any as JsonAny, Literal, TypeAlias, cast
 
@@ -47,25 +29,38 @@ from google.genai.errors import APIError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, WithJsonSchema
 
 from genkit import (
-    Constrained,
+    ActionRunContext,
+    FinishReason,
     GenkitError,
     Message,
-    ModelInfo,
-    ModelRequest,
     ModelResponse,
     ModelResponseChunk,
-    ModelUsage,
     Part,
     Role,
+)
+from genkit._core._compat import StrEnum
+from genkit.model import (
+    Candidate,
+    Constrained,
+    ModelConfig,
+    ModelInfo,
+    ModelRequest,
+    ModelUsage,
     Supports,
     ToolDefinition,
+    get_basic_usage_stats,
 )
-from genkit.model import Candidate, FinishReason, get_basic_usage_stats
-from genkit.plugin_api import (
-    ActionRunContext,
-    ModelConfig,
-    wrap_http_error,
+from genkit.plugin_api import wrap_http_error
+from genkit_google_genai.constants import is_multi_regional_location, multi_regional_base_url
+from genkit_google_genai.models._sdk_config import (
+    attach_leftovers,
+    dump_family_config,
+    sdk_config_error,
+    split_sdk_fields,
 )
+from genkit_google_genai.models._secrets import context_api_key, reject_request_config_api_key
+from genkit_google_genai.models.context_caching.constants import DEFAULT_TTL
+from genkit_google_genai.models.context_caching.utils import generate_cache_key, validate_context_cache_request
 
 
 def _to_dict(obj: JsonAny) -> JsonAny:  # noqa: ANN401

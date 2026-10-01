@@ -20,33 +20,18 @@ Veo is Google's video generation model that creates videos from text prompts.
 """
 
 import base64
-import sys
 from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias
-
-if sys.version_info < (3, 11):
-    from strenum import StrEnum
-else:
-    from enum import StrEnum
 
 from google import genai
 from google.genai import types as genai_types
 from google.genai.errors import APIError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from genkit import (
-    FinishReason,
-    GenkitError,
-    Message,
-    ModelInfo,
-    ModelRequest,
-    ModelResponse,
-    Part,
-    Role,
-    Supports,
-)
-from genkit.model import Error, Operation
-from genkit.plugin_api import ActionRunContext, wrap_http_error
+from genkit import ActionRunContext, FinishReason, GenkitError, Message, ModelResponse, Operation, Part, Role
+from genkit._core._compat import StrEnum
+from genkit.model import ModelInfo, ModelRequest, OperationError, Supports
+from genkit.plugin_api import wrap_http_error
 from genkit_google_genai.constants import is_multi_regional_location, multi_regional_base_url
 from genkit_google_genai.models._sdk_config import (
     dump_family_config,
@@ -215,7 +200,7 @@ def _from_veo_operation(*, api_op: genai_types.GenerateVideosOperation) -> Opera
     """
     op = Operation(id=api_op.name or '', done=bool(api_op.done))
     if api_op.error:
-        op.error = Error(message=_operation_error_message(error=api_op.error))
+        op.error = OperationError(message=_operation_error_message(error=api_op.error))
         return op
 
     response = api_op.response
@@ -246,11 +231,13 @@ def _from_veo_operation(*, api_op: genai_types.GenerateVideosOperation) -> Opera
     # dropped every sample. Name that, don't hand back an empty success.
     if api_op.done and response.rai_media_filtered_count:
         reasons = [str(reason) for reason in (response.rai_media_filtered_reasons or []) if reason]
-        op.error = Error(message='; '.join(reasons) or 'All generated videos were filtered out by safety filters.')
+        op.error = OperationError(
+            message='; '.join(reasons) or 'All generated videos were filtered out by safety filters.'
+        )
         return op
 
     if api_op.done and not content and not op.error:
-        op.error = Error(message='Operation completed but returned no playable media.')
+        op.error = OperationError(message='Operation completed but returned no playable media.')
     return op
 
 

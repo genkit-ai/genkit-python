@@ -29,9 +29,8 @@ from genkit_otel._gen_ai_attributes import (
 from opentelemetry._logs import LogRecord
 from opentelemetry.trace import StatusCode
 
-from genkit import FinishReason, Interrupt, Part, Role
-from genkit._core._model import OutputConfig
-from genkit.model import Candidate, Message, ModelRequest, ModelResponse, ModelUsage
+from genkit import FinishReason, Interrupt, Message, ModelResponse, Part, Role
+from genkit.model import Candidate, ModelRequest, ModelUsage, OutputConfig
 from genkit.telemetry import SpanMetadata, SpanNext
 
 

@@ -7,17 +7,16 @@
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from genkit import (
     Document,
     Genkit,
     Interrupt,
     Message,
-    MiddlewareRef,
     ModelResponse,
     ModelResponseChunk,
     Part,
@@ -47,12 +46,11 @@ from genkit._core._typing import (
     Role,
     Score,
     Supports,
-    ToolChoice,
     ToolDefinition,
     ToolRequest,
     ToolResponse,
 )
-from genkit.middleware import BaseMiddleware, GenerateMiddlewareContext, ModelHookParams
+from genkit.middleware import BaseMiddleware, GenerateMiddlewareContext, MiddlewareRef, ModelHookParams
 
 # type SetupFixture = tuple[Genkit, EchoModel, ProgrammableModel]
 SetupFixture = tuple[Genkit, EchoModel, ProgrammableModel]
@@ -354,11 +352,11 @@ async def test_generate_with_tools(setup_test: SetupFixture) -> None:
     response = await ai.generate(
         model='echoModel',
         prompt='hi',
-        tool_choice=ToolChoice.REQUIRED,
+        tool_choice='required',
         tools=['testTool'],
     )
 
-    want_txt = f'[ECHO] user: "hi" tools=testTool tool_choice={ToolChoice.REQUIRED}'
+    want_txt = '[ECHO] user: "hi" tools=testTool tool_choice=required'
 
     want_request = [
         ToolDefinition(
@@ -387,13 +385,36 @@ async def test_generate_with_tools(setup_test: SetupFixture) -> None:
     stream_result = ai.generate_stream(
         model='echoModel',
         prompt='hi',
-        tool_choice=ToolChoice.REQUIRED,
+        tool_choice='required',
         tools=['testTool'],
     )
 
     assert (await stream_result.response).text == want_txt
     assert echo.last_request is not None
     assert echo.last_request.tools == want_request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice', ['auto', 'required', 'none'])
+async def test_generate_tool_choice_string_reaches_the_model(
+    setup_test: SetupFixture, choice: Literal['auto', 'required', 'none']
+) -> None:
+    """A plain string tool_choice is what the model sees on its request."""
+    ai, *_ = setup_test
+
+    response = await ai.generate(model='echoModel', prompt='hi', tool_choice=choice)
+
+    assert response.request is not None
+    assert response.request.tool_choice == choice
+
+
+@pytest.mark.asyncio
+async def test_generate_unknown_tool_choice_raises_validation_error(setup_test: SetupFixture) -> None:
+    """A tool_choice outside auto/required/none fails before any model call."""
+    ai, *_ = setup_test
+
+    with pytest.raises(ValidationError, match="'auto', 'required' or 'none'"):
+        await ai.generate(model='echoModel', prompt='hi', tool_choice='sometimes')  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -661,7 +682,7 @@ async def test_generate_with_tools_and_output(setup_test: SetupFixture) -> None:
     response = await ai.generate(
         model='programmableModel',
         prompt='hi',
-        tool_choice=ToolChoice.REQUIRED,
+        tool_choice='required',
         tools=['testTool'],
     )
 
@@ -738,7 +759,7 @@ async def test_generate_stream_with_tools(setup_test: SetupFixture) -> None:
     stream_result = ai.generate_stream(
         model='programmableModel',
         prompt='hi',
-        tool_choice=ToolChoice.REQUIRED,
+        tool_choice='required',
         tools=['testTool'],
     )
 
@@ -1838,7 +1859,7 @@ def test_define_background_model_with_info(setup_test: SetupFixture) -> None:
 
 def test_background_model_factory_stashes_class_without_registering(setup_test: SetupFixture) -> None:
     """background_model() keeps the config class on the start action."""
-    from genkit import background_model
+    from genkit.model import background_model
 
     ai, _, _, *_ = setup_test
 
@@ -1889,7 +1910,7 @@ def _echo_request_kwargs() -> dict[str, Any]:
     return {
         'docs': [Document(content=[Part.from_text('doc content 1')])],
         'config': dict(_ECHO_CONFIG),
-        'tool_choice': ToolChoice.REQUIRED,
+        'tool_choice': 'required',
         'output_format': 'json',
     }
 
@@ -1902,7 +1923,7 @@ def _assert_request_fully_echoed(response: ModelResponse) -> None:
     assert request.docs is not None, 'docs dropped from echoed request'
     assert request.config == _ECHO_CONFIG, 'config dropped from echoed request'
     assert request.tools, 'tools dropped from echoed request'
-    assert request.tool_choice == ToolChoice.REQUIRED, 'tool_choice dropped from echoed request'
+    assert request.tool_choice == 'required', 'tool_choice dropped from echoed request'
     assert request.output is not None
     assert request.output.format == 'json', 'output dropped from echoed request'
 

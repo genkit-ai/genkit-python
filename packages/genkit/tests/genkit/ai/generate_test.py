@@ -280,6 +280,58 @@ async def test_generate_stream_chunk_text_from_factory_part(
 
 
 @pytest.mark.asyncio
+async def test_generate_stream_earlier_chunk_accumulated_text_stays_put(
+    setup_test: tuple[Genkit, ScriptedModel],
+) -> None:
+    """An earlier stream chunk's accumulated_text does not grow as later chunks arrive."""
+    ai, pm = setup_test
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('abc')]),
+        )
+    )
+    pm.chunks = [
+        [
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('a')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('b')]),
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('c')]),
+        ],
+    ]
+
+    stream_result = ai.generate_stream(model='scriptedModel', prompt='do it')
+    first: ModelResponseChunk | None = None
+    async for chunk in stream_result.stream:
+        if first is None:
+            first = chunk
+    assert first is not None
+    assert first.accumulated_text == 'a'
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_chunk_output_uses_format_parser(
+    setup_test: tuple[Genkit, ScriptedModel],
+) -> None:
+    """Streaming with output_format='array' puts the parsed list on chunk.output."""
+    ai, pm = setup_test
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('[{"id": 1}]')]),
+        )
+    )
+    pm.chunks = [
+        [
+            ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('[{"id": 1}]')]),
+        ],
+    ]
+
+    stream_result = ai.generate_stream(model='scriptedModel', prompt='list', output_format='array')
+    chunks = [chunk async for chunk in stream_result.stream]
+    assert chunks[0].output == [{'id': 1}]
+
+
+@pytest.mark.asyncio
 async def test_simulates_doc_grounding(
     setup_test: tuple[Genkit, ScriptedModel],
 ) -> None:

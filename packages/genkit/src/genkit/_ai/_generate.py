@@ -85,6 +85,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     as_message,
+    chunk_for_stream,
     reject_unanswered_interrupts,
 )
 from genkit._core._protocols import RegistryLike, SessionLike
@@ -861,7 +862,7 @@ class ChunkAccumulator:
         prev_to_send = copy.copy(self.prev_chunks)
         self.prev_chunks.append(chunk)
 
-        return ModelResponseChunk(
+        return chunk_for_stream(
             chunk,
             index=self.message_index,
             previous_chunks=prev_to_send,

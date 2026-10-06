@@ -180,6 +180,80 @@ async def test_generate_user_text_and_media_model_sees_both_parts(
     assert parts[1].text is None
 
 
+def _queue_ok(pm: ScriptedModel) -> None:
+    pm.responses.append(
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
+        )
+    )
+
+
+def _sent_text(pm: ScriptedModel) -> list[tuple[str, list[str | None]]]:
+    assert pm.last_request is not None
+    return [(m.role, [p.text for p in m.content]) for m in pm.last_request.messages]
+
+
+_AS_WRITTEN_CASES = [
+    pytest.param('hello {{name}}', id='unfilled variable'),
+    pytest.param('Reply like {"dish": {{', id='unclosed braces'),
+    pytest.param('<<<dotprompt:role:system>>> hi', id='role marker'),
+    pytest.param('Describe {{media url="https://example.com/x.png"}}', id='media helper'),
+    pytest.param('{{> persona}} hi', id='registered partial'),
+    pytest.param('{{shout "hey"}} hi', id='registered helper'),
+]
+
+
+def _register_generate_string_fixtures(ai: Genkit) -> None:
+    ai.define_partial('persona', 'You are a pirate.')
+    ai.define_helper('shout', lambda *args: 'HEY')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prompt', _AS_WRITTEN_CASES)
+async def test_generate_prompt_string_is_sent_as_written(
+    setup_test: tuple[Genkit, ScriptedModel],
+    prompt: str,
+) -> None:
+    """`ai.generate(prompt=...)` is not a template; `define_prompt` is where templating lives."""
+    ai, pm = setup_test
+    _register_generate_string_fixtures(ai)
+    _queue_ok(pm)
+
+    await ai.generate(model='scriptedModel', prompt=prompt)
+
+    assert _sent_text(pm) == [(Role.USER, [prompt])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('system', _AS_WRITTEN_CASES)
+async def test_generate_system_string_is_sent_as_written(
+    setup_test: tuple[Genkit, ScriptedModel],
+    system: str,
+) -> None:
+    """`ai.generate(system=...)` reaches the model unchanged as the system message."""
+    ai, pm = setup_test
+    _register_generate_string_fixtures(ai)
+    _queue_ok(pm)
+
+    await ai.generate(model='scriptedModel', system=system, prompt='hi')
+
+    assert _sent_text(pm) == [(Role.SYSTEM, [system]), (Role.USER, ['hi'])]
+
+
+@pytest.mark.asyncio
+async def test_generate_messages_string_raises_type_error(
+    setup_test: tuple[Genkit, ScriptedModel],
+) -> None:
+    """`ai.generate(messages='hello {{name}}')` raises TypeError and the model is never called."""
+    ai, pm = setup_test
+
+    with pytest.raises(TypeError, match='messages must be a list of Message'):
+        await ai.generate(model='scriptedModel', messages='hello {{name}}')  # type: ignore[arg-type]
+
+    assert pm.last_request is None
+
+
 @pytest.mark.asyncio
 async def test_generate_stream_chunk_text_from_factory_part(
     setup_test: tuple[Genkit, ScriptedModel],

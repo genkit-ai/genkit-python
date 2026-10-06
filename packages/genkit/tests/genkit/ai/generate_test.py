@@ -22,7 +22,7 @@ from genkit import Document, Genkit, Message, ModelResponse, ModelResponseChunk,
 from genkit._ai._formats._types import FormatDef, Formatter, FormatterConfig
 from genkit._ai._generate import DEFAULT_MAX_TURNS, ChunkAccumulator, augment_with_context, generate_action
 from genkit._ai._model import text_from_content, text_from_message
-from genkit._ai._tools import Interrupt, ToolRunContext, define_tool, restart_tool
+from genkit._ai._tools import Interrupt, ToolRunContext, define_tool
 from genkit._core._action import ActionRunContext
 from genkit._core._error import GenkitError, PublicError, RuntimeErrorReason
 from genkit._core._model import GenerateActionOptions, ModelRequest, Resume
@@ -2032,7 +2032,7 @@ async def test_generate_restart_without_approval_returns_interrupted() -> None:
         messages=history,
         tools=['sensitiveTool'],
         use=[ApprovalMW()],
-        resume_restart=restart_tool(interrupt=interrupt_part),
+        resume_restart=interrupt_part.restart(),
     )
     assert response.finish_reason == FinishReason.INTERRUPTED
     assert response.finish_message == 'One or more tool calls resulted in interrupts.'
@@ -2050,8 +2050,7 @@ async def test_generate_restart_without_approval_returns_interrupted() -> None:
         messages=response.messages,
         tools=['sensitiveTool'],
         use=[ApprovalMW()],
-        resume_restart=restart_tool(
-            interrupt=response.interrupts[0],
+        resume_restart=response.interrupts[0].restart(
             resumed_metadata={'toolApproved': True},
         ),
     )
@@ -2083,7 +2082,7 @@ async def test_generate_restart_interrupt_returns_interrupted() -> None:
     response = await ai.generate(
         messages=first.messages,
         tools=['hold'],
-        resume_restart=restart_tool(interrupt=first.interrupts[0]),
+        resume_restart=first.interrupts[0].restart(),
     )
     assert response.finish_reason == FinishReason.INTERRUPTED
     assert response.finish_message == 'One or more tool calls resulted in interrupts.'
@@ -3763,7 +3762,7 @@ async def test_resume_restart_cannot_replace_the_named_tool_action() -> None:
     second = await ai.generate(
         messages=list(first.messages),
         tools=['lookup'],
-        resume_restart=restart_tool(interrupt=first.interrupts[0], replace_input={'ok': True}),
+        resume_restart=first.interrupts[0].restart(replace_input={'ok': True}),
         use=[SwapBody()],
     )
 

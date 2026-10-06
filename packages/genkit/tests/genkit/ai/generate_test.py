@@ -15,7 +15,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from genkit import Document, Genkit, Message, ModelResponse, ModelResponseChunk, MultipartToolResponse, Part
+from genkit import Document, Genkit, Message, ModelResponse, ModelResponseChunk, MultipartToolResponse, Part, Tool, tool
 from genkit._ai._formats._types import FormatDef, Formatter, FormatterConfig
 from genkit._ai._generate import DEFAULT_MAX_TURNS, ChunkAccumulator, augment_with_context, generate_action
 from genkit._ai._model import text_from_content, text_from_message
@@ -1646,7 +1646,7 @@ async def test_middleware_wrap_tool_interrupt_handled_as_interrupt_not_crash() -
 
 @pytest.mark.asyncio
 async def test_middleware_contributed_tools_available_to_model() -> None:
-    """Middleware.tools() contributes actions scoped to the generate call (child registry).
+    """Middleware.tools() returns Tool handles scoped to the generate call (child registry).
 
     The contributed tool is resolvable by the model during the call but must not
     appear in the root registry afterward — mirroring Go's Hooks.Tools + NewChild.
@@ -1658,17 +1658,12 @@ async def test_middleware_contributed_tools_available_to_model() -> None:
     class ToolProviderMiddleware(BaseMiddleware):
         """Middleware that contributes a tool dynamically per generate() call."""
 
-        def tools(self, ctx: GenerateMiddlewareContext) -> list:
-            # Build a tool action on a throw-away registry; the generate engine
-            # will adopt it into a call-scoped child registry.
-            scratch = Registry()
-
-            async def provided_tool() -> str:
+        def tools(self, ctx: GenerateMiddlewareContext) -> list[Tool]:
+            async def middleware_tool() -> str:
                 """A tool injected by middleware."""
                 return 'from_middleware_tool'
 
-            t = define_tool(scratch, provided_tool, name='middleware_tool')
-            return [t.action()]
+            return [tool(middleware_tool)]
 
     pm, _ = define_programmable_model(ai)
 
@@ -1697,6 +1692,7 @@ async def test_middleware_contributed_tools_available_to_model() -> None:
             use=[MiddlewareRef(name='tool_provider_mw')],
         ),
     )
+    assert _tool_output(response.messages[2]) == 'from_middleware_tool'
     assert response.text == 'done'
 
     # The contributed tool must NOT be visible in the root registry after the call.
@@ -1715,13 +1711,11 @@ async def test_middleware_tool_already_on_the_request_raises() -> None:
 
     @ai.middleware(name='also_ping')
     class AlsoPing(BaseMiddleware):
-        def tools(self, ctx: GenerateMiddlewareContext) -> list:
-            scratch = Registry()
-
+        def tools(self, ctx: GenerateMiddlewareContext) -> list[Tool]:
             async def ping() -> str:
                 return 'from_mw'
 
-            return [define_tool(scratch, ping, name='ping').action()]
+            return [tool(ping)]
 
     with pytest.raises(GenkitError, match="tool 'ping' is contributed by middleware") as raised:
         await ai.generate(prompt='hi', tools=['ping'], use=[AlsoPing()])
@@ -1739,13 +1733,11 @@ async def test_two_middleware_contributing_the_same_tool_raises() -> None:
     def _ping_mw(name: str) -> type[BaseMiddleware]:
         @ai.middleware(name=name)
         class PingMw(BaseMiddleware):
-            def tools(self, ctx: GenerateMiddlewareContext) -> list:
-                scratch = Registry()
-
+            def tools(self, ctx: GenerateMiddlewareContext) -> list[Tool]:
                 async def ping() -> str:
                     return name
 
-                return [define_tool(scratch, ping, name='ping').action()]
+                return [tool(ping)]
 
         return PingMw
 
@@ -1774,14 +1766,12 @@ async def test_middleware_in_one_call_share_an_isolated_registry() -> None:
 
     @ai.middleware(name='provider_mw')
     class ProviderMW(BaseMiddleware):
-        def tools(self, ctx: GenerateMiddlewareContext) -> list:
-            scratch = Registry()
-
+        def tools(self, ctx: GenerateMiddlewareContext) -> list[Tool]:
             async def shared_tool() -> str:
                 """Shared by all middleware in the call."""
                 return 'shared_ok'
 
-            return [define_tool(scratch, shared_tool, name='shared_tool').action()]
+            return [tool(shared_tool)]
 
     @ai.middleware(name='looker_mw')
     class LookerMW(BaseMiddleware):
@@ -2467,13 +2457,11 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
     @ai.middleware(name='tool_injector_mw')
     class ToolInjectorMiddleware(BaseMiddleware):
         def tools(self, ctx: GenerateMiddlewareContext) -> list:
-            scratch = Registry()
-
             async def injected_tool() -> str:
                 """A tool contributed by middleware."""
                 return 'injected_success'
 
-            return [define_tool(scratch, injected_tool, name='injectedTool').action()]
+            return [tool(injected_tool, name='injectedTool')]
 
     pm, _ = define_programmable_model(ai)
 

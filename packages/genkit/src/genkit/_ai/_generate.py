@@ -107,6 +107,7 @@ DEFAULT_MAX_TURNS = 50
 
 logger = get_logger(__name__)
 
+T = TypeVar('T')
 HookParamsT = TypeVar('HookParamsT')
 HookResultT = TypeVar('HookResultT')
 HookWrap = Callable[
@@ -380,6 +381,31 @@ def hook_wrap(mw: MiddlewareDef, hook: str) -> HookWrap[HookParamsT, HookResultT
     return cast(HookWrap[HookParamsT, HookResultT], wrap)
 
 
+async def hop(*, body: Awaitable[T]) -> T:
+    """Run ``body`` on a child task so a long use= list or tool loop can return.
+
+    The child yields once before ``body`` so an eager task factory does not
+    keep stacking hops on this call.
+
+    asyncio re-raises KeyboardInterrupt and SystemExit out of the event loop
+    instead of into the awaiting task. The child returns them as a value and
+    the parent raises them here, so outer turn and middleware frames unwind
+    in order, the same as before the hop.
+    """
+
+    async def child() -> tuple[T | None, KeyboardInterrupt | SystemExit | None]:
+        await asyncio.sleep(0)
+        try:
+            return await body, None
+        except (KeyboardInterrupt, SystemExit) as exc:
+            return None, exc
+
+    result, exc = await asyncio.create_task(child())
+    if exc is not None:
+        raise exc
+    return cast(T, result)
+
+
 async def dispatch_hooks(
     *,
     middleware: list[MiddlewareDef],
@@ -410,7 +436,15 @@ async def dispatch_hooks(
 
         return stamped
 
-    runner = with_after_result(next_fn)
+    async def leaf(
+        p: HookParamsT,
+        c: GenerateMiddlewareContext,
+    ) -> HookResultT:
+        # Hop even when use=[] so a logging middleware cannot change whether
+        # a ContextVar the model set is still set after generate.
+        return await hop(body=next_fn(p, c))
+
+    runner = with_after_result(leaf)
     for mw in reversed(middleware):
         wrap = hook_wrap(mw, hook)
 
@@ -421,14 +455,16 @@ async def dispatch_hooks(
             _inner: Callable[[HookParamsT, GenerateMiddlewareContext], Awaitable[HookResultT]] = runner,
             _wrap: HookWrap[HookParamsT, HookResultT] = wrap,
         ) -> HookResultT:
-            return await run_logged_hook(
-                mw=_mw,
-                hook=hook,
-                params=p,
-                ctx=c,
-                wrap=_wrap,
-                inner=_inner,
-                extra=extra(p) if extra is not None else None,
+            return await hop(
+                body=run_logged_hook(
+                    mw=_mw,
+                    hook=hook,
+                    params=p,
+                    ctx=c,
+                    wrap=_wrap,
+                    inner=_inner,
+                    extra=extra(p) if extra is not None else None,
+                )
             )
 
         runner = with_after_result(run_next)
@@ -1471,14 +1507,16 @@ async def generate_turn(
         return after_tools
     # Tools already ran. This is the conversation if a later pipe fails.
     call.set_messages(after_tools.messages)
-    return await run_wrap_generate(
-        registry=registry,
-        options=after_tools.options,
-        mw_pipeline=mw_pipeline,
-        current_turn=current_turn + 1,
-        message_index=after_tools.message_index,
-        call=call,
-        resolved=resolved,
+    return await hop(
+        body=run_wrap_generate(
+            registry=registry,
+            options=after_tools.options,
+            mw_pipeline=mw_pipeline,
+            current_turn=current_turn + 1,
+            message_index=after_tools.message_index,
+            call=call,
+            resolved=resolved,
+        )
     )
 
 

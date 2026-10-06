@@ -21,11 +21,11 @@ import inspect
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from types import UnionType
-from typing import Any, Union, cast, get_args, get_origin, get_type_hints
+from typing import Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from genkit._core._action import Action, ActionKind, ActionRunContext
+from genkit._core._action import Action, ActionKind, ActionRunContext, resolve_type_hints
 from genkit._core._error import GenkitError, Interrupt, RuntimeErrorReason
 from genkit._core._logger import get_logger
 from genkit._core._middleware import GenerateMiddlewareContext
@@ -565,11 +565,7 @@ def model_schema_from_return_annotation(
     inferred: dict[str, object] | None,
 ) -> dict[str, object] | None:
     """JSON Schema the model should bind, from the handler's return annotation."""
-    try:
-        hints = get_type_hints(func)
-    except Exception:
-        hints = dict(getattr(func, '__annotations__', {}))
-    inner = envelope_output_type(hints.get('return'))
+    inner = envelope_output_type(resolve_type_hints(func).get('return'))
     if inner is NOT_ENVELOPE:
         return inferred
     if inner is Any or inner is object:
@@ -608,32 +604,15 @@ def _define_tool(
         raise ValueError(f'Cannot infer a tool name from {func!r}; pass name= explicitly.')
     tool_description = _get_func_description(func, description)
 
-    input_spec = inspect.getfullargspec(func)
-
-    async def tool_fn_wrapper(*args: Any) -> Any:  # noqa: ANN401 - arity dispatch; args/return follow registered tool
+    async def tool_fn_wrapper(input: object, ctx: ActionRunContext) -> MultipartToolResponse[Any]:  # noqa: A002
         # Record resumed metadata on the current span for observability.
         resumed_meta = _tool_resumed_metadata.get()
         if resumed_meta:
             set_custom_metadata_attributes({'resumed': resumed_meta})
 
-        # Dynamic dispatch by arity; payload types follow the registered tool (not expressible here).
-        match len(input_spec.args):
-            case 0:
-                raw = await func()
-            case 1:
-                raw = await func(args[0])
-            case 2:
-                original_input = _tool_original_input.get()
-                raw = await func(
-                    args[0],
-                    ToolRunContext(
-                        cast(ActionRunContext, args[1]),
-                        resumed_metadata=resumed_meta,
-                        original_input=original_input,
-                    ),
-                )
-            case _:
-                raise ValueError('tool must have 0-2 args...')
+        # A ctx annotated ActionRunContext gets the ToolRunContext too.
+        tool_ctx = ToolRunContext(ctx, resumed_metadata=resumed_meta, original_input=_tool_original_input.get())
+        raw = await action.params.call(func, input, tool_ctx)
         return as_multipart_tool_response(raw, tool_name=tool_name)
 
     action = registry.register_action(
@@ -672,12 +651,17 @@ def define_tool(
     Args:
         registry: The registry to register the tool in.
         func: The async function to register as a tool. Must be a coroutine function.
+            It takes at most one input, annotated with a type that has a JSON
+            schema (``Any`` accepts anything), plus an optional parameter
+            annotated ``ToolRunContext`` in any position.
         name: Optional name for the tool. Defaults to the function name.
         description: Optional description. Defaults to the function's docstring.
         input_schema: Optional input schema override (Pydantic model or JSON-schema dict).
 
     Raises:
-        TypeError: If func is not an async function.
+        TypeError: If func is not an async function, has more than one input,
+            has an input with no annotation or no JSON schema, or has more than
+            one ``ToolRunContext`` parameter.
     """
     return _define_tool(registry, func, name, description, input_schema=input_schema)
 
@@ -696,13 +680,14 @@ def tool(
     for one call.
 
     Args:
-        func: Async tool implementation (same 0–2 argument rules as :func:`define_tool`).
+        func: Async tool implementation (same one-input rule as :func:`define_tool`).
         name: Tool name for the model. Defaults to ``func.__name__``.
         description: Sent to the model. Defaults to the function docstring.
         input_schema: Optional input schema override (Pydantic model or JSON-schema dict).
 
     Raises:
-        TypeError: If ``func`` is not a coroutine function.
+        TypeError: If ``func`` is not a coroutine function, takes more than one input,
+            or its input has no annotation or no JSON schema.
         ValueError: If no ``name`` is given and ``func`` has no ``__name__``.
 
     Example:

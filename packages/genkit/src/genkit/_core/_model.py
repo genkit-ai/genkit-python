@@ -57,7 +57,6 @@ from genkit._core._typing import (
     GenerateActionOutputConfig,
     GenerationCommonConfig,
     GenerationUsage,
-    GenkitRuntimeError as GenkitRuntimeErrorData,
     JsonPatch,
     Media,
     MessageData,
@@ -879,7 +878,7 @@ class SessionSnapshot(GenkitModel):
     heartbeat_at: str | None = None
     status: SnapshotStatus | None = None
     finish_reason: AgentFinishReason | None = None
-    error: GenkitRuntimeErrorData | None = None
+    error: GenkitRuntimeError | None = None
     state: SessionState | None = None
 
     @field_validator('state', mode='before')
@@ -936,7 +935,7 @@ class AgentOutput(GenkitModel):
     message: Message | None = None
     artifacts: list[Artifact] | None = None
     finish_reason: AgentFinishReason | None = None
-    error: GenkitRuntimeErrorData | None = None
+    error: GenkitRuntimeError | None = None
 
     @field_validator('message', mode='before')
     @classmethod
@@ -1188,9 +1187,6 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
         if self.custom is None:
             self.custom = {}
 
-    def assert_valid(self) -> None:
-        """No-op. A blocked or empty reply is still a response the caller can read."""
-
     def _mark_invalid_output(self, message: str) -> None:
         self.error = GenkitRuntimeError(
             status='INTERNAL',
@@ -1211,7 +1207,7 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
                 return True
         return False
 
-    def assert_valid_schema(self) -> None:
+    def _assert_valid_schema(self) -> None:
         """Mark this response as unusable structured output without throwing.
 
         Raw text or a wrong-shape JSON is not a Recipe. generate()

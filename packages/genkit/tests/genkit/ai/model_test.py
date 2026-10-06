@@ -398,7 +398,7 @@ def test_text_from_content_skips_thoughts() -> None:
     assert text_from_content(content) == 'hello'
 
 
-def test_assert_valid_schema_marks_error_when_output_does_not_conform() -> None:
+def test_schema_check_marks_error_when_output_does_not_conform() -> None:
     """Structured output that is the wrong shape stays on the response as error."""
 
     class Person(BaseModel):
@@ -415,7 +415,7 @@ def test_assert_valid_schema_marks_error_when_output_does_not_conform() -> None:
     )
     response._schema_type = Person
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.error is not None
     assert response.error.status == 'INTERNAL'
@@ -424,7 +424,7 @@ def test_assert_valid_schema_marks_error_when_output_does_not_conform() -> None:
     assert response.text == '{"name": "John", "age": "30"}'
 
 
-def test_assert_valid_schema_passes_when_output_conforms() -> None:
+def test_schema_check_passes_when_output_conforms() -> None:
     """Structured output that matches the schema is a usable reply."""
 
     class Person(BaseModel):
@@ -441,13 +441,13 @@ def test_assert_valid_schema_passes_when_output_conforms() -> None:
     )
     response._schema_type = Person
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.output is not None
     assert response.output.name == 'John'
     assert response.output.age == 30
 
 
-def test_assert_valid_schema_names_non_json_output() -> None:
+def test_schema_check_names_non_json_output() -> None:
     """A raw echo string is a schema miss, not a json5 column error."""
     response = ModelResponse(
         message=Message(role=Role.MODEL, content=[Part.from_text('[ECHO] hi')]),
@@ -455,7 +455,7 @@ def test_assert_valid_schema_names_non_json_output() -> None:
     )
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema={'type': 'object'}))
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.output is None
     assert response.finish_message is None
@@ -463,7 +463,7 @@ def test_assert_valid_schema_names_non_json_output() -> None:
     assert 'not valid JSON' in response.error.message
 
 
-def test_assert_valid_schema_keeps_blocked_finish() -> None:
+def test_schema_check_keeps_blocked_finish() -> None:
     """A safety refusal keeps finish_reason=blocked; the text stays on .text."""
     response = ModelResponse(
         finish_reason=FinishReason.BLOCKED,
@@ -472,13 +472,13 @@ def test_assert_valid_schema_keeps_blocked_finish() -> None:
     )
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema={'type': 'object'}))
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.BLOCKED
     assert response.text == 'nope'
     assert response.output is None
 
 
-def test_assert_valid_schema_keeps_length_on_truncated_json() -> None:
+def test_schema_check_keeps_length_on_truncated_json() -> None:
     """Hit the token cap — output validation does not replace the model's reason."""
     response = ModelResponse(
         finish_reason=FinishReason.LENGTH,
@@ -486,7 +486,7 @@ def test_assert_valid_schema_keeps_length_on_truncated_json() -> None:
     )
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema={'type': 'object'}))
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.LENGTH
     assert response.error is not None
     assert response.error.status == 'INTERNAL'
@@ -507,13 +507,13 @@ def test_length_finish_still_parses_complete_json() -> None:
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema=Recipe.model_json_schema()))
     response._schema_type = Recipe
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.LENGTH
     assert response.output is not None
     assert response.output.title == 'Soup'
 
 
-def test_assert_valid_schema_marks_error_when_output_is_empty() -> None:
+def test_schema_check_marks_error_when_output_is_empty() -> None:
     """An empty reply is a miss when a schema was requested."""
     response = ModelResponse(
         message=Message(role=Role.MODEL, content=[Part.from_text('')]),
@@ -521,14 +521,14 @@ def test_assert_valid_schema_marks_error_when_output_is_empty() -> None:
     )
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema={'type': 'object'}))
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.error is not None
     assert response.error.status == 'INTERNAL'
     assert response.output is None
 
 
-def test_assert_valid_schema_keeps_other_finish() -> None:
+def test_schema_check_keeps_other_finish() -> None:
     """No-image / unspecified image stop is other, not a schema miss."""
     response = ModelResponse(
         finish_reason=FinishReason.OTHER,
@@ -536,12 +536,12 @@ def test_assert_valid_schema_keeps_other_finish() -> None:
     )
     response.request = ModelRequest(messages=[], output=OutputConfig(json_schema={'type': 'object'}))
 
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.OTHER
     assert response.output is None
 
 
-def test_assert_valid_schema_broken_schema_still_throws() -> None:
+def test_schema_check_broken_schema_still_throws() -> None:
     """A caller-broken schema is not stamped as a model miss."""
     response = ModelResponse(
         finish_reason=FinishReason.STOP,
@@ -553,7 +553,7 @@ def test_assert_valid_schema_broken_schema_still_throws() -> None:
     )
 
     with pytest.raises(InvalidOutputSchemaError):
-        response.assert_valid_schema()
+        response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
 
 
@@ -649,14 +649,14 @@ def test_output_returns_none_on_unparseable_text_with_json_format_no_schema() ->
     assert response.output is None
 
 
-def test_assert_valid_schema_marks_invalid_output_when_json_format_no_schema_unparseable() -> None:
+def test_schema_check_marks_invalid_output_when_json_format_no_schema_unparseable() -> None:
     """Unparseable text with format='json' (no schema) records INVALID_OUTPUT."""
     response = ModelResponse(
         message=Message(role=Role.MODEL, content=[Part.from_text('plain unparseable text')]),
         finish_reason=FinishReason.STOP,
         request=ModelRequest(messages=[], output=OutputConfig(format='json')),
     )
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.output is None
     assert response.text == 'plain unparseable text'
@@ -665,7 +665,7 @@ def test_assert_valid_schema_marks_invalid_output_when_json_format_no_schema_unp
     assert 'not valid JSON' in response.error.message
 
 
-def test_assert_valid_schema_marks_invalid_output_when_array_format_no_schema_unparseable() -> None:
+def test_schema_check_marks_invalid_output_when_array_format_no_schema_unparseable() -> None:
     """Unparseable text with format='array' (no schema) records INVALID_OUTPUT."""
     from genkit._ai._formats._array import ArrayFormat
 
@@ -677,7 +677,7 @@ def test_assert_valid_schema_marks_invalid_output_when_array_format_no_schema_un
         request=ModelRequest(messages=[], output=OutputConfig(format='array')),
     )
     response._message_parser = formatter.parse_message
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.output is None
     assert response.text == 'plain unparseable text'
@@ -685,14 +685,14 @@ def test_assert_valid_schema_marks_invalid_output_when_array_format_no_schema_un
     assert response.error.reason is RuntimeErrorReason.INVALID_OUTPUT
 
 
-def test_assert_valid_schema_passes_when_json_format_no_schema_valid() -> None:
+def test_schema_check_passes_when_json_format_no_schema_valid() -> None:
     """Valid JSON with format='json' (no schema) parses cleanly without error."""
     response = ModelResponse(
         message=Message(role=Role.MODEL, content=[Part.from_text('{"item": "bread"}')]),
         finish_reason=FinishReason.STOP,
         request=ModelRequest(messages=[], output=OutputConfig(format='json')),
     )
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     assert response.finish_reason == FinishReason.STOP
     assert response.error is None
     assert response.output == {'item': 'bread'}

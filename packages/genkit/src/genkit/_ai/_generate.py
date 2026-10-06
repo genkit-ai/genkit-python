@@ -1616,13 +1616,12 @@ def stop_after_model(
         formatter=formatter,
         message=generated_msg,
     )
-    response.assert_valid()
 
     if response.operation is not None:
         return attach_resendable_history(response, options.messages)
 
     if generated_msg is None:
-        response.assert_valid_schema()
+        response._assert_valid_schema()
         log_model_responded(
             model=options.model,
             turn=current_turn,
@@ -1637,7 +1636,7 @@ def stop_after_model(
 
     if options.return_tool_requests or len(tool_requests) == 0:
         if len(tool_requests) == 0:
-            response.assert_valid_schema()
+            response._assert_valid_schema()
         log_model_responded(
             model=options.model,
             turn=current_turn,
@@ -1817,8 +1816,7 @@ def stamp_output(
         response._message_parser = lambda msg: parse(msg)
     if out and out.schema_type:
         response._schema_type = out.schema_type
-    response.assert_valid()
-    response.assert_valid_schema()
+    response._assert_valid_schema()
     return response
 
 

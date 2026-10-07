@@ -1081,7 +1081,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         *,
         execute: Callable[[], Awaitable[OutputT]] | None = None,
     ) -> ActionResponse[OutputT]:
-        """Open the action span via ``run_in_new_span``, dispatch ``self._fn``, wrap errors in ``GenkitError``."""
+        """Open the action span via ``run_in_new_span``, dispatch ``self._fn``, re-raise what it raised."""
         start_time = time.perf_counter()
 
         # ``telemetry_labels`` are caller-controlled passthrough attrs (e.g.
@@ -1102,8 +1102,8 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 except Exception:
                     extra_metadata['context'] = str(traced_context)
 
-        trace_id = ''
-        span_id = ''
+        trace_id: str = ''
+        span_id: str = ''
 
         async def body(span: SpanContext) -> OutputT:
             nonlocal trace_id, span_id
@@ -1122,7 +1122,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                     span.set_metadata({'interrupt': e.metadata})
                 raise
             if self._strict_io:
-                output = self._validate_output(output, trace_id=trace_id)
+                output = self._validate_output(output)
             latency_ms = (time.perf_counter() - start_time) * 1000
             return cast(OutputT, _record_latency(output, latency_ms))
 
@@ -1131,34 +1131,25 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         if ctx.init is not None:
             attributes[Attr.INIT] = to_json_attr(ctx.init)
 
-        try:
-            output = await run_in_new_span(
-                self._name,
-                body,
-                action_type=str(self._kind),
-                input=None if input is NO_INPUT else input,
-                attributes=attributes,
-                is_action=True,
-            )
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            return ActionResponse(
-                response=output,
-                trace_id=trace_id,
-                span_id=span_id,
-                latency_ms=latency_ms,
-            )
-        except GenkitError:
-            raise
-        except Exception as e:
-            # Wrap outside the span so we don't clobber ``genkit:error`` (which
-            # the renderer already set to ``str(original_e)``).
-            raise GenkitError(
-                cause=e,
-                message=f'Error while running action {self._name}',
-                trace_id=trace_id,
-            ) from e
+        # A failure propagates as the body raised it. The trace id stays on
+        # the span; nothing is written onto the caller's exception.
+        output = await run_in_new_span(
+            self._name,
+            body,
+            action_type=str(self._kind),
+            input=None if input is NO_INPUT else input,
+            attributes=attributes,
+            is_action=True,
+        )
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        return ActionResponse(
+            response=output,
+            trace_id=trace_id,
+            span_id=span_id,
+            latency_ms=latency_ms,
+        )
 
-    def _validate_output(self, output: object, *, trace_id: str) -> OutputT:
+    def _validate_output(self, output: object) -> OutputT:
         """Give the caller what the flow's return annotation promises, or fail the run."""
         if self._output_type is None:
             return cast(OutputT, output)
@@ -1172,7 +1163,6 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 status='INTERNAL',
                 cause=e,
                 reason=RuntimeErrorReason.INVALID_OUTPUT,
-                trace_id=trace_id,
             ) from e
 
     async def _invoke(self, input: object | None, ctx: ActionRunContext) -> OutputT:

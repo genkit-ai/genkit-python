@@ -123,11 +123,10 @@ async def test_flow_that_raises_keeps_its_own_error() -> None:
     async def charge(name: str) -> Receipt:
         raise KeyError(name)
 
-    with pytest.raises(GenkitError) as exc:
+    with pytest.raises(KeyError) as exc:
         await charge('acme')
 
-    assert exc.value.reason is not RuntimeErrorReason.INVALID_OUTPUT
-    assert isinstance(exc.value.cause, KeyError)
+    assert exc.value.args == ('acme',)
 
 
 @pytest.mark.asyncio
@@ -220,7 +219,7 @@ async def test_tool_returning_wrong_shape_is_not_checked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dev_ui_run_with_bad_return_reports_internal_invalid_output() -> None:
+async def test_dev_ui_run_with_bad_return_reports_internal_invalid_output(hex_ids: None) -> None:
     """A Dev UI runAction of a bad-return flow gets INTERNAL, reason INVALID_OUTPUT, and the real message."""
     ai = Genkit()
 
@@ -238,3 +237,4 @@ async def test_dev_ui_run_with_bad_return_reports_internal_invalid_output() -> N
     assert error['code'] == 13  # INTERNAL
     assert error['details']['reason'] == 'INVALID_OUTPUT'
     assert "Flow 'charge' returned a value that doesn't match its return annotation" in error['message']
+    assert error['details']['traceId'] == response.headers['x-genkit-trace-id']

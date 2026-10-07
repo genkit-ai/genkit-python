@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._action import input_from_json
 from genkit._core._context import joined_headers
 from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
 from genkit.plugin_api import Action
@@ -195,12 +196,13 @@ async def _handle_action_request(
     else:
         resolved_init = body.get('init')
     action_obj = cast(Action[Any, Any, Any, Any], action)
+    action_input = input_from_json(input_data)
 
     if wants_stream(request):
 
         async def event_stream() -> AsyncIterator[str]:
             try:
-                stream_response = action_obj.stream(input_data, context=context, init=resolved_init)
+                stream_response = action_obj.stream(input=action_input, context=context, init=resolved_init)
                 async for chunk in stream_response.stream:
                     yield format_stream_chunk(chunk)
                 result = await stream_response.response
@@ -212,7 +214,7 @@ async def _handle_action_request(
         return StreamingResponse(event_stream(), media_type='text/event-stream')
 
     try:
-        response = await action_obj.run(input_data, context=context, init=resolved_init)
+        response = await action_obj.run(input=action_input, context=context, init=resolved_init)
         if response.response is None and empty_status is not None:
             return Response(status_code=empty_status)
         return {'result': to_dict(response.response)}

@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from werkzeug.exceptions import HTTPException
 
 from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._action import input_from_json
 from genkit._core._context import joined_headers
 from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
 from genkit.plugin_api import Action
@@ -169,11 +170,12 @@ def genkit_flask_handler(
             accept = request_data.headers.get('accept', '')
             stream = 'text/event-stream' in accept or request.args.get('stream') == 'true'
             init = input_data.get('init')
+            action_input = input_from_json(input_data['data'])
             if stream:
 
                 async def async_gen() -> AsyncIterator[str]:
                     try:
-                        stream_response = flow.stream(input_data.get('data'), context=action_context, init=init)
+                        stream_response = flow.stream(input=action_input, context=action_context, init=init)
                         async for chunk in stream_response.stream:
                             yield f'data: {json.dumps({"message": _to_dict(chunk)}, separators=_JSON_SEPARATORS)}\n\n'
 
@@ -187,7 +189,7 @@ def genkit_flask_handler(
                 return iter
             else:
                 try:
-                    response = await flow.run(input_data.get('data'), context=action_context, init=init)
+                    response = await flow.run(input=action_input, context=action_context, init=init)
                     return {'result': _to_dict(response.response)}
                 except Exception as e:
                     log_served_failure(adapter_logger=logger, error=e, where='run')

@@ -19,13 +19,14 @@
 import json
 import logging
 import math
+import reprlib
 import time
 from collections.abc import Mapping
 from email.utils import parsedate_to_datetime
 from enum import IntEnum
 from typing import Any, ClassVar, Literal, TypedDict, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic.alias_generators import to_camel
 from pydantic_core import to_jsonable_python
 
@@ -361,6 +362,40 @@ class Interrupt(Exception):  # noqa: N818 - public Genkit name; not renamed *Err
         self.metadata: dict[str, Any] = {} if metadata is None else metadata
 
 
+# Short previews of the offending value: `'acme'`, `None`, `{'dish': 'pad thai', ...}`.
+_value_preview = reprlib.Repr()
+_value_preview.maxstring = _value_preview.maxother = 40
+_value_preview.maxlist = _value_preview.maxtuple = _value_preview.maxdict = _value_preview.maxset = 3
+_value_preview.maxlevel = 2
+
+
+def format_validation_error(error: ValidationError, *, max_errors: int = 3) -> str:
+    """One short clause per Pydantic error: where, what was expected, what came in.
+
+    Pydantic already words each error for every type it validates (str, int,
+    models, lists, dicts, unions, Literal, Enum, TypedDict, dataclasses), so
+    this only drops the noise around it: the "N validation errors for X"
+    header, the ``[type=..., input_value=...]`` bracket, and the docs URL.
+
+    Example:
+        ``items[1].qty: Field required; table: Input should be a valid integer, got 'x'``
+    """
+    # Follow Pydantic's own decision about whether the value is safe to print.
+    hide_input = error.error_count() > 0 and 'input_value=' not in str(error)
+    problems: list[str] = []
+    for err in error.errors(include_url=False)[:max_errors]:
+        text = err['msg']
+        # For a missing field the input is the whole parent object, which says nothing new.
+        if err['type'] != 'missing' and not hide_input:
+            text = f'{text}, got {_value_preview.repr(err["input"])}'
+        path = ''.join(f'[{p}]' if isinstance(p, int) else f'.{p}' for p in err['loc']).lstrip('.')
+        problems.append(f'{path}: {text}' if path else text)
+    hidden = error.error_count() - max_errors
+    if hidden > 0:
+        problems.append(f'and {hidden} more')
+    return '; '.join(problems)
+
+
 class GenkitError(Exception):
     """Base error class for Genkit errors."""
 
@@ -404,7 +439,11 @@ class GenkitError(Exception):
         # downstream consumers (logs, model-facing tool error messages, the Dev
         # UI) see the real reason instead of the bare wrapper text.
         source_prefix = f'{source}: ' if source else ''
-        cause_suffix = f': {cause}' if cause else ''
+        if isinstance(cause, ValidationError):
+            formatted = format_validation_error(cause)
+            cause_suffix = f': {formatted}' if formatted else ''
+        else:
+            cause_suffix = f': {cause}' if cause else ''
         super().__init__(f'{source_prefix}{self.status}: {message}{cause_suffix}')
         self.original_message: str = message
 
@@ -413,6 +452,11 @@ class GenkitError(Exception):
         if reason is not None:
             details = dict(details)
             details['reason'] = reason.value
+        if isinstance(cause, ValidationError) and 'errors' not in details:
+            details = dict(details)
+            details['errors'] = [
+                {'loc': list(err['loc']), 'message': err['msg'], 'type': err['type']} for err in cause.errors()
+            ]
         if 'stack' not in details:
             details['stack'] = get_error_stack(cause if cause else self)
         if 'trace_id' not in details and trace_id:

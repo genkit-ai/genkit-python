@@ -36,7 +36,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from genkit._core._action import Action, BidiAction
+from genkit._core._action import Action, BidiAction, input_from_json
 from genkit._core._constants import GENKIT_VERSION
 from genkit._core._error import get_reflection_json
 from genkit._core._logger import get_logger
@@ -142,7 +142,7 @@ class ActionRunner:
                     input_val = AgentInput.model_validate(as_agent_input_dict(input_val))
 
             output = await self.action.run(
-                input=input_val,
+                input=input_from_json(input_val),
                 on_chunk=on_chunk,
                 context=self.payload.get('context', {}),
                 on_trace_start=self.on_trace_start,

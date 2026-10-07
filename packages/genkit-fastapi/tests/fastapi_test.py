@@ -405,6 +405,81 @@ def test_fastapi_context_provider_public_error_returns_its_status_and_message() 
     assert response.json() == {'message': 'not signed in', 'status': 'UNAUTHENTICATED'}
 
 
+def _defaulted_and_bad_return_app() -> FastAPI:
+    ai = Genkit()
+    app = FastAPI()
+
+    @ai.flow()
+    async def greet(name: str = 'world') -> str:
+        return f'hello {name}'
+
+    @ai.flow()
+    async def charge(name: str) -> dict[str, int]:
+        return {'account': name}  # type: ignore[dict-item]
+
+    app.include_router(serve_flow(greet, base_path='/greet'))
+    app.include_router(serve_flow(charge, base_path='/charge'))
+    return app
+
+
+def test_fastapi_flow_with_default_and_empty_body_uses_python_default() -> None:
+    """POST `{}` to a served `greet(name: str = 'world')` returns the default's result."""
+    client = TestClient(_defaulted_and_bad_return_app())
+    response = client.post('/greet', json={})
+    assert response.status_code == 200
+    assert response.json() == {'result': 'hello world'}
+
+
+def test_fastapi_flow_with_default_and_null_data_uses_python_default() -> None:
+    """POST `{"data": null}` behaves like an omitted input."""
+    client = TestClient(_defaulted_and_bad_return_app())
+    response = client.post('/greet', json={'data': None})
+    assert response.status_code == 200
+    assert response.json() == {'result': 'hello world'}
+
+
+def test_fastapi_stream_flow_with_default_and_null_data_uses_python_default() -> None:
+    """Streaming POST `{"data": null}` ends with the default's result."""
+    client = TestClient(_defaulted_and_bad_return_app())
+    response = client.post('/greet', json={'data': None}, headers={'accept': 'text/event-stream'})
+    assert response.status_code == 200
+    assert 'data: {"result":"hello world"}' in response.text
+
+
+def test_fastapi_flow_returning_wrong_shape_returns_500_internal_error() -> None:
+    """A served flow whose return doesn't match `-> dict[str, int]` gets 500 Internal Error, not the bad value."""
+    client = TestClient(_defaulted_and_bad_return_app())
+    response = client.post('/charge', json={'data': 'acme'})
+    assert response.status_code == 500
+    assert response.json() == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert 'acme' not in response.text
+
+
+class Receipt(BaseModel):
+    table: int
+    note: str | None = None
+
+
+def test_fastapi_flow_returning_dict_for_model_sends_model_dump() -> None:
+    """POST to a `-> Receipt` flow that returns `{'table': 4, 'note': None}` gives `{"result": {"table": 4}}`."""
+    ai = Genkit()
+    app = FastAPI()
+
+    @ai.flow()
+    async def close_tab(table: int) -> Receipt:
+        return {'table': table, 'note': None}  # type: ignore[return-value]
+
+    @app.post('/close_tab', response_model=None)
+    @genkit_fastapi_handler(ai)
+    async def close_tab_route():
+        return close_tab
+
+    response = TestClient(app).post('/close_tab', json={'data': 4})
+
+    assert response.status_code == 200
+    assert response.json() == {'result': {'table': 4}}
+
+
 def test_served_flow_wrong_server_key_is_500_internal_error() -> None:
     """A served flow whose model call fails with a provider 401 is 500 Internal Error."""
     ai = Genkit()

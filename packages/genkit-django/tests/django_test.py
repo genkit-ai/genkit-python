@@ -29,9 +29,15 @@ from django.test import AsyncClient
 from django.test.utils import override_settings
 from django.urls import path
 from genkit_django import genkit_django_handler
+from pydantic import BaseModel
 
 from genkit import ActionRunContext, Genkit, GenkitError, PublicError, RequestData
 from genkit.plugin_api import wrap_http_error
+
+
+class Receipt(BaseModel):
+    table: int
+    note: str | None = None
 
 
 def _assert_is_error_response(parsed: dict) -> None:
@@ -117,10 +123,22 @@ def _build_views() -> dict[str, Any]:
 
     @genkit_django_handler(ai)
     @ai.flow()
+    async def greet(name: str = 'world') -> str:
+        return f'hello {name}'
+
+    @genkit_django_handler(ai)
+    @ai.flow()
+    async def close_tab(table: int) -> Receipt:
+        return {'table': table}  # type: ignore[return-value]
+
+    @genkit_django_handler(ai)
+    @ai.flow()
     async def raise_provider(_: str) -> None:
         raise wrap_http_error(RuntimeError('API key not valid'), status_code=401)
 
     return {
+        'greet': greet,
+        'close_tab': close_tab,
         'say_hi': say_hi,
         'raise_error': raise_error,
         'raise_invalid': raise_invalid,
@@ -147,6 +165,8 @@ def urlconf(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         path('public_flow', views['raise_public']),
         path('echo_request', views['echo_request']),
         path('gated', views['gated']),
+        path('greet', views['greet']),
+        path('close_tab', views['close_tab']),
         path('forbidden', views['forbidden']),
         path('provider_flow', views['raise_provider']),
     ]
@@ -362,6 +382,26 @@ async def test_django_context_provider_public_error_returns_its_status_and_messa
 
     assert response.status_code == 401
     assert json.loads(response.content) == {'message': 'not signed in', 'status': 'UNAUTHENTICATED'}
+
+
+@pytest.mark.asyncio
+async def test_django_flow_with_default_and_null_data_uses_python_default(urlconf: None) -> None:  # noqa: ARG001
+    """POST `{"data": null}` to a served `greet(name: str = 'world')` returns the default's result."""
+    client = AsyncClient()
+    response = await client.post('/greet', data=json.dumps({'data': None}), content_type='application/json')
+
+    assert response.status_code == 200
+    assert json.loads(response.content) == {'result': 'hello world'}
+
+
+@pytest.mark.asyncio
+async def test_django_flow_returning_partial_dict_for_model_sends_defaults(urlconf: None) -> None:  # noqa: ARG001
+    """POST to a `-> Receipt` flow that returns `{'table': 4}` includes `note: null`."""
+    client = AsyncClient()
+    response = await client.post('/close_tab', data=json.dumps({'data': 4}), content_type='application/json')
+
+    assert response.status_code == 200
+    assert json.loads(response.content) == {'result': {'table': 4, 'note': None}}
 
 
 @pytest.mark.asyncio

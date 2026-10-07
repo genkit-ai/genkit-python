@@ -6950,7 +6950,7 @@ async def test_generate_middleware_validation_error_after_next_fn_keeps_closed_r
 
 @pytest.mark.asyncio
 async def test_generate_middleware_action_input_error_after_next_fn_keeps_model_turn() -> None:
-    """An Invalid input for action error after a completed model turn is still resendable."""
+    """An invalid model input error after a completed model turn is still resendable."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -6968,7 +6968,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_model_
             await next_fn(params, ctx)
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -6982,7 +6982,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_model_
     response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert 'title missing' in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
@@ -6995,7 +6995,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_model_
 
 @pytest.mark.asyncio
 async def test_generate_wrap_model_action_input_error_after_next_fn_drops_unanswered_model() -> None:
-    """A wrap_model Invalid input for action after the model returned is still resendable."""
+    """A wrap_model invalid model input after the model returned is still resendable."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -7013,7 +7013,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_drops_unansw
             await next_fn(params, ctx)
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -7027,7 +7027,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_drops_unansw
     response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert 'title missing' in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
@@ -7039,7 +7039,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_drops_unansw
 
 @pytest.mark.asyncio
 async def test_generate_wrap_model_action_input_error_after_next_fn_keeps_closed_rounds() -> None:
-    """A wrap_model Invalid input for action after next_fn still leaves the closed tool round."""
+    """A wrap_model invalid model input after next_fn still leaves the closed tool round."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -7065,7 +7065,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_keeps_closed
             if self.seen > 1:
                 raise GenkitError(
                     status='INVALID_ARGUMENT',
-                    message="Invalid input for action 'conforming': title missing",
+                    message="Invalid input for model 'conforming': title missing",
                     cause=ValidationError.from_exception_data('Recipe', []),
                 )
             return result
@@ -7081,7 +7081,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_keeps_closed
     response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterModel()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
     assert response.error.reason is None
@@ -7092,7 +7092,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_keeps_closed
 
 @pytest.mark.asyncio
 async def test_generate_wrap_model_action_input_error_before_next_fn_drops_unanswered_model() -> None:
-    """A wrap_model Invalid input for action after generate has entered is still resendable."""
+    """A wrap_model invalid model input after generate has entered is still resendable."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -7109,7 +7109,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_drops_unans
         ) -> ModelResponse:
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -7123,7 +7123,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_drops_unans
     response = await ai.generate(prompt='keep going', use=[DenyBeforeModel()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
     assert response.message is None
@@ -7132,7 +7132,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_drops_unans
 
 @pytest.mark.asyncio
 async def test_generate_wrap_model_action_input_error_before_next_fn_keeps_closed_rounds() -> None:
-    """A wrap_model Invalid input for action before the next model call still leaves the closed tool round."""
+    """A wrap_model invalid model input before the next model call still leaves the closed tool round."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -7157,7 +7157,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_keeps_close
             if self.seen > 1:
                 raise GenkitError(
                     status='INVALID_ARGUMENT',
-                    message="Invalid input for action 'conforming': title missing",
+                    message="Invalid input for model 'conforming': title missing",
                     cause=ValidationError.from_exception_data('Recipe', []),
                 )
             return await next_fn(params, ctx)
@@ -7173,7 +7173,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_keeps_close
     response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyBeforeSecond()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
     assert response.error.reason is None
@@ -7215,7 +7215,7 @@ async def test_generate_wrap_model_action_input_error_after_short_circuit_next_f
             await next_fn(params, ctx)
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -7229,7 +7229,7 @@ async def test_generate_wrap_model_action_input_error_after_short_circuit_next_f
     response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheModel()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
     assert response.error.reason is None
@@ -7447,7 +7447,7 @@ async def test_generate_wrap_generate_action_input_error_after_short_circuit_nex
             await next_fn(params, ctx)
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -7461,7 +7461,7 @@ async def test_generate_wrap_generate_action_input_error_after_short_circuit_nex
     response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheGenerate()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'
     assert response.error.reason is None
@@ -7679,7 +7679,7 @@ async def test_generate_wrap_model_dict_after_next_fn_drops_unanswered_model() -
 
 @pytest.mark.asyncio
 async def test_generate_middleware_action_input_error_after_next_fn_keeps_closed_rounds() -> None:
-    """An Invalid input for action error after next_fn still leaves the closed tool round."""
+    """An invalid model input error after next_fn still leaves the closed tool round."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
@@ -7701,7 +7701,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_closed
             await next_fn(params, ctx)
             raise GenkitError(
                 status='INVALID_ARGUMENT',
-                message="Invalid input for action 'conforming': title missing",
+                message="Invalid input for model 'conforming': title missing",
                 cause=ValidationError.from_exception_data('Recipe', []),
             )
 
@@ -7716,7 +7716,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_closed
     response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()])
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
-    assert "Invalid input for action 'conforming'" in response.finish_message
+    assert "Invalid input for model 'conforming'" in response.finish_message
     assert 'title missing' in response.finish_message
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'

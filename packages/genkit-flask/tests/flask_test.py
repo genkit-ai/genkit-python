@@ -17,12 +17,25 @@
 
 """Tests for the Flask plugin."""
 
+import json
 from typing import Any
 
-from flask import Flask, Request
+from flask import Flask, Request, abort
 from genkit_flask import genkit_flask_handler
 
-from genkit import ActionRunContext, Genkit, RequestData
+from genkit import ActionRunContext, Genkit, GenkitError, PublicError, RequestData
+from genkit.plugin_api import wrap_http_error
+
+
+def sse_error_event(chunks: list[bytes]) -> dict:
+    """Return the first SSE ``error`` payload, or fail."""
+    text = b''.join(chunks).decode()
+    for line in text.splitlines():
+        if line.startswith('data: '):
+            payload = json.loads(line[6:])
+            if 'error' in payload:
+                return payload['error']
+    raise AssertionError(f'no SSE error event in {text!r}')
 
 
 def create_app() -> Flask:
@@ -85,3 +98,199 @@ def test_streaming() -> None:
         b'data: {"message":{"foo":"bar"}}\n\n',
         b'data: {"result":{"bar":"baz"}}\n\n',
     ]
+
+
+def test_flask_flow_raising_unauthenticated_returns_500_internal_error() -> None:
+    """Flask POST to a flow that raises GenkitError UNAUTHENTICATED is 500, not 401."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/login')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def login(_: str) -> None:
+        raise GenkitError(status='UNAUTHENTICATED', message='token for alice@example.com expired')
+
+    response = app.test_client().post('/login', json={'data': 'x'})
+
+    assert response.status_code == 500
+    assert json.loads(response.data) == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert b'alice@example.com' not in response.data
+
+
+def test_flask_flow_raising_public_error_returns_its_status_and_message() -> None:
+    """Flask POST to a flow that raises PublicError NOT_FOUND returns 404 with that message."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/lookup')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def lookup(_: str) -> None:
+        raise PublicError('NOT_FOUND', 'no order 99')
+
+    response = app.test_client().post('/lookup', json={'data': '99'})
+
+    assert response.status_code == 404
+    assert json.loads(response.data) == {'message': 'no order 99', 'status': 'NOT_FOUND'}
+
+
+def test_flask_flow_raising_value_error_returns_500_internal_error_without_stack() -> None:
+    """Flask POST to a flow that raises ValueError returns a generic 500."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/boom')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def boom(_: str) -> None:
+        raise ValueError('secret')
+
+    response = app.test_client().post('/boom', json={'data': 'x'})
+
+    assert response.status_code == 500
+    body = json.loads(response.data)
+    assert body == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert b'secret' not in response.data
+    assert 'stack' not in body
+
+
+def test_flask_stream_flow_raising_value_error_sends_sse_internal_error_without_stack() -> None:
+    """Flask SSE to a flow that raises ValueError sends a generic Internal Error."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/boom')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def boom(_: str) -> None:
+        raise ValueError('secret')
+
+    response = app.test_client().post(
+        '/boom',
+        json={'data': 'x'},
+        headers={'accept': 'text/event-stream'},
+    )
+
+    chunks = list(response.response)
+    error = sse_error_event(chunks)
+    assert error == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert b'secret' not in b''.join(chunks)
+    assert 'stack' not in error
+
+
+def test_flask_missing_data_wrapper_returns_the_wrap_message() -> None:
+    """A POST without ``{"data": ...}`` tells the caller to wrap the body."""
+    response = create_app().test_client().post('/chat', json={'foo': 'bar'})
+
+    assert response.status_code == 400
+    assert json.loads(response.data) == {
+        'message': 'flow request must be wrapped in {"data": data} object',
+        'status': 'INVALID_ARGUMENT',
+    }
+
+
+def test_flask_malformed_json_body_returns_400_valid_json_message() -> None:
+    """A Flask POST that is not JSON is 400 request body must be valid JSON."""
+    response = (
+        create_app()
+        .test_client()
+        .post(
+            '/chat',
+            data='{bad',
+            content_type='application/json',
+        )
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.data) == {
+        'message': 'request body must be valid JSON',
+        'status': 'INVALID_ARGUMENT',
+    }
+
+
+def test_flask_provider_401_returns_500_internal_error() -> None:
+    """A Flask flow whose model call fails with a provider 401 is 500 Internal Error."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/ask')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def ask(_: str) -> str:
+        raise wrap_http_error(RuntimeError('API key not valid'), status_code=401)
+
+    response = app.test_client().post('/ask', json={'data': 'hi'})
+
+    assert response.status_code == 500
+    assert json.loads(response.data) == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert b'API key not valid' not in response.data
+
+
+def test_flask_stream_provider_401_sends_sse_internal_error() -> None:
+    """A streamed Flask flow whose model call fails with a provider 401 ends with Internal Error."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/ask')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def ask(_: str) -> str:
+        raise wrap_http_error(RuntimeError('API key not valid'), status_code=401)
+
+    response = app.test_client().post(
+        '/ask',
+        json={'data': 'hi'},
+        headers={'accept': 'text/event-stream'},
+    )
+
+    chunks = list(response.response)
+    assert sse_error_event(chunks) == {'message': 'Internal Error', 'status': 'INTERNAL'}
+    assert b'API key not valid' not in b''.join(chunks)
+
+
+def test_flask_context_provider_public_error_returns_its_status_and_message() -> None:
+    """A PublicError from Flask's context_provider is mapped like a flow failure."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    def deny(_request: RequestData[Request]) -> dict[str, Any]:
+        raise PublicError('UNAUTHENTICATED', 'not signed in')
+
+    @app.post('/chat')
+    @genkit_flask_handler(ai, context_provider=deny)
+    @ai.flow()
+    async def chat(_: str) -> str:
+        return 'ok'
+
+    response = app.test_client().post('/chat', json={'data': 'x'})
+
+    assert response.status_code == 401
+    assert json.loads(response.data) == {'message': 'not signed in', 'status': 'UNAUTHENTICATED'}
+
+
+def test_flask_context_provider_abort_keeps_its_status() -> None:
+    """abort(401) from context_provider is the app's own response, not a 500."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    def require_token(_request: RequestData[Request]) -> dict[str, Any]:
+        abort(401)
+
+    @app.post('/chat')
+    @genkit_flask_handler(ai, context_provider=require_token)
+    @ai.flow()
+    async def chat(_: str) -> str:
+        return 'ok'
+
+    response = app.test_client().post('/chat', json={'data': 'x'})
+
+    assert response.status_code == 401

@@ -37,6 +37,7 @@ from genkit.plugin_api import (
     ErrorResponseMetadata,
     StatusName,
     from_http_code,
+    mark_provider_error,
     parse_retry_after_ms,
 )
 from genkit_anthropic._config import BETA_KWARG_KEYS, STABLE_KWARG_KEYS, AnthropicConfig
@@ -88,10 +89,12 @@ def _from_anthropic_error(error: APIError) -> GenkitError:
     if retry_after_ms is not None:
         response_metadata = {'retry_after_ms': retry_after_ms}
 
-    return GenkitError(
-        status=status,
-        message=error.message,
-        response_metadata=response_metadata,
+    return mark_provider_error(
+        error=GenkitError(
+            status=status,
+            message=error.message,
+            response_metadata=response_metadata,
+        )
     )
 
 

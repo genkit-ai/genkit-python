@@ -38,7 +38,7 @@ from botocore.exceptions import (
 
 from genkit import ActionRunContext, GenkitError, ModelResponse
 from genkit.model import ModelRequest
-from genkit.plugin_api import ErrorResponseMetadata, StatusName
+from genkit.plugin_api import ErrorResponseMetadata, StatusName, mark_provider_error
 from genkit_amazon_bedrock.converters import build_converse_request, to_model_response, usage_log_fields
 from genkit_amazon_bedrock.stream import consume_converse_stream
 
@@ -136,10 +136,12 @@ def _from_client_error(error: ClientError, operation: str = 'converse') -> Genki
     response_metadata: ErrorResponseMetadata | None = None
     if retry_after_ms is not None:
         response_metadata = {'retry_after_ms': retry_after_ms}
-    return GenkitError(
-        message=f'{prefix}: {code}: {message}' if code else f'{prefix}: {message}',
-        status=_ERROR_CODE_STATUS.get(_normalize_error_code(code), 'UNKNOWN'),
-        response_metadata=response_metadata,
+    return mark_provider_error(
+        error=GenkitError(
+            message=f'{prefix}: {code}: {message}' if code else f'{prefix}: {message}',
+            status=_ERROR_CODE_STATUS.get(_normalize_error_code(code), 'UNKNOWN'),
+            response_metadata=response_metadata,
+        )
     )
 
 
@@ -159,7 +161,7 @@ def _from_botocore_error(error: BotoCoreError, operation: str = 'converse') -> G
         if isinstance(error, error_type):
             status = mapped
             break
-    return GenkitError(message=f'bedrock {operation} failed: {error}', status=status)
+    return mark_provider_error(error=GenkitError(message=f'bedrock {operation} failed: {error}', status=status))
 
 
 class BedrockModel:

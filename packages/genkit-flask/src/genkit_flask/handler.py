@@ -18,19 +18,41 @@
 
 import asyncio
 import json
+import logging
 from asyncio import AbstractEventLoop
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, cast
 
 from flask import Response, request
 from pydantic import BaseModel
+from werkzeug.exceptions import HTTPException
 
-from genkit import ContextProvider, Genkit, GenkitError, RequestData
-from genkit._core._action import Action
-from genkit.plugin_api import get_callable_json
+from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
+from genkit.plugin_api import Action
+
+logger = logging.getLogger(__name__)
 
 # Compact JSON (no spaces) for smaller wire payload.
 _JSON_SEPARATORS = (',', ':')
+
+
+def _error_response(error: Exception, status: int | None = None) -> Response:
+    resolved_status, body = served_error_json(error=error)
+    return Response(
+        status=resolved_status if status is None else status,
+        response=body,
+        mimetype='application/json',
+    )
+
+
+def _parse_request_json() -> object:
+    """Parse the Flask body as JSON, or raise a 400 PublicError."""
+    try:
+        raw = request.get_data()
+        return json.loads(raw.decode('utf-8')) if raw else {}
+    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+        raise PublicError('INVALID_ARGUMENT', 'request body must be valid JSON') from err
 
 
 def _to_dict(obj: Any) -> Any:  # noqa: ANN401
@@ -73,7 +95,7 @@ FlaskRouteReturn: TypeAlias = Response | dict[str, object] | Iterable[Any]
 
 
 class _FlaskRequestData(RequestData):
-    def __init__(self) -> None:
+    def __init__(self, body: dict[str, Any] | None) -> None:
         super().__init__(request=request)
         self.method = request.method
 
@@ -81,8 +103,7 @@ class _FlaskRequestData(RequestData):
         for key, value in request.headers:
             self.headers[key.lower()] = value
 
-        input_data = request.get_json()
-        self.input = input_data.get('data') if input_data else None
+        self.input = body.get('data') if body else None
 
 
 def genkit_flask_handler(
@@ -118,19 +139,32 @@ def genkit_flask_handler(
             raise GenkitError(status='INVALID_ARGUMENT', message='must apply @genkit_flask_handler on a @flow')
 
         async def handler() -> FlaskRouteReturn:
-            input_data = request.get_json()
-            if 'data' not in input_data:
-                return Response(status=400, response='flow request must be wrapped in {"data": data} object')
+            try:
+                input_data = _parse_request_json()
+            except PublicError as e:
+                log_served_failure(adapter_logger=logger, error=e, where='run')
+                return _error_response(e)
+            if not isinstance(input_data, dict) or 'data' not in input_data:
+                return _error_response(
+                    PublicError('INVALID_ARGUMENT', 'flow request must be wrapped in {"data": data} object')
+                )
+            input_data = cast(dict[str, Any], input_data)
 
-            request_data = _FlaskRequestData()
-            context = None
+            request_data = _FlaskRequestData(input_data)
             action_context: dict[str, object] | None = None
             if context_provider:
-                context = context_provider(request_data)
-                if asyncio.iscoroutine(context):
-                    context = await context
-                if isinstance(context, dict):
-                    action_context = context
+                try:
+                    context = context_provider(request_data)
+                    if asyncio.iscoroutine(context):
+                        context = await context
+                    if isinstance(context, dict):
+                        action_context = context
+                except HTTPException:
+                    # The app's own abort(401) passes through.
+                    raise
+                except Exception as e:
+                    log_served_failure(adapter_logger=logger, error=e, where='context provider')
+                    return _error_response(e)
 
             # Substring match so Accept: text/event-stream, */* (and similar) still streams.
             accept = request_data.headers.get('accept', '')
@@ -147,10 +181,8 @@ def genkit_flask_handler(
                         result = await stream_response.response
                         yield f'data: {json.dumps({"result": _to_dict(result)}, separators=_JSON_SEPARATORS)}\n\n'
                     except Exception as e:
-                        ex = e
-                        if isinstance(ex, GenkitError):
-                            ex = ex.cause
-                        yield f'data: {json.dumps({"error": get_callable_json(ex)}, separators=_JSON_SEPARATORS)}\n\n'
+                        log_served_failure(adapter_logger=logger, error=e, where='stream')
+                        yield served_stream_error_event(error=e)
 
                 iter = _iter_over_async(async_gen(), loop)
                 return iter
@@ -159,13 +191,8 @@ def genkit_flask_handler(
                     response = await flow.run(input_data.get('data'), context=action_context, init=init)
                     return {'result': _to_dict(response.response)}
                 except Exception as e:
-                    ex = e
-                    if isinstance(ex, GenkitError):
-                        ex = ex.cause
-                    return Response(
-                        status=500,
-                        response=json.dumps(get_callable_json(ex), separators=_JSON_SEPARATORS),
-                    )
+                    log_served_failure(adapter_logger=logger, error=e, where='run')
+                    return _error_response(e)
 
         return handler
 

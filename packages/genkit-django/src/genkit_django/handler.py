@@ -18,15 +18,20 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any, cast
 
-from django.http import HttpRequest, HttpResponse, HttpResponseBase, JsonResponse, StreamingHttpResponse
+from django.core.exceptions import PermissionDenied, SuspiciousOperation
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseBase, JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from pydantic import BaseModel
 
-from genkit import ContextProvider, Genkit, GenkitError, RequestData
-from genkit.plugin_api import Action, get_callable_json
+from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
+from genkit.plugin_api import Action
+
+logger = logging.getLogger(__name__)
 
 # Compact JSON (no spaces) for smaller wire payload.
 _JSON_SEPARATORS = (',', ':')
@@ -51,23 +56,12 @@ def _to_dict(obj: Any) -> Any:  # noqa: ANN401
     return obj
 
 
-def _unwrap_cause(e: Exception) -> Exception:
-    """Return the ``cause`` of a GenkitError when available, else the exception itself.
-
-    ``GenkitError.cause`` is typed ``Exception | None``: classes like ``PublicError``
-    pass no cause, so unwrapping unconditionally would yield ``None`` and lose the
-    original error details.
-    """
-    if isinstance(e, GenkitError) and e.cause is not None:
-        return e.cause
-    return e
-
-
-def _error_response(status: int, err: Exception) -> HttpResponse:
-    """Return a JSON HttpErrorWireFormat response for an exception."""
+def _error_response(err: Exception, status: int | None = None) -> HttpResponse:
+    """Return a JSON error body; status comes from the error unless overridden."""
+    resolved_status, body = served_error_json(error=err)
     return HttpResponse(
-        status=status,
-        content=json.dumps(get_callable_json(err), separators=_JSON_SEPARATORS),  # pyright: ignore[reportArgumentType]
+        status=resolved_status if status is None else status,
+        content=body.encode('utf-8'),
         content_type='application/json',
     )
 
@@ -139,24 +133,22 @@ def genkit_django_handler(
         async def handler(request: HttpRequest) -> HttpResponseBase:
             if request.method != 'POST':
                 return _error_response(
-                    405,
-                    GenkitError(status='INVALID_ARGUMENT', message='only POST is supported'),
+                    PublicError('INVALID_ARGUMENT', 'only POST is supported'),
+                    status=405,
                 )
 
             try:
                 body = json.loads(request.body.decode('utf-8')) if request.body else {}
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return _error_response(
-                    400,
-                    GenkitError(status='INVALID_ARGUMENT', message='request body must be valid JSON'),
+                    PublicError('INVALID_ARGUMENT', 'request body must be valid JSON'),
                 )
 
             if not isinstance(body, dict) or 'data' not in body:
                 return _error_response(
-                    400,
-                    GenkitError(
-                        status='INVALID_ARGUMENT',
-                        message='Action request must be wrapped in {"data": ...} object',
+                    PublicError(
+                        'INVALID_ARGUMENT',
+                        'Action request must be wrapped in {"data": ...} object',
                     ),
                 )
 
@@ -170,8 +162,12 @@ def genkit_django_handler(
                         context = await context
                     if isinstance(context, dict):
                         action_context = context
+                except (PermissionDenied, Http404, SuspiciousOperation):
+                    # Django's own denial; re-raise so it stays 403/404/400.
+                    raise
                 except Exception as e:
-                    return _error_response(500, _unwrap_cause(e))
+                    log_served_failure(adapter_logger=logger, error=e, where='context provider')
+                    return _error_response(e)
 
             accept = _request_headers(request).get('Accept', '')
             stream = 'text/event-stream' in accept or request.GET.get('stream') == 'true'
@@ -188,11 +184,8 @@ def genkit_django_handler(
                         result = await stream_response.response
                         yield f'data: {json.dumps({"result": _to_dict(result)}, separators=_JSON_SEPARATORS)}\n\n'
                     except Exception as e:
-                        err_payload = json.dumps(
-                            {'error': get_callable_json(_unwrap_cause(e))},
-                            separators=_JSON_SEPARATORS,
-                        )
-                        yield f'data: {err_payload}\n\n'
+                        log_served_failure(adapter_logger=logger, error=e, where='stream')
+                        yield served_stream_error_event(error=e)
 
                 return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
 
@@ -200,7 +193,8 @@ def genkit_django_handler(
                 response = await flow.run(body.get('data'), context=action_context, init=init)
                 return JsonResponse({'result': _to_dict(response.response)})
             except Exception as e:
-                return _error_response(500, _unwrap_cause(e))
+                log_served_failure(adapter_logger=logger, error=e, where='run')
+                return _error_response(e)
 
         return handler
 

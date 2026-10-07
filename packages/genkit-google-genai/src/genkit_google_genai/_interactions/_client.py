@@ -27,7 +27,7 @@ import httpx
 from genkit_google_genai._interactions._options import ClientOptions
 from google.genai.interactions import Interaction
 
-from genkit import GenkitError, get_logger
+from genkit import GenkitError
 from genkit._core._error import ErrorResponseMetadata
 from genkit.plugin_api import (
     GENKIT_CLIENT_HEADER,
@@ -36,8 +36,6 @@ from genkit.plugin_api import (
     mark_provider_error,
     parse_retry_after_ms,
 )
-
-logger = get_logger(__name__)
 
 DEFAULT_API_VERSION = 'v1beta'
 DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com'
@@ -182,16 +180,8 @@ async def request(
                 message=f'Request to {url} exceeded the configured timeout: {error}',
             )
         ) from error
-    except GenkitError:
-        raise
-    except Exception as error:
-        logger.exception('Interactions request failed')
-        raise mark_provider_error(
-            error=GenkitError(
-                status='UNKNOWN',
-                message=f'Unable to complete request to {url}: {error}',
-            )
-        ) from error
+    # A refused or dropped connection has no known status, so it propagates
+    # as is and retry treats it as unclassified.
 
     if response.is_success:
         if not response.content:

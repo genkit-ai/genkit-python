@@ -28,6 +28,7 @@ from django.views.decorators.csrf import csrf_exempt
 from pydantic import BaseModel
 
 from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._context import joined_headers
 from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
 from genkit.plugin_api import Action
 
@@ -80,10 +81,12 @@ class _DjangoRequestData(RequestData):
     """Wraps Django request data for Genkit context."""
 
     def __init__(self, request: HttpRequest, body: dict[str, Any] | None) -> None:
-        super().__init__(request=request)
-        self.method = request.method
-        self.headers = {k.lower(): v for k, v in _request_headers(request).items()}
-        self.input = body.get('data') if body else None
+        super().__init__(
+            request=request,
+            method=request.method or '',
+            headers=joined_headers(_request_headers(request).items()),
+            input=body.get('data') if body else None,
+        )
 
 
 def genkit_django_handler(
@@ -169,7 +172,7 @@ def genkit_django_handler(
                     log_served_failure(adapter_logger=logger, error=e, where='context provider')
                     return _error_response(e)
 
-            accept = _request_headers(request).get('Accept', '')
+            accept = request_data.headers.get('accept', '')
             stream = 'text/event-stream' in accept or request.GET.get('stream') == 'true'
             init = body.get('init')
 

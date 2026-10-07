@@ -20,12 +20,11 @@
 import json
 import sys
 import types
-from collections.abc import Iterator, Mapping
-from typing import Any, cast
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest
 from django.test import AsyncClient
 from django.test.utils import override_settings
 from django.urls import path
@@ -57,10 +56,9 @@ def _build_views() -> dict[str, Any]:
     """Build the Django views used by the integration tests."""
     ai = Genkit()
 
-    async def my_context_provider(request_data: RequestData[HttpRequest]) -> dict[str, Any]:
+    async def my_context_provider(request_data: RequestData) -> dict[str, Any]:
         """Provide a context for the flow."""
-        headers = cast(Mapping[str, str], request_data.request.headers)
-        return {'username': headers.get('authorization')}
+        return {'username': request_data.headers.get('authorization')}
 
     @genkit_django_handler(ai, context_provider=my_context_provider)
     @ai.flow()
@@ -85,7 +83,23 @@ def _build_views() -> dict[str, Any]:
     async def raise_public(_: str) -> None:
         raise PublicError('NOT_FOUND', 'no order 99')
 
-    async def deny(_request: RequestData[HttpRequest]) -> dict[str, Any]:
+    async def echo_context(request_data: RequestData) -> dict[str, Any]:
+        return {
+            'method': request_data.method,
+            'authorization': request_data.headers['authorization'],
+            'input': request_data.input,
+        }
+
+    @genkit_django_handler(ai, context_provider=echo_context)
+    @ai.flow()
+    async def echo_request(_: str, ctx: ActionRunContext) -> dict[str, Any]:
+        return {
+            'method': ctx.context['method'],
+            'authorization': ctx.context['authorization'],
+            'input': ctx.context['input'],
+        }
+
+    async def deny(_request: RequestData) -> dict[str, Any]:
         raise PublicError('UNAUTHENTICATED', 'not signed in')
 
     @genkit_django_handler(ai, context_provider=deny)
@@ -93,7 +107,7 @@ def _build_views() -> dict[str, Any]:
     async def gated(_: str) -> str:
         return 'ok'
 
-    async def deny_permission(_request: RequestData[HttpRequest]) -> dict[str, Any]:
+    async def deny_permission(_request: RequestData) -> dict[str, Any]:
         raise PermissionDenied()
 
     @genkit_django_handler(ai, context_provider=deny_permission)
@@ -111,6 +125,7 @@ def _build_views() -> dict[str, Any]:
         'raise_error': raise_error,
         'raise_invalid': raise_invalid,
         'raise_public': raise_public,
+        'echo_request': echo_request,
         'gated': gated,
         'forbidden': forbidden,
         'raise_provider': raise_provider,
@@ -130,6 +145,7 @@ def urlconf(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         path('error_flow', views['raise_error']),
         path('invalid_flow', views['raise_invalid']),
         path('public_flow', views['raise_public']),
+        path('echo_request', views['echo_request']),
         path('gated', views['gated']),
         path('forbidden', views['forbidden']),
         path('provider_flow', views['raise_provider']),
@@ -308,6 +324,28 @@ async def test_django_stream_flow_raising_value_error_sends_sse_internal_error_w
     assert error == {'message': 'Internal Error', 'status': 'INTERNAL'}
     assert b'secret' not in b''.join(chunks)
     assert 'stack' not in error
+
+
+@pytest.mark.asyncio
+async def test_django_context_provider_sees_method_lowercase_headers_and_input(
+    urlconf: None,
+) -> None:  # noqa: ARG001
+    """Django context_provider sees method, lowercase headers, and input."""
+    client = AsyncClient()
+    response = await client.post(
+        '/echo_request',
+        data=json.dumps({'data': 'hello'}),
+        content_type='application/json',
+        headers={'Authorization': 'Bearer tok'},
+    )
+    assert response.status_code == 200
+    assert json.loads(response.content) == {
+        'result': {
+            'method': 'POST',
+            'authorization': 'Bearer tok',
+            'input': 'hello',
+        }
+    }
 
 
 @pytest.mark.asyncio

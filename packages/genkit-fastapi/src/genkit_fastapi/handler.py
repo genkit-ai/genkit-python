@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from genkit import ContextProvider, Genkit, GenkitError, PublicError, RequestData
+from genkit._core._context import joined_headers
 from genkit._core._error import log_served_failure, served_error_json, served_stream_error_event
 from genkit.plugin_api import Action
 
@@ -54,10 +55,14 @@ class FastAPIRequestData(RequestData):
 
     def __init__(self, request: Request, body: dict[str, Any] | None) -> None:
         """Initialize request data wrapper."""
-        super().__init__(request=request)
-        self.method = request.method
-        self.headers = {k.lower(): v for k, v in request.headers.items()}
-        self.input = body.get('data') if body else None
+        super().__init__(
+            request=request,
+            method=request.method,
+            headers=joined_headers(
+                (name.decode('latin-1'), value.decode('latin-1')) for name, value in request.headers.raw
+            ),
+            input=body.get('data') if body else None,
+        )
 
 
 def json_error_response(error: Exception, status_code: int | None = None) -> Response:

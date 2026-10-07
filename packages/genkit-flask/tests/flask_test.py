@@ -20,7 +20,7 @@
 import json
 from typing import Any
 
-from flask import Flask, Request, abort
+from flask import Flask, abort
 from genkit_flask import genkit_flask_handler
 
 from genkit import ActionRunContext, Genkit, GenkitError, PublicError, RequestData
@@ -47,9 +47,9 @@ def create_app() -> Flask:
         'TESTING': True,
     })
 
-    async def my_context_provider(request_data: RequestData[Request]) -> dict[str, Any]:
+    async def my_context_provider(request_data: RequestData) -> dict[str, Any]:
         """Provide a context for the flow."""
-        return {'username': request_data.request.headers.get('authorization')}
+        return {'username': request_data.headers.get('authorization')}
 
     @app.post('/chat')
     @genkit_flask_handler(ai, context_provider=my_context_provider)
@@ -183,6 +183,61 @@ def test_flask_stream_flow_raising_value_error_sends_sse_internal_error_without_
     assert 'stack' not in error
 
 
+def test_flask_context_provider_sees_method_lowercase_headers_and_input() -> None:
+    """Flask context_provider sees method, lowercase headers, and input."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    async def provider(request_data: RequestData) -> dict[str, Any]:
+        return {
+            'method': request_data.method,
+            'authorization': request_data.headers['authorization'],
+            'input': request_data.input,
+        }
+
+    @app.post('/echo')
+    @genkit_flask_handler(ai, context_provider=provider)
+    @ai.flow()
+    async def echo(_: str, ctx: ActionRunContext) -> dict[str, Any]:
+        return {
+            'method': ctx.context['method'],
+            'authorization': ctx.context['authorization'],
+            'input': ctx.context['input'],
+        }
+
+    response = app.test_client().post(
+        '/echo',
+        json={'data': 'hello'},
+        headers={'Authorization': 'Bearer tok'},
+    )
+
+    assert response.status_code == 200
+    assert response.json == {
+        'result': {
+            'method': 'POST',
+            'authorization': 'Bearer tok',
+            'input': 'hello',
+        }
+    }
+
+
+def test_flask_flow_rejects_non_dict_json_payload_with_400() -> None:
+    """A JSON payload that is not an object (e.g. ['data']) returns 400."""
+    client = create_app().test_client()
+    response = client.post(
+        '/chat',
+        json=['data'],
+        headers={'Authorization': 'Pavel', 'Content-Type': 'application/json'},
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.data) == {
+        'message': 'flow request must be wrapped in {"data": data} object',
+        'status': 'INVALID_ARGUMENT',
+    }
+
+
 def test_flask_missing_data_wrapper_returns_the_wrap_message() -> None:
     """A POST without ``{"data": ...}`` tells the caller to wrap the body."""
     response = create_app().test_client().post('/chat', json={'foo': 'bar'})
@@ -261,7 +316,7 @@ def test_flask_context_provider_public_error_returns_its_status_and_message() ->
     app = Flask(__name__)
     app.config.update({'TESTING': True})
 
-    def deny(_request: RequestData[Request]) -> dict[str, Any]:
+    def deny(_request: RequestData) -> dict[str, Any]:
         raise PublicError('UNAUTHENTICATED', 'not signed in')
 
     @app.post('/chat')
@@ -282,7 +337,7 @@ def test_flask_context_provider_abort_keeps_its_status() -> None:
     app = Flask(__name__)
     app.config.update({'TESTING': True})
 
-    def require_token(_request: RequestData[Request]) -> dict[str, Any]:
+    def require_token(_request: RequestData) -> dict[str, Any]:
         abort(401)
 
     @app.post('/chat')

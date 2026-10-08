@@ -53,9 +53,11 @@ jobs:
         run: |
           set -uo pipefail
 
-          # Publish all core and plugin packages for v0.9.0 release.
+          # Publish all core and plugin packages for this release.
           PACKAGES=(
             packages/genkit
+            packages/genkit-a2ui
+            packages/genkit-amazon-bedrock
             packages/genkit-anthropic
             packages/genkit-django
             packages/genkit-evaluators
@@ -81,14 +83,24 @@ jobs:
             echo "::endgroup::"
           done
 
+          # Python-floor shim (genkit 0.3.0): gives Python <= 3.9 users a clear
+          # upgrade message instead of resolving an unrelated pre-transfer
+          # package. sdist ONLY - a wheel would install as an empty package on
+          # old Pythons. skip-existing makes this a no-op after first publish.
+          # See floor-shim/README.md.
+          echo "::group::floor-shim (sdist only)"
+          if uv build --sdist floor-shim --out-dir dist/; then
+            echo "Build succeeded: floor-shim"
+          else
+            echo "::error::Build failed: floor-shim"
+            FAILED+=("floor-shim")
+          fi
+          echo "::endgroup::"
+
           if [ ${#FAILED[@]} -gt 0 ]; then
             echo "::error::Failed packages: ${FAILED[*]}"
             exit 1
           fi
-
-          echo "::group::Build tombstone packages"
-          python3 scripts/publish_tombstones.py --dist-dir dist/
-          echo "::endgroup::"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

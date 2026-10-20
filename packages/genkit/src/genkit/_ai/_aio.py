@@ -708,6 +708,31 @@ class Genkit:
             return None
         return Tool.from_action(action)
 
+    async def list_tools(self) -> list[Tool]:
+        """Return every tool registered on this app, in no particular order.
+
+        Each is the same handle ``lookup_tool`` returns. Every plugin is started
+        first, so tools a plugin registers in ``init()`` are included, and a plugin
+        whose ``init()`` fails makes this raise. Tools a plugin only advertises and
+        builds on first lookup are included once something has looked them up.
+        Tools a dynamic action provider serves are not defined on the app and are
+        left out; select those as ``<provider>:tool/*``.
+
+        Example:
+            ```python
+            @ai.tool()
+            async def menu_price(dish: str) -> float:
+                return 14.5
+
+
+            [tool.name for tool in await ai.list_tools()]
+            # => ['menu_price']
+            ```
+        """
+        await self._registry.initialize_all_plugins()
+        actions = await self._registry.resolve_actions_by_kind(ActionKind.TOOL)
+        return [Tool.from_action(action) for action in actions.values()]
+
     def lookup_value(self, *, kind: str, name: str) -> object | None:
         """Return the value defined under ``kind`` and ``name``, or None."""
         return self._registry.lookup_value(kind, name)

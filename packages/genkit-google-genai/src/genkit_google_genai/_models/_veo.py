@@ -57,12 +57,6 @@ KnownVertexAIVeo: TypeAlias = Literal[
     'veo-3.1-lite-generate-001',
 ]
 
-# Sent as genai_types.VideoCompressionQuality and genai_types.ImageResizeMode.
-# googlegenai_gemini_test.py pins both to the SDK enums.
-VideoCompressionQuality: TypeAlias = Literal['OPTIMIZED', 'LOSSLESS']
-ImageResizeMode: TypeAlias = Literal['CROP', 'PAD']
-
-
 VideoCompressionQuality: TypeAlias = Literal['OPTIMIZED', 'LOSSLESS']
 """Values of ``genai_types.VideoCompressionQuality``."""
 

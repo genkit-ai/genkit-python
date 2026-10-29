@@ -932,37 +932,58 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     async def run(
         self,
         input: InputT | None = NO_INPUT,
+        *,
         on_chunk: Callable[[ChunkT], None] | None = None,
         context: dict[str, Any] | None = None,
-        on_trace_start: Callable[[str, str], Awaitable[None]] | None = None,
         telemetry_labels: dict[str, object] | None = None,
-        abort_signal: asyncio.Event | None = None,
         init: InitT | None = None,
-        input_stream: AsyncIterator[InputT] | None = None,
     ) -> ActionResponse[OutputT]:
-        """Execute the action with optional input validation.
+        """Run the action and return its result with trace ids.
 
         Args:
-            input: The input to the action. Will be validated against the input schema.
-                Omit it to use the function's own default. On a flow, an explicit
-                None is a value and is validated like any other.
-            on_chunk: Optional streaming callback for chunked responses.
-            context: Optional context dict for the action.
-            on_trace_start: Optional callback invoked when trace starts.
-            telemetry_labels: Custom labels to set as direct span attributes.
-            abort_signal: Optional shared abort event for cooperative cancellation.
-            init: Optional per-run initialization data (e.g. an agent's session
-                identity). Validated against the init schema; only bidi actions
-                read it, from ``ctx._init``.
-            input_stream: Optional live stream of per-turn inputs for a bidi
-                action. When omitted, a one-shot run is exactly the single ``input``;
-                only bidi actions read it. Stored on ``ctx._input_stream``.
+            input: The input, validated against the input schema. Omit it to use
+                the function's own default. On a flow, an explicit None is a
+                value and is validated like any other.
+            on_chunk: Called with each chunk the action streams.
+            context: Request context (auth, headers, ...), read as ``ctx.context``.
+            telemetry_labels: Custom labels set as span attributes.
+            init: Session init value for a bidi action (e.g. a served agent's
+                session identity). Validated against the init schema; plain
+                actions ignore it.
 
         Returns:
-            ActionResponse containing the result and trace metadata.
+            ActionResponse with the result, trace id and span id.
 
         Raises:
             GenkitError: If input validation fails (INVALID_ARGUMENT status).
+        """
+        return await self._run(
+            input,
+            on_chunk=on_chunk,
+            context=context,
+            telemetry_labels=telemetry_labels,
+            init=init,
+        )
+
+    async def _run(
+        self,
+        input: InputT | None = NO_INPUT,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        abort_signal: asyncio.Event | None = None,
+        init: InitT | None = None,
+        on_trace_start: Callable[[str, str], Awaitable[None]] | None = None,
+        input_stream: AsyncIterator[InputT] | None = None,
+    ) -> ActionResponse[OutputT]:
+        """``run`` plus the hooks only the Dev UI and bidi plumbing use.
+
+        on_trace_start: Called with (trace_id, span_id) once the span opens, so
+            the reflection server can show the live trace and wire up cancel.
+        input_stream: Live stream of per-turn inputs for a bidi action. When
+            omitted, a one-shot run is exactly the single ``input``. Stored on
+            ``ctx._input_stream``; only bidi actions read it.
         """
         # Only a flow treats an explicit None as a value; for every other action
         # None still means "no input".
@@ -984,20 +1005,22 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             token = _action_context.set(context)
 
         streaming_cb = cast(StreamingCallback, on_chunk) if on_chunk else None
+        action_ctx = ActionRunContext(
+            context=_action_context.get(None),
+            streaming_callback=streaming_cb,
+            abort_signal=abort_signal,
+            init=init,
+            input_stream=input_stream,
+        )
 
         try:
             return await self._run_with_telemetry(
                 input,
-                ActionRunContext(
-                    context=_action_context.get(None),
-                    streaming_callback=streaming_cb,
-                    abort_signal=abort_signal,
-                    init=init,
-                    input_stream=input_stream,
-                ),
+                action_ctx,
                 on_trace_start,
                 telemetry_labels,
             )
+
         finally:
             if token is not None:
                 _action_context.reset(token)
@@ -1005,22 +1028,44 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     def stream(
         self,
         input: InputT | None = NO_INPUT,
+        *,
         context: dict[str, Any] | None = None,
         telemetry_labels: dict[str, object] | None = None,
         init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]:
+        """Start the action and return its chunks (``.stream``) and result (``.response``).
+
+        Takes the same keyword arguments as ``run``, minus ``on_chunk``.
+        """
+        return self._stream(
+            input,
+            context=context,
+            telemetry_labels=telemetry_labels,
+            init=init,
+        )
+
+    def _stream(
+        self,
+        input: InputT | None = NO_INPUT,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        abort_signal: asyncio.Event | None = None,
+        init: InitT | None = None,
         input_stream: AsyncIterator[InputT] | None = None,
     ) -> StreamResponse[ChunkT, OutputT]:
-        """Execute and return a StreamResponse with .stream and .response properties."""
+        """``stream`` plus ``input_stream``, which ``BidiAction.stream_bidi`` feeds."""
         channel: Channel[ChunkT, ActionResponse[OutputT]] = Channel()
 
         def send_chunk(c: ChunkT) -> None:
             channel.send(c)
 
-        resp = self.run(
-            input=input,
+        resp = self._run(
+            input,
+            on_chunk=send_chunk,
             context=context,
             telemetry_labels=telemetry_labels,
-            on_chunk=send_chunk,
+            abort_signal=abort_signal,
             init=init,
             input_stream=input_stream,
         )
@@ -1282,10 +1327,10 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             # The wrapper takes (input, ctx) and forwards to the user's
             # function with self.params.call. Keep the sentinel so a
             # defaulted tool input is omitted there instead of becoming None.
-            output = await self._fn(input, ctx)
+            coro = self._fn(input, ctx)
         else:
-            output = await self._params.call(self._fn, input, ctx)
-        return output
+            coro = self._params.call(self._fn, input, ctx)
+        return await coro
 
 
 async def single_item_stream(item: InputT) -> AsyncIterator[InputT]:
@@ -1363,10 +1408,10 @@ class BidiConnection(Generic[StreamInT, StreamOutT_co, BidiOutT_co]):
 class BidiAction(Action[InputT, OutputT, ChunkT, InitT]):
     """An Action extended with bidirectional streaming via stream_bidi().
 
-    Both one-shot calls and live sessions run through the same Action.run() /
-    stream() path: run() drives the fn with a single input, while stream_bidi()
-    is sugar that hands run() a live input stream and returns a connection
-    handle for sending per-turn inputs and receiving chunks.
+    One-shot calls and live sessions run the same fn: run() and stream() hand
+    it a single input as a one-item stream, while stream_bidi() starts the
+    stream path with a live input stream and returns a connection handle for
+    sending per-turn inputs and receiving chunks.
     """
 
     def __init__(
@@ -1423,12 +1468,13 @@ class BidiAction(Action[InputT, OutputT, ChunkT, InitT]):
     async def stream_bidi(
         self,
         init: InitT | None = None,
+        *,
         context: dict[str, Any] | None = None,
         telemetry_labels: dict[str, object] | None = None,
     ) -> BidiConnection[InputT, ChunkT, OutputT]:
         """Start a bidirectional streaming session over the single stream() primitive.
 
-        Opens an input channel, kicks off ``stream(input_stream=channel)``, and
+        Opens an input channel, kicks off ``_stream(input_stream=channel)``, and
         returns a BidiConnection whose send/close push per-turn inputs into that
         channel while receive/output read the run's chunks and final result.
         ``init`` is the session identity for the whole connection; per-turn
@@ -1437,7 +1483,7 @@ class BidiAction(Action[InputT, OutputT, ChunkT, InitT]):
         """
         # Unbounded: turn-level backpressure is managed at the agent runtime intake.
         in_queue: CloseableQueue[InputT] = CloseableQueue()
-        stream_response = self.stream(
+        stream_response = self._stream(
             init=init,
             context=context,
             telemetry_labels=telemetry_labels,

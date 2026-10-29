@@ -19,7 +19,7 @@
 import asyncio
 import base64
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, get_args
 from unittest.mock import AsyncMock
 
@@ -167,6 +167,11 @@ async def test_vertex_only_options_are_not_forwarded_on_gemini_api(mocker: Mocke
     assert config == genai.types.EmbedContentConfig(task_type='CLUSTERING')
 
 
+def _warnings(entries: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Warning events from structlog's captured entries, as formatted messages."""
+    return [entry['event'] for entry in entries if entry['log_level'] == 'warning']
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('options', 'expected'),
@@ -186,8 +191,7 @@ async def test_gemini_api_warns_about_dropped_vertex_only_options(
     with capture_logs() as entries:
         await embedder.generate(EmbedRequest(input=[Document.from_text('text')], options=options))
 
-    warnings = [e['event'] for e in entries if e.get('log_level') == 'warning']
-    assert warnings == [
+    assert _warnings(entries) == [
         f'Dropping {expected} from the gemini-embedding-001 embed config: '
         'Vertex AI only, not accepted by the Gemini Developer API.'
     ]
@@ -204,8 +208,7 @@ async def test_vertex_does_not_warn_about_vertex_only_options(mocker: MockerFixt
             EmbedRequest(input=[Document.from_text('text')], options={'mimeType': 'text/plain', 'autoTruncate': False})
         )
 
-    warnings = [e['event'] for e in entries if e.get('log_level') == 'warning']
-    assert warnings == []
+    assert _warnings(entries) == []
 
 
 @pytest.mark.asyncio

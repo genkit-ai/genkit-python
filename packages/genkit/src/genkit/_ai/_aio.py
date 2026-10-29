@@ -188,7 +188,7 @@ class Genkit:
         from genkit import Genkit
         from genkit_google_genai import GoogleAI
 
-        ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini_model('gemini-flash-latest'))
+        ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
         @ai.tool()
         async def current_weather(city: str) -> str:
@@ -390,7 +390,7 @@ class Genkit:
             from genkit import FlowContext, Genkit
             from genkit_google_genai import GoogleAI
 
-            ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini_model('gemini-flash-latest'))
+            ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
             @ai.flow
             async def my_flow(prompt: str) -> str:
@@ -1306,7 +1306,7 @@ class Genkit:
             from genkit_google_genai import GoogleAI
 
             # 1. Initialize Genkit and define a flow
-            ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini_model('gemini-flash-latest'))
+            ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 
             @ai.flow()

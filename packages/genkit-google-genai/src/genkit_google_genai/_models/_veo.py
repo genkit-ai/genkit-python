@@ -44,7 +44,7 @@ from genkit.model import ModelContext, ModelInfo, ModelRequest, OperationError, 
 from genkit.plugin_api import GenkitConfig
 
 # Quote autocomplete needs a Literal, so these aliases list the Veo ids each
-# backend autocompletes. ``veo_model`` takes ``Known*Veo | str`` so unlisted
+# backend autocompletes. ``veo`` takes ``Known*Veo | str`` so unlisted
 # ids still work.
 KnownGoogleAIVeo: TypeAlias = Literal[
     'veo-3.1-generate-preview',
@@ -56,6 +56,11 @@ KnownVertexAIVeo: TypeAlias = Literal[
     'veo-3.1-fast-generate-001',
     'veo-3.1-lite-generate-001',
 ]
+
+# Sent as genai_types.VideoCompressionQuality and genai_types.ImageResizeMode.
+# googlegenai_gemini_test.py pins both to the SDK enums.
+VideoCompressionQuality: TypeAlias = Literal['OPTIMIZED', 'LOSSLESS']
+ImageResizeMode: TypeAlias = Literal['CROP', 'PAD']
 
 
 VideoCompressionQuality: TypeAlias = Literal['OPTIMIZED', 'LOSSLESS']

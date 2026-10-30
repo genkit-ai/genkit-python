@@ -21,8 +21,8 @@ from typing import Any
 import pytest
 
 from genkit import Genkit, Message, ModelResponse, Operation, Part
-from genkit._core._typing import ActionMetadata, ModelInfo, Role
-from genkit.model import BackgroundModel, ModelContext, ModelRequest, background_model
+from genkit._core._typing import ModelInfo, Role
+from genkit.model import BackgroundModel, ModelContext, ModelRequest
 from genkit.plugin_api import Action, ActionKind, BackgroundAction, Plugin
 
 
@@ -41,7 +41,7 @@ async def _cancel(op: Operation, ctx: ModelContext) -> Operation:
 
 
 def _bistro_video(name: str = 'bistro-video') -> BackgroundModel:
-    return background_model(
+    return BackgroundModel(
         name,
         start=_start,
         check=_check,
@@ -67,7 +67,7 @@ class ResolvingKitchen(Plugin):
             return _bistro_video()
         return None
 
-    async def list_actions(self) -> list[Action | BackgroundAction[Any, Any] | ActionMetadata]:
+    async def list_actions(self) -> list[Action | BackgroundAction[Any, Any]]:
         return [_bistro_video('kitchen/bistro-video')]
 
 
@@ -82,7 +82,7 @@ class EagerKitchen(Plugin):
     async def resolve(self, action_type: ActionKind, name: str) -> Action | BackgroundAction[Any, Any] | None:
         return None
 
-    async def list_actions(self) -> list[Action | BackgroundAction[Any, Any] | ActionMetadata]:
+    async def list_actions(self) -> list[Action | BackgroundAction[Any, Any]]:
         return []
 
 
@@ -179,7 +179,7 @@ async def test_bare_action_from_resolve_still_works() -> None:
                 return video.check_action
             return None
 
-        async def list_actions(self) -> list[Action | BackgroundAction[Any, Any] | ActionMetadata]:
+        async def list_actions(self) -> list[Action | BackgroundAction[Any, Any]]:
             return []
 
     ai = Genkit(plugins=[RoutingKitchen()])

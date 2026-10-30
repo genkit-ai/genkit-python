@@ -25,7 +25,6 @@ from typing import Any
 from genkit._core._action import Action, ActionKind, set_action_name
 from genkit._core._background import BackgroundAction, background_base_id
 from genkit._core._middleware import Middleware
-from genkit._core._typing import ActionMetadata
 
 
 def resolved_action_name(*, plugin: str, requested_id: str) -> str:
@@ -105,13 +104,11 @@ class Plugin(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def list_actions(self) -> Sequence[Action | BackgroundAction[Any, Any] | ActionMetadata]:
+    async def list_actions(self) -> Sequence[Action | BackgroundAction[Any, Any]]:
         """Return advertised actions for dev UI/reflection listing.
 
-        A ``BackgroundAction`` is listed once, under its start action.
-
-        ``ActionMetadata.action_type`` must be set (typically ``ActionKind.*``) and
-        ``ActionMetadata.name`` must match resolution keys (typically
+        A ``BackgroundAction`` is listed once, under its start action. Each
+        returned action's ``name`` must match resolution keys (typically
         ``{plugin.name}/localName`` for plugin-backed actions).
         """
         ...
@@ -130,7 +127,7 @@ class Plugin(abc.ABC):
             from genkit.middleware import Middleware
             from typing import Any
 
-            from genkit.plugin_api import Action, ActionKind, ActionMetadata, BackgroundAction, Plugin
+            from genkit.plugin_api import Action, ActionKind, BackgroundAction, Plugin
 
 
             # 1. Define a middleware class with a registry name
@@ -148,7 +145,7 @@ class Plugin(abc.ABC):
                 async def resolve(self, kind: ActionKind, name: str) -> Action | BackgroundAction[Any, Any] | None:
                     return None
 
-                async def list_actions(self) -> list[ActionMetadata]:
+                async def list_actions(self) -> list[Action]:
                     return []
 
                 def list_middleware(self) -> list[type[Middleware]]:

@@ -39,8 +39,8 @@ from genkit import (
     ModelResponseChunk,
     Part,
     Prompt,
+    Tool,
     ToolContext,
-    tool,
 )
 from genkit._ai._model import ModelRequest, text_from_message
 from genkit._ai._prompt import (
@@ -66,7 +66,7 @@ from genkit.middleware import (
     MiddlewareContext,
     ModelHookParams,
 )
-from genkit.plugin_api import ActionMetadata, Plugin
+from genkit.plugin_api import Plugin
 from genkit.testing import (
     EchoModel,
     ScriptedModel,
@@ -122,7 +122,7 @@ class PrePostPlugin(Plugin):
     async def resolve(self, action_type: ActionKind, name: str) -> Action | None:
         return None
 
-    async def list_actions(self) -> list[ActionMetadata]:
+    async def list_actions(self) -> list[Action]:
         return []
 
     def list_middleware(self) -> list[type[Middleware]]:
@@ -1644,7 +1644,7 @@ async def test_prompt_inline_tool_object_runs(where: str) -> None:
         ran.append('check_stock')
         return 'in stock'
 
-    check_stock_tool = tool(check_stock, name='check_stock')
+    check_stock_tool = Tool(check_stock, name='check_stock')
     pm.responses = [_tool_call_reply('check_stock', 'r1'), _text_reply('done')]
     if where == 'definition':
         res = await ai.define_prompt(prompt='hi', tools=[check_stock_tool])()

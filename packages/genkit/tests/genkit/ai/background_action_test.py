@@ -24,7 +24,6 @@ from pydantic import BaseModel
 from genkit import Genkit, Message, ModelResponse, Operation, Part
 from genkit._ai._background_model import lookup_background_model
 from genkit._core._action import Action, ActionRunContext
-from genkit._core._background import operation_actions
 from genkit._core._error import GenkitError
 from genkit._core._schema import to_json_schema
 from genkit._core._typing import Role
@@ -66,9 +65,7 @@ def _register_report_job(ai: Genkit) -> ReportJob:
     async def check(op: Operation[Report], ctx: ActionRunContext) -> Operation:
         return Operation(id=op.id, done=True, output={'url': f'https://reports.example/{op.id}.pdf', 'pages': 12})
 
-    job = ReportJob(
-        *operation_actions(ReportJob, 'render-report', kind=ActionKind.CUSTOM, start=start, check=check),
-    )
+    job = ReportJob('render-report', start, check, kind=ActionKind.CUSTOM)
     for each in job.actions:
         ai._registry.register_action_from_instance(each)
     return job
@@ -149,15 +146,12 @@ async def test_non_model_job_cancel_unsupported_names_a_background_action() -> N
 def test_check_and_cancel_carry_start_metadata() -> None:
     """Like JS/Go: check and cancel spread the start metadata."""
     job = ReportJob(
-        *operation_actions(
-            ReportJob,
-            'render-report',
-            kind=ActionKind.CUSTOM,
-            start=_noop_start,
-            check=_noop_check,
-            cancel=_noop_check,
-            metadata={'team': 'finance'},
-        )
+        'render-report',
+        _noop_start,
+        _noop_check,
+        kind=ActionKind.CUSTOM,
+        cancel=_noop_check,
+        metadata={'team': 'finance'},
     )
     for each in job.actions:
         assert each.metadata['team'] == 'finance'

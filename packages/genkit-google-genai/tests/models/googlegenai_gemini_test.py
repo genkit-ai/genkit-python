@@ -1909,7 +1909,7 @@ def test_gemini_model__normalize_config_dumps_gemma_instance() -> None:
     """Gemma's relaxed temperature dumps through without re-validation."""
     gemma_model = GeminiModel(version='gemma-2-27b-it', client=MagicMock(spec=genai.Client))
 
-    dumped = gemma_model._normalize_config_to_dict(GemmaConfig(temperature=3.0))
+    dumped = gemma_model._normalize_config_to_dict(GemmaConfig.model_validate({'temperature': 3.0}))
 
     assert dumped == {'temperature': 3.0}
 

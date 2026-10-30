@@ -34,7 +34,7 @@ from typing_extensions import Self
 from genkit._core._action import Action, ActionKind, ActionRunContext, get_current_context, set_action_name
 from genkit._core._error import GenkitError, RuntimeErrorReason, StatusName
 from genkit._core._operation import Operation
-from genkit._core._schema import to_json_schema
+from genkit._core._schema import fixed_json_schema
 from genkit._core._typing import ActionMetadata
 
 if TYPE_CHECKING:
@@ -195,6 +195,30 @@ class BackgroundAction(Generic[InT, OutT]):
     Every attribute is either a ClassVar derived from the type arguments or
     derived from the three actions in ``_bind``, so a handle rebuilt from the
     registry (``_from_actions``) behaves like the one that was defined.
+
+    Example:
+        ```python
+        # 1. Type the job by subclassing with concrete type arguments
+        class ReportJob(BackgroundAction[RenderRequest, Report]):
+            pass
+
+
+        async def start(request: RenderRequest, ctx: FlowContext) -> Operation:
+            return Operation(id=await renderer.submit(request.quarter))
+
+
+        async def check(op: Operation[Report], ctx: FlowContext) -> Operation:
+            return await renderer.poll(op.id)
+
+
+        # 2. Build it; plugins return it from init() or resolve()
+        job = ReportJob('render-report', start, check, kind=ActionKind.CUSTOM)
+
+        # 3. The handle's output validates as Report
+        op = await job.check(await job.start(RenderRequest(quarter='q3')))
+        print(type(op.output).__name__)
+        # => Report
+        ```
     """
 
     # Derived from the type arguments in __init_subclass__. None means Any.
@@ -221,12 +245,40 @@ class BackgroundAction(Generic[InT, OutT]):
 
     def __init__(
         self,
-        start_action: Action,
-        check_action: Action,
-        cancel_action: Action | None = None,
+        name: str,
+        start: StartOpFn[InT],
+        check: CheckOpFn[OutT],
+        *,
+        kind: ActionKind,
+        cancel: CancelOpFn[OutT] | None = None,
+        metadata: dict[str, Any] | None = None,
+        description: str | None = None,
     ) -> None:
-        """Wrap already-built start, check and (optional) cancel actions."""
-        self._bind(start_action, check_action, cancel_action)
+        """Build a background action without registering it.
+
+        Args:
+            name: The start action's name. Check and cancel are
+                ``{name}/check`` and ``{name}/cancel``.
+            start: Starts the job and returns an ``Operation``.
+            check: Polls an ``Operation[OutT]``.
+            kind: The start action's kind; it is the first segment of the
+                ``action`` key stamped on every handle.
+            cancel: Optional; without it ``cancel`` raises UNIMPLEMENTED.
+            metadata: Copied onto all three actions, like JS/Go.
+            description: The start action's description.
+        """
+        self._bind(
+            *operation_actions(
+                type(self),
+                name,
+                kind=kind,
+                start=start,
+                check=check,
+                cancel=cancel,
+                metadata=metadata,
+                description=description,
+            )
+        )
 
     def _bind(self, start: Action, check: Action, cancel: Action | None) -> None:
         """The only writer of instance state. Subclasses derive extra fields here."""
@@ -485,7 +537,7 @@ def operation_actions(
     start_meta = dict(base_meta)
     sub_meta = dict(base_meta)
     if cls._output_type is not None:
-        output_schema_meta = to_json_schema(cls._output_type)
+        output_schema_meta = fixed_json_schema(cls._output_type)
         start_meta['outputSchema'] = output_schema_meta
         sub_meta['outputSchema'] = output_schema_meta
 
@@ -501,9 +553,9 @@ def operation_actions(
         check_start_input=check_start_input,
     )
     if not start_action.input_schema and cls._input_type is not None:
-        start_action.input_schema = to_json_schema(cls._input_type)
+        start_action.input_schema = fixed_json_schema(cls._input_type)
     if not start_action.output_schema:
-        start_action.output_schema = to_json_schema(Operation)
+        start_action.output_schema = fixed_json_schema(Operation)
 
     check_action = _operation_action(
         cls=cls,

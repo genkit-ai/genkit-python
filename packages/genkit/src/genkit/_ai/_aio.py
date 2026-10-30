@@ -44,7 +44,7 @@ from genkit._ai._background_model import (
     check_operation,
     define_background_model,
 )
-from genkit._ai._embedding import EmbedderFn, EmbedderInfo, EmbedderRef, define_embedder
+from genkit._ai._embedding import Embedder, EmbedderFn, EmbedderInfo, EmbedderRef, define_embedder
 from genkit._ai._evaluator import (
     BatchEvaluator,
     BatchEvaluatorFn,
@@ -65,6 +65,7 @@ from genkit._ai._generate import (
 )
 from genkit._ai._model import (
     Message,
+    Model,
     ModelArg,
     ModelFn,
     ModelResponse,
@@ -671,7 +672,7 @@ class Genkit:
         metadata: dict[str, object] | None = None,
         info: ModelInfo | None = None,
         description: str | None = None,
-    ) -> Action:
+    ) -> Model:
         """Register a custom model action."""
         return define_model(self._registry, name, fn, config_schema, metadata, info, description)
 
@@ -709,7 +710,7 @@ class Genkit:
         metadata: dict[str, object] | None = None,
         description: str | None = None,
         config_schema: type[BaseModel] | dict[str, object] | None = None,
-    ) -> Action:
+    ) -> Embedder:
         """Register a custom embedder action.
 
         The options class comes from ``config_schema`` or the fn's
@@ -757,7 +758,7 @@ class Genkit:
         if action is None:
             return None
         schema = action.metadata.get(ORIGINAL_OUTPUT_SCHEMA_KEY)
-        return Tool(
+        return Tool._from_action(
             action, original_output_schema=cast(dict[str, object], schema) if isinstance(schema, dict) else None
         )
 

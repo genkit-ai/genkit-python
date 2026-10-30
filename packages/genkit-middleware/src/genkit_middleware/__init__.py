@@ -36,7 +36,7 @@ them in the Dev UI and to name them in a ``.prompt`` file's ``use:``.
 """
 
 from genkit.middleware import Middleware as GenkitMiddleware
-from genkit.plugin_api import Action, ActionKind, ActionMetadata, Plugin
+from genkit.plugin_api import Action, ActionKind, Plugin
 from genkit_middleware._fallback import Fallback
 from genkit_middleware._filesystem import Filesystem
 from genkit_middleware._retry import Retry
@@ -86,7 +86,7 @@ class Middleware(Plugin):
         """Resolves nothing."""
         return None
 
-    async def list_actions(self) -> list[ActionMetadata]:
+    async def list_actions(self) -> list[Action]:
         """Lists nothing."""
         return []
 

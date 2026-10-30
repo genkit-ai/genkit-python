@@ -43,7 +43,6 @@ from genkit._ai._prompt import (
 from genkit._ai._tools import (
     MultipartToolResponse,
     ToolContext,
-    tool,
 )
 from genkit._core._action import FlowContext, StreamResponse
 from genkit._core._error import GenkitError, GenkitRuntimeError, Interrupt, PublicError, RuntimeErrorReason
@@ -81,7 +80,6 @@ __all__ = [
     'Embedding',
     'Operation',
     # Tools and HITL
-    'tool',
     'Tool',
     'ToolContext',
     'Interrupt',

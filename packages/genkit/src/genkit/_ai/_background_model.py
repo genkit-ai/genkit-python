@@ -93,6 +93,71 @@ class BackgroundModel(BackgroundAction[ModelRequest, ModelResponse]):
     label: str
     config_schema: type[BaseModel] | dict[str, Any] | None
 
+    def __init__(
+        self,
+        name: str,
+        start: StartModelOpFn,
+        check: CheckModelOpFn,
+        *,
+        cancel: CancelModelOpFn | None = None,
+        label: str | None = None,
+        info: ModelInfo | None = None,
+        config_schema: type[BaseModel] | dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Build a background model without registering it.
+
+        Plugin ``init`` / ``resolve`` return this; ``define_background_model``
+        registers the start, check, and cancel actions.
+        """
+        model_meta: dict[str, Any] = metadata.copy() if metadata else {}
+        model_options: dict[str, Any] = {}
+        if info:
+            model_options.update(info.model_dump(by_alias=True, exclude_none=True))
+
+        # generate_operation looks at this flag. A background model is a
+        # poll-handle model, so the flag is set when the action is built.
+        supports = model_options.get('supports')
+        supports = dict(supports) if isinstance(supports, dict) else {}
+        supports['longRunning'] = True
+        model_options['supports'] = supports
+
+        resolved_label = label or model_options.get('label') or name
+        model_options['label'] = resolved_label
+        if config_schema:
+            model_options['customOptions'] = to_json_schema(config_schema)
+        model_meta['model'] = model_options
+
+        if isinstance(config_schema, dict):
+            check_config_json_schema(config_schema, model=name)
+
+        def check_start_input(request: object, action_name: str) -> None:
+            # Same check as a regular model action: the whole config, after
+            # every middleware, before the provider starts an operation.
+            if config_schema:
+                check_request_config(request, schema=config_schema, model=action_name)
+
+        start_action, check_action, cancel_action = operation_actions(
+            type(self),
+            name,
+            kind=ActionKind.BACKGROUND_MODEL,
+            start=start,
+            check=check,
+            cancel=cancel,
+            metadata=model_meta,
+            description=description or f'Background model: {resolved_label}',
+            label=resolved_label,
+            config_schema=config_schema,
+            check_start_input=check_start_input,
+        )
+        # Annotation only: the Dev UI form comes from ModelRequest[Cfg]. Start,
+        # check and cancel share this dict, so all three see it.
+        if 'customOptions' not in model_options and start_action.config_schema is not None:
+            model_options['customOptions'] = to_json_schema(start_action.config_schema)
+        # BackgroundAction.__init__ takes no model options; build, then bind.
+        self._bind(start_action, check_action, cancel_action)
+
     def _bind(self, start: Action, check: Action, cancel: Action | None) -> None:
         super()._bind(start, check, cancel)
         model_meta = start.metadata.get('model')
@@ -130,69 +195,6 @@ def ensure_model_operation(*, response: object, name: str) -> Operation[ModelRes
     raise missing_operation_error(name=name)
 
 
-def background_model(
-    name: str,
-    *,
-    start: StartModelOpFn,
-    check: CheckModelOpFn,
-    cancel: CancelModelOpFn | None = None,
-    info: ModelInfo | None = None,
-    config_schema: type[BaseModel] | dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-    description: str | None = None,
-) -> BackgroundModel:
-    """Build a background model without registering it.
-
-    Plugin ``init`` / ``resolve`` return this. ``define_background_model``
-    registers the start / check / cancel actions.
-    """
-    model_meta: dict[str, Any] = metadata.copy() if metadata else {}
-    model_options: dict[str, Any] = {}
-    if info:
-        model_options.update(info.model_dump(by_alias=True, exclude_none=True))
-
-    # generate_operation looks at this flag. A background model is a
-    # poll-handle model, so the flag is set when the action is built.
-    supports = model_options.get('supports')
-    supports = dict(supports) if isinstance(supports, dict) else {}
-    supports['longRunning'] = True
-    model_options['supports'] = supports
-
-    label = model_options.get('label') or name
-    model_options['label'] = label
-    if config_schema:
-        model_options['customOptions'] = to_json_schema(config_schema)
-    model_meta['model'] = model_options
-
-    if isinstance(config_schema, dict):
-        check_config_json_schema(config_schema, model=name)
-
-    def check_start_input(request: object, action_name: str) -> None:
-        # Same check as a regular model action: the whole config, after every
-        # middleware, before the provider starts an operation.
-        if config_schema:
-            check_request_config(request, schema=config_schema, model=action_name)
-
-    start_action, check_action, cancel_action = operation_actions(
-        BackgroundModel,
-        name,
-        kind=ActionKind.BACKGROUND_MODEL,
-        start=start,
-        check=check,
-        cancel=cancel,
-        metadata=model_meta,
-        description=description or f'Background model: {label}',
-        label=label,
-        config_schema=config_schema,
-        check_start_input=check_start_input,
-    )
-    # Annotation only: the Dev UI form comes from ModelRequest[Cfg]. Start,
-    # check and cancel share this dict, so all three see it.
-    if 'customOptions' not in model_options and start_action.config_schema is not None:
-        model_options['customOptions'] = to_json_schema(start_action.config_schema)
-    return BackgroundModel(start_action, check_action, cancel_action)
-
-
 def define_background_model(
     registry: Registry,
     name: str,
@@ -206,7 +208,7 @@ def define_background_model(
     description: str | None = None,
 ) -> BackgroundModel:
     """Register a background model for long-running AI operations."""
-    model = background_model(
+    model = BackgroundModel(
         name,
         start=start,
         check=check,

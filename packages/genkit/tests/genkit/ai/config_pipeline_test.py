@@ -35,10 +35,10 @@ from genkit._core._model import (
     ModelResponse,
     Part,
 )
+from genkit._core._operation import Operation
 from genkit._core._typing import (
     Embedding,
     EmbedResponse,
-    Operation,
     Role,
 )
 

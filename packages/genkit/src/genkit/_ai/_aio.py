@@ -34,6 +34,16 @@ import anyio
 import uvicorn
 from pydantic import BaseModel
 
+from genkit._ai._background_model import (
+    BackgroundModel,
+    CancelModelOpFn,
+    CheckModelOpFn,
+    StartModelOpFn,
+    as_model_operation,
+    cancel_operation,
+    check_operation,
+    define_background_model,
+)
 from genkit._ai._embedding import EmbedderFn, EmbedderInfo, EmbedderRef, define_embedder
 from genkit._ai._evaluator import (
     BatchEvaluator,
@@ -79,16 +89,7 @@ from genkit._ai._prompt import (
 )
 from genkit._ai._tools import ORIGINAL_OUTPUT_SCHEMA_KEY, define_interrupt, define_tool
 from genkit._core._action import Action, ActionKind, ActionRunContext, get_current_context
-from genkit._core._background import (
-    BackgroundAction,
-    CancelModelOpFn,
-    CheckModelOpFn,
-    StartModelOpFn,
-    cancel_operation,
-    check_operation,
-    define_background_model,
-    missing_operation_error,
-)
+from genkit._core._background import missing_operation_error
 from genkit._core._channel import run_loop, start_stream
 from genkit._core._dap import DapFn, DynamicActionProvider
 from genkit._core._environment import is_dev_environment
@@ -106,6 +107,7 @@ from genkit._core._model import (
     Part,
     ToolChoice,
 )
+from genkit._core._operation import Operation
 from genkit._core._plugin import Plugin
 from genkit._core._reflection import ReflectionServer, ServerSpec, create_reflection_asgi_app
 from genkit._core._reflection_config import (
@@ -126,7 +128,6 @@ from genkit._core._typing import (
     EvaluatorRequest,
     EvaluatorResponse,
     ModelInfo,
-    Operation,
     Role,
 )
 
@@ -685,7 +686,7 @@ class Genkit:
         config_schema: type[BaseModel] | dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
         description: str | None = None,
-    ) -> BackgroundAction:
+    ) -> BackgroundModel:
         """Register a background model for long-running AI operations."""
         return define_background_model(
             registry=self._registry,
@@ -2078,31 +2079,107 @@ class Genkit:
         attributes = {metadata_key(k): str(v) for k, v in (metadata or {}).items()}
         return await run_in_new_span(name, body, action_type='flowStep', attributes=attributes)
 
+    @overload
     async def check_operation(
         self,
-        operation: Operation,
+        operation: Operation[T],
         *,
         context: dict[str, Any] | None = None,
         config: Mapping[str, Any] | None = None,
-    ) -> Operation:
+    ) -> Operation[T]: ...
+
+    @overload
+    async def check_operation(
+        self,
+        operation: Mapping[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> Operation[Any]: ...
+
+    async def check_operation(
+        self,
+        operation: Operation[Any] | Mapping[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> Operation[Any]:
         """Poll a background job.
+
+        Generic like JS ``checkOperation<T>``: an ``Operation[T]`` comes back
+        as ``Operation[T]``, a stored dict as ``Operation[Any]``. The handle's
+        ``action`` key finds the job. For a background model the handle is
+        validated as ``Operation[ModelResponse]`` before anything runs: an
+        unknown key, a missing ``id``, or an ``output`` that isn't a
+        ModelResponse is INVALID_ARGUMENT.
 
         Pass ``context={'secrets': {'api_key': ...}}`` again when start used a
         per-request key. ``config`` is client knobs (``base_url``,
         ``location``, ``api_version``), not video settings.
+
+        Example:
+            ```python
+            # 1. Start a job and store the handle as JSON
+            op = await ai.generate_operation(
+                model='googleai/veo-3.1-generate-preview',
+                prompt='A chef plating risotto.',
+            )
+            saved = op.model_dump_json()
+
+            # 2. Later, reload it typed and poll
+            op = await ai.check_operation(Operation[ModelResponse].model_validate_json(saved))
+            print(op.done)
+            # => False
+
+            # 3. Poll until done; output is a ModelResponse
+            while not op.done:
+                op = await ai.check_operation(op)
+            print(op.output.media[0].url)
+            # => https://storage.googleapis.com/.../risotto.mp4
+            ```
         """
         return await check_operation(self._registry, operation, context=context, config=config)
 
+    @overload
     async def cancel_operation(
         self,
-        operation: Operation,
+        operation: Operation[T],
         *,
         context: dict[str, Any] | None = None,
         config: Mapping[str, Any] | None = None,
-    ) -> Operation:
+    ) -> Operation[T]: ...
+
+    @overload
+    async def cancel_operation(
+        self,
+        operation: Mapping[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> Operation[Any]: ...
+
+    async def cancel_operation(
+        self,
+        operation: Operation[Any] | Mapping[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> Operation[Any]:
         """Cancel a background job.
 
-        Same ``context`` / ``config`` pockets as ``check_operation``.
+        Same input and return types as ``check_operation``: ``Operation[T]``
+        in, ``Operation[T]`` out; a stored dict in, ``Operation[Any]`` out.
+        Same ``context`` / ``config`` pockets.
+
+        Example:
+            ```python
+            # 1. Reload the stored handle and cancel it
+            op = await ai.cancel_operation(json.loads(saved))
+
+            # 2. The returned handle reflects the cancel attempt
+            print(op.id)
+            # => operations/risotto-123
+            ```
         """
         return await cancel_operation(self._registry, operation, context=context, config=config)
 
@@ -2110,7 +2187,7 @@ class Genkit:
     async def generate_operation(
         self,
         *,
-        model: ModelRef[ModelRefConfigT] | BackgroundAction | str | None = None,
+        model: ModelRef[ModelRefConfigT] | BackgroundModel | str | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -2118,13 +2195,13 @@ class Genkit:
         context: dict[str, object] | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-    ) -> Operation: ...
+    ) -> Operation[ModelResponse]: ...
 
     @overload
     async def generate_operation(
         self,
         *,
-        model: ModelRef[ModelRefConfigT] | BackgroundAction | str | None = None,
+        model: ModelRef[ModelRefConfigT] | BackgroundModel | str | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -2132,12 +2209,12 @@ class Genkit:
         context: dict[str, object] | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-    ) -> Operation: ...
+    ) -> Operation[ModelResponse]: ...
 
     async def generate_operation(
         self,
         *,
-        model: ModelRef[ModelRefConfigT] | BackgroundAction | str | None = None,
+        model: ModelRef[ModelRefConfigT] | BackgroundModel | str | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -2145,7 +2222,7 @@ class Genkit:
         context: dict[str, object] | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-    ) -> Operation:
+    ) -> Operation[ModelResponse]:
         """Generate content using a long-running model, returning an Operation to poll.
 
         A background start is one request that returns a job handle. There is
@@ -2160,7 +2237,7 @@ class Genkit:
             while not op.done:
                 op = await ai.check_operation(op)
         """
-        if isinstance(model, BackgroundAction):
+        if isinstance(model, BackgroundModel):
             # Same as its name, once we know this registry holds that object.
             model = background_model_name(model=model, registry=self._registry)
         resolved = await resolve_for_generate(
@@ -2210,4 +2287,4 @@ class Genkit:
             )
         if not response.operation:
             raise missing_operation_error(name=model_action.name)
-        return response.operation
+        return as_model_operation(response.operation, name=model_action.name, status='INTERNAL')

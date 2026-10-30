@@ -30,7 +30,8 @@ from pydantic import BaseModel, ConfigDict
 from genkit import FinishReason, Genkit, Part
 from genkit._core._error import GenkitError
 from genkit._core._model import Message, ModelRequest, ModelResponse
-from genkit._core._typing import Operation, Role
+from genkit._core._operation import Operation
+from genkit._core._typing import Role
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
 from genkit.model import ModelContext, model_ref
 

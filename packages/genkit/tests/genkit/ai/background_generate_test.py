@@ -28,13 +28,8 @@ from genkit._core._action import _action_context
 from genkit._core._error import GenkitError, RuntimeErrorReason
 from genkit._core._middleware import GenerateHookParams, Middleware, MiddlewareContext, ModelHookParams
 from genkit._core._model import ModelRequest, ModelResponse, ModelResponseChunk
-from genkit._core._typing import (
-    FinishReason,
-    Operation,
-    OperationError,
-    Role,
-    ToolRequest,
-)
+from genkit._core._operation import Operation
+from genkit._core._typing import FinishReason, Media, OperationError, Role, ToolRequest
 from genkit.model import ModelContext
 from genkit.plugin_api import ActionKind
 
@@ -672,6 +667,10 @@ async def test_started_operation_dump_round_trips_through_check(ai: Genkit) -> N
     assert updated.done is True
     assert updated.action == '/background-model/bg-model'
 
+    # The dict itself polls too, with the same result.
+    from_dict = await ai.check_operation(dumped)
+    assert from_dict == updated
+
 
 @pytest.mark.asyncio
 async def test_generate_operation_passes_context_to_start(ai: Genkit) -> None:
@@ -697,7 +696,7 @@ async def test_generate_operation_passes_context_to_start(ai: Genkit) -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_action_start_passes_context(ai: Genkit) -> None:
+async def test_background_model_start_passes_context(ai: Genkit) -> None:
     """Holding the wrapper and calling start() still delivers the tenant key."""
     seen: dict[str, Any] = {}
 
@@ -1356,3 +1355,153 @@ async def test_generate_operation_keeps_the_named_background_model(ai: Genkit) -
 
     assert operation.id == 'bg-op-123'
     assert operation.action == '/background-model/bg-model'
+
+
+def _video_response(url: str) -> ModelResponse:
+    return ModelResponse(
+        finish_reason=FinishReason.STOP,
+        message=Message(role=Role.MODEL, content=[Part(media=Media(url=url, content_type='video/mp4'))]),
+    )
+
+
+def test_model_response_operation_output_survives_json_round_trip() -> None:
+    """A stored handle reloaded as Operation[ModelResponse] has a ModelResponse output, not a dict."""
+    op = Operation[ModelResponse](id='job1', done=True, output=_video_response('https://cdn.example/promo.mp4'))
+
+    reloaded = Operation[ModelResponse].model_validate_json(op.model_dump_json(by_alias=True))
+
+    assert isinstance(reloaded.output, ModelResponse)
+    assert reloaded.output.media[0].url == 'https://cdn.example/promo.mp4'
+
+
+def test_bare_operation_output_stays_untyped() -> None:
+    """Operation without a type argument keeps output as whatever was passed, like JS Operation<any>."""
+    op = Operation(id='job1', done=True, output={'rows': 3})
+
+    assert op.output == {'rows': 3}
+
+
+def test_model_response_operation_rejects_output_that_is_not_a_model_response() -> None:
+    """Operation[ModelResponse](output=...) checks the shape at construction."""
+    with pytest.raises(ValueError, match='output'):
+        Operation[ModelResponse](id='job1', done=True, output=cast(Any, {'video_url': 'https://cdn.example/promo.mp4'}))
+
+
+@pytest.mark.asyncio
+async def test_check_that_assigns_a_dict_output_returns_a_model_response(ai: Genkit) -> None:
+    """op.output = {...} skips validation; check_operation still hands back a ModelResponse."""
+
+    async def start(_request: ModelRequest, _ctx: ModelContext) -> Operation:
+        return Operation(id='render-1', done=False)
+
+    async def check(op: Operation, _ctx: ModelContext) -> Operation:
+        op.done = True
+        op.output = cast(
+            Any,
+            {
+                'finishReason': 'stop',
+                'message': {'role': 'model', 'content': [{'media': {'url': 'https://cdn.example/r1.mp4'}}]},
+            },
+        )
+        return op
+
+    ai.define_background_model(name='render', start=start, check=check)
+
+    op = await ai.generate_operation(model='render', prompt='15s promo')
+    op = await ai.check_operation(op)
+
+    assert type(op) is Operation[ModelResponse]
+    assert isinstance(op.output, ModelResponse)
+    assert op.output.media[0].url == 'https://cdn.example/r1.mp4'
+
+
+@pytest.mark.asyncio
+async def test_check_that_assigns_a_non_response_output_fails_naming_the_action(ai: Genkit) -> None:
+    """A check fn that puts something else in output is a model bug, reported with its name."""
+
+    async def start(_request: ModelRequest, _ctx: ModelContext) -> Operation:
+        return Operation(id='render-1', done=False)
+
+    async def check(op: Operation, _ctx: ModelContext) -> Operation:
+        op.done = True
+        op.output = cast(Any, {'video_url': 'https://cdn.example/r1.mp4'})
+        return op
+
+    ai.define_background_model(name='render', start=start, check=check)
+    op = await ai.generate_operation(model='render', prompt='15s promo')
+
+    with pytest.raises(GenkitError, match="'render/check': invalid Operation: output") as raised:
+        await ai.check_operation(op)
+
+    assert raised.value.status == 'INTERNAL'
+    assert raised.value.reason is RuntimeErrorReason.INVALID_OUTPUT
+
+
+@pytest.mark.asyncio
+async def test_check_that_assigns_a_bad_error_blames_error_not_output(ai: Genkit) -> None:
+    """The message names the field that failed, even when output is None and valid."""
+
+    async def start(_request: ModelRequest, _ctx: ModelContext) -> Operation:
+        return Operation(id='render-1', done=False)
+
+    async def check(op: Operation, _ctx: ModelContext) -> Operation:
+        op.done = True
+        op.error = cast(Any, 'boom')
+        return op
+
+    ai.define_background_model(name='render', start=start, check=check)
+    op = await ai.generate_operation(model='render', prompt='15s promo')
+
+    with pytest.raises(GenkitError, match="'render/check': invalid Operation: error") as raised:
+        await ai.check_operation(op)
+
+    assert raised.value.status == 'INTERNAL'
+    assert raised.value.reason is RuntimeErrorReason.INVALID_OUTPUT
+
+
+@pytest.mark.asyncio
+async def test_check_with_a_handle_whose_output_is_not_a_model_response_is_invalid_argument(ai: Genkit) -> None:
+    """A caller's handle with a bad output is the caller's mistake, not the model's."""
+
+    async def start(_request: ModelRequest, _ctx: ModelContext) -> Operation:
+        return Operation(id='render-1', done=False)
+
+    async def check(op: Operation, _ctx: ModelContext) -> Operation:
+        return op
+
+    ai.define_background_model(name='render', start=start, check=check)
+    op = await ai.generate_operation(model='render', prompt='15s promo')
+    stale = Operation(id=op.id, action=op.action, done=True, output={'video_url': 'https://cdn.example/r1.mp4'})
+
+    with pytest.raises(GenkitError, match='invalid Operation: output') as raised:
+        await ai.check_operation(stale)
+
+    assert raised.value.status == 'INVALID_ARGUMENT'
+    assert raised.value.reason is RuntimeErrorReason.INVALID_INPUT
+
+
+@pytest.mark.asyncio
+async def test_check_with_a_bad_output_dict_fails_before_a_plain_action_check_runs(ai: Genkit) -> None:
+    """A BackgroundModel built from plain Actions still rejects a stored handle with a bad output."""
+    calls: list[Operation] = []
+
+    async def start(_request: ModelRequest) -> Operation:
+        return Operation(id='research-1', action='/background-model/research', done=False)
+
+    async def check(op: Operation) -> Operation:
+        calls.append(op)
+        return op
+
+    ai._registry.register_action(name='research', kind=ActionKind.BACKGROUND_MODEL, fn=start)
+    ai._registry.register_action(name='research/check', kind=ActionKind.CHECK_OPERATION, fn=check)
+
+    with pytest.raises(GenkitError, match='invalid Operation: output') as raised:
+        await ai.check_operation({
+            'id': 'research-1',
+            'action': '/background-model/research',
+            'output': {'video_url': 1},
+        })
+
+    assert raised.value.status == 'INVALID_ARGUMENT'
+    assert raised.value.reason is RuntimeErrorReason.INVALID_INPUT
+    assert calls == []

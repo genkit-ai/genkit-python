@@ -30,6 +30,7 @@ from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from genkit._ai import _aio
+from genkit._ai._background_model import ensure_model_operation
 from genkit._ai._formats._types import FormatDef, Formatter
 from genkit._ai._messages import inject_instructions
 from genkit._ai._model import (
@@ -65,11 +66,7 @@ from genkit._core._action import (
     parse_action_key,
     parse_dap_qualified_name,
 )
-from genkit._core._background import (
-    _ensure_operation,
-    missing_operation_error,
-    stamp_operation_action,
-)
+from genkit._core._background import missing_operation_error, stamp_operation_action
 from genkit._core._error import GenkitError, GenkitRuntimeError, PublicError, RuntimeErrorReason
 from genkit._core._logger import get_logger, is_debug_enabled
 from genkit._core._middleware import (
@@ -96,6 +93,7 @@ from genkit._core._model import (
     reject_config_api_key,
     reject_unanswered_interrupts,
 )
+from genkit._core._operation import Operation
 from genkit._core._registry import Registry
 from genkit._core._schema import check_output_schema
 from genkit._core._telemetry._instrumentation import SpanContext, run_in_new_span, set_span_state
@@ -104,7 +102,6 @@ from genkit._core._typing import (
     FinishReason,
     GenerateActionOutputConfig,
     MiddlewareRef,
-    Operation,
     OperationError,
     Role,
     ToolDefinition,
@@ -961,7 +958,7 @@ def box_background_start(
 
     Timing comes from Action.run, not from the ticket.
     """
-    op = _ensure_operation(response=raw, name=name)
+    op = ensure_model_operation(response=raw, name=name)
     stamp_operation_action(operation=op, name=name)
     return ModelResponse(operation=op, request=request, latency_ms=latency_ms)
 

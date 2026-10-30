@@ -33,8 +33,8 @@ from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from pydantic import BaseModel
 
-from genkit import FinishReason, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role
-from genkit._core._typing import GenerationUsage, Operation
+from genkit import FinishReason, GenkitError, Message, ModelResponse, ModelResponseChunk, Operation, Part, Role
+from genkit._core._typing import GenerationUsage
 from genkit.model import ModelConfig, ModelContext, ModelRequest, OutputConfig, Supports, ToolRequest
 
 

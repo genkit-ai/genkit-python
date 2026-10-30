@@ -649,20 +649,6 @@ class MultipartToolResponse(GenkitModel):
     metadata: Metadata | None = None
 
 
-class Operation(GenkitModel):
-    """Model for operation data."""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(
-        alias_generator=to_camel, extra='forbid', validate_by_name=True, validate_by_alias=True
-    )
-    action: str | None = None
-    id: str = Field(...)
-    done: bool | None = None
-    output: Any | None = Field(default=None)
-    error: OperationError | None = None
-    metadata: Metadata | None = None
-
-
 class OutputConfig(GenkitModel):
     """Model for outputconfig data."""
 

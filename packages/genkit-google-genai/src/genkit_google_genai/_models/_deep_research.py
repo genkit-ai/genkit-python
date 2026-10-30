@@ -46,7 +46,7 @@ from pydantic.alias_generators import to_snake
 from typing_extensions import NotRequired, TypedDict
 
 from genkit import GenkitError, Operation
-from genkit.model import BackgroundAction, ModelContext, ModelRef, ModelRequest, model_ref
+from genkit.model import BackgroundModel, ModelContext, ModelRef, ModelRequest, model_ref
 from genkit.plugin_api import Action, ActionKind, GenkitConfig, to_json_schema
 
 AGENT_CONFIG_KEYS = (
@@ -200,12 +200,12 @@ def build_tools(request: ModelRequest[DeepResearchConfig], config: DeepResearchC
     return tools
 
 
-def create_deep_research_background_action(
+def create_deep_research_background_model(
     target: str | ModelRef,
     *,
     plugin_api_key: str | None,
     client_options: ClientOptions,
-) -> BackgroundAction:
+) -> BackgroundModel:
     """Wire Deep Research start/check/cancel as Actions that re-read secrets."""
     name = target.name if isinstance(target, ModelRef) else target
     version = extract_version(name)
@@ -283,7 +283,7 @@ def create_deep_research_background_action(
         fn=cancel,
         metadata={'type': 'cancel-operation'},
     )
-    return BackgroundAction(
+    return BackgroundModel(
         start_action=start_action,
         check_action=check_action,
         cancel_action=cancel_action,

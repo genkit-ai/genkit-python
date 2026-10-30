@@ -107,9 +107,6 @@ class ModelConfig(GenerationCommonConfig):
     """
 
 
-ModelUsage = GenerationUsage  # public name for GenerationUsage
-"""Token, character, and media counts a model reports for one generation."""
-
 # what callers pass as tool_choice; they type the string, not an enum.
 ToolChoice = Literal['auto', 'required', 'none']
 """Whether the model may call tools (`auto`), must call one (`required`), or must not (`none`)."""
@@ -124,14 +121,11 @@ ToolChoice = Literal['auto', 'required', 'none']
 # to it, so treating it as abnormal would silently drop validation for
 # responses the model may well have completed.
 #
-# Mirrors Go's FinishReason.isAbnormal (go/ai/generate.go).
-ABNORMAL_FINISH_REASONS: Final[frozenset[FinishReason]] = frozenset({
-    FinishReason.BLOCKED,
-    FinishReason.ABORTED,
-    FinishReason.FAILED,
-    FinishReason.INTERRUPTED,
-    FinishReason.OTHER,
-})
+# Mirrors Go's FinishReason.isAbnormal (go/ai/generate.go). Derived from
+# FinishReason.is_abnormal so the two can't drift.
+ABNORMAL_FINISH_REASONS: Final[frozenset[FinishReason]] = frozenset(
+    reason for reason in FinishReason if reason.is_abnormal()
+)
 """Finish reasons that skip output-schema validation because the response carries no conforming output."""
 
 logger = get_logger(__name__)
@@ -833,35 +827,6 @@ class Message(GenkitModel):
         return [p for p in self.tool_requests if p.metadata and p.metadata.get('interrupt')]
 
 
-class Candidate(GenkitModel):
-    """One sampled reply from a generate call."""
-
-    index: float
-    message: Message
-    usage: GenerationUsage | None = None
-    finish_reason: FinishReason
-    finish_message: str | None = None
-    custom: Any | None = Field(default=None)
-
-    @field_validator('message', mode='before')
-    @classmethod
-    def _wrap_message(cls, v: object) -> object:
-        return as_message(v)
-
-
-def as_candidate(value: object) -> Candidate:
-    if isinstance(value, Candidate):
-        return Candidate(
-            index=value.index,
-            message=value.message,
-            usage=value.usage,
-            finish_reason=value.finish_reason,
-            finish_message=value.finish_message,
-            custom=value.custom,
-        )
-    return Candidate.model_validate(value)
-
-
 class GenerateActionOptions(GenkitModel):
     """Generate options with messages as list[Message] for type-safe use with ai.generate()."""
 
@@ -1038,6 +1003,47 @@ class EmbedRequest(GenkitModel, Generic[RequestOptionsT]):
     @classmethod
     def _check_options_type(cls, v: object) -> object:
         return check_options_value(cls, v)
+
+
+def count_message_usage(messages: Sequence[Message], response: Message) -> dict[str, int]:
+    """Character and media counts behind ``GenerationUsage.from_messages``."""
+
+    def count_parts(parts: Sequence[Part]) -> tuple[int, int, int, int]:
+        characters = 0
+        images = 0
+        videos = 0
+        audio = 0
+
+        for part in parts:
+            if part.text:
+                characters += len(part.text)
+
+            media = part.media
+            if media:
+                content_type = media.content_type or ''
+                url = media.url or ''
+
+                if content_type.startswith('image') or url.startswith('data:image'):
+                    images += 1
+                elif content_type.startswith('video') or url.startswith('data:video'):
+                    videos += 1
+                elif content_type.startswith('audio') or url.startswith('data:audio'):
+                    audio += 1
+
+        return characters, images, videos, audio
+
+    in_chars, in_imgs, in_vids, in_audio = count_parts([part for msg in messages for part in msg.content])
+    out_chars, out_imgs, out_vids, out_audio = count_parts(response.content)
+    return {
+        'input_characters': in_chars,
+        'input_images': in_imgs,
+        'input_videos': in_vids,
+        'input_audio_files': in_audio,
+        'output_characters': out_chars,
+        'output_images': out_imgs,
+        'output_videos': out_vids,
+        'output_audio_files': out_audio,
+    }
 
 
 class SessionState(GenkitModel):
@@ -1367,7 +1373,37 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
     raw: dict[str, Any] | None = None
     request: ModelRequest | None = None
     operation: Operation | None = None
-    candidates: list[Candidate] | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def _drop_candidates(cls, data: object) -> object:
+        # JS responses, stored traces, session snapshots and older plugins may
+        # still carry the deprecated `candidates` list. Drop it instead of
+        # failing on extra='forbid'. When the top-level reply is missing, fill
+        # it from candidate 0, as JS GenerateResponse does.
+        if not isinstance(data, dict) or 'candidates' not in data:
+            return data
+        raw = cast(dict[str, Any], data)
+        fields = {k: v for k, v in raw.items() if k != 'candidates'}
+        candidates: object = raw['candidates']
+        if fields.get('message') is not None or not isinstance(candidates, list) or not candidates:
+            return fields
+        candidate_list = cast(list[Any], candidates)
+        first: object = next(
+            (c for c in candidate_list if isinstance(c, Mapping) and cast(Mapping[str, Any], c).get('index', 0) == 0),
+            candidate_list[0],
+        )
+        if isinstance(first, BaseModel):
+            first = first.model_dump(by_alias=True, exclude_none=True)
+        if not isinstance(first, Mapping):
+            return fields
+        candidate = cast(Mapping[str, Any], first)
+        fields['message'] = candidate.get('message')
+        for camel, snake in (('finishReason', 'finish_reason'), ('finishMessage', 'finish_message')):
+            value = candidate.get(camel, candidate.get(snake))
+            if value is not None and fields.get(camel) is None and fields.get(snake) is None:
+                fields[camel] = value
+        return fields
 
     @field_validator('message', mode='before')
     @classmethod
@@ -1382,13 +1418,6 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
         if v is None:
             return v
         return as_model_request(v)
-
-    @field_validator('candidates', mode='before')
-    @classmethod
-    def _wrap_candidates(cls, v: object) -> object:
-        if not isinstance(v, list):
-            return v
-        return [as_candidate(c) for c in v]
 
     def model_post_init(self, __context: object) -> None:
         """Initialize default usage and custom dict if not provided."""
@@ -1741,7 +1770,6 @@ AgentInit.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 AgentInput.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 AgentOutput.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 AgentResult.model_rebuild(force=True, _types_namespace=_VENEER_NS)
-Candidate.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 ModelResponse.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 ModelResponseChunk.model_rebuild(force=True, _types_namespace=_VENEER_NS)
 AgentStreamChunk.model_rebuild(force=True, _types_namespace=_VENEER_NS)
@@ -1820,54 +1848,6 @@ def text_from_content(content: Sequence[Part]) -> str:
         if p.text is not None:
             texts.append(str(p.text))
     return ''.join(texts)
-
-
-def get_basic_usage_stats(input_: list[Message], response: Message) -> GenerationUsage:
-    """Calculate usage stats (characters, media counts) from messages."""
-    request_parts: list[Part] = []
-    for msg in input_:
-        request_parts.extend(msg.content)
-
-    response_parts = response.content
-
-    def count_parts(parts: list[Part]) -> tuple[int, int, int, int]:
-        """Count characters, images, videos, audio in parts."""
-        characters = 0
-        images = 0
-        videos = 0
-        audio = 0
-
-        for part in parts:
-            if part.text:
-                characters += len(part.text)
-
-            media = part.media
-            if media:
-                content_type = media.content_type or ''
-                url = media.url or ''
-
-                if content_type.startswith('image') or url.startswith('data:image'):
-                    images += 1
-                elif content_type.startswith('video') or url.startswith('data:video'):
-                    videos += 1
-                elif content_type.startswith('audio') or url.startswith('data:audio'):
-                    audio += 1
-
-        return characters, images, videos, audio
-
-    in_chars, in_imgs, in_vids, in_audio = count_parts(request_parts)
-    out_chars, out_imgs, out_vids, out_audio = count_parts(response_parts)
-
-    return GenerationUsage(
-        input_characters=in_chars,
-        input_images=in_imgs,
-        input_videos=in_vids,
-        input_audio_files=in_audio,
-        output_characters=out_chars,
-        output_images=out_imgs,
-        output_videos=out_vids,
-        output_audio_files=out_audio,
-    )
 
 
 # Rebuild schema after all types (including Message) are fully defined.

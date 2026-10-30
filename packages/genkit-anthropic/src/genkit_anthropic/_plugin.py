@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from anthropic import AsyncAnthropic
 
 from genkit import GenkitError, ModelResponse, get_logger
-from genkit.model import ModelContext, ModelRef, ModelRequest, model as create_model, model_action_metadata, model_ref
+from genkit.model import ModelContext, ModelRef, ModelRequest, model as create_model, model_action_metadata
 from genkit.plugin_api import (
     Action,
     ActionKind,
@@ -149,7 +149,7 @@ class Anthropic(Plugin):
         local = _strip_ref_prefixes(name)
         if not local:
             raise GenkitError(status='INVALID_ARGUMENT', message='Anthropic.claude: model name is required.')
-        return model_ref(local, config_schema=AnthropicConfig, namespace=ANTHROPIC_PLUGIN_NAME, config=config)
+        return ModelRef(name=f'{ANTHROPIC_PLUGIN_NAME}/{local}', config_schema=AnthropicConfig, config=config)
 
     def __init__(
         self,
@@ -272,7 +272,7 @@ class Anthropic(Plugin):
         """
         return model_action_metadata(
             name=anthropic_name(model_id),
-            info=get_model_info(model_id).model_dump(by_alias=True, exclude_none=True),
+            info=get_model_info(model_id),
             config_schema=AnthropicConfig,
         )
 

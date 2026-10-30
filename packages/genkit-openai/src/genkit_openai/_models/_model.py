@@ -37,7 +37,7 @@ from openai.types import CompletionUsage
 from openai.types.completion_usage import CompletionTokensDetails, PromptTokensDetails
 
 from genkit import FinishReason, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role, get_logger
-from genkit.model import ModelConfig, ModelContext, ModelRequest, ModelUsage, Supports, ToolDefinition
+from genkit.model import GenerationUsage, ModelConfig, ModelContext, ModelRequest, ModelSupports, ToolDefinition
 
 logger = get_logger(__name__)
 
@@ -129,8 +129,8 @@ def _token_count(value: Any) -> float | None:  # noqa: ANN401
     return float(value)
 
 
-def _usage_from_completion(usage: CompletionUsage | None) -> ModelUsage:
-    """Build ModelUsage from a chat completion's usage block.
+def _usage_from_completion(usage: CompletionUsage | None) -> GenerationUsage:
+    """Build GenerationUsage from a chat completion's usage block.
 
     Args:
         usage: The ``usage`` object from a completion or a stream's usage
@@ -140,7 +140,7 @@ def _usage_from_completion(usage: CompletionUsage | None) -> ModelUsage:
         The token counts, empty when there is no usage to report.
     """
     if usage is None:
-        return ModelUsage()
+        return GenerationUsage()
 
     extras = usage.model_extra or {}
     prompt = usage.prompt_tokens_details or PromptTokensDetails()
@@ -165,7 +165,7 @@ def _usage_from_completion(usage: CompletionUsage | None) -> ModelUsage:
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         custom['cost'] = float(cost)
 
-    return ModelUsage(
+    return GenerationUsage(
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         total_tokens=usage.total_tokens,
@@ -245,7 +245,7 @@ def _finish_state(
 class OpenAIModel:
     """Handles OpenAI API interactions for the Genkit plugin."""
 
-    def __init__(self, model: str, client: AsyncOpenAI, *, supports: Supports | None = None) -> None:
+    def __init__(self, model: str, client: AsyncOpenAI, *, supports: ModelSupports | None = None) -> None:
         """Initializes the OpenAIModel instance with the specified model and OpenAI client parameters.
 
         Args:

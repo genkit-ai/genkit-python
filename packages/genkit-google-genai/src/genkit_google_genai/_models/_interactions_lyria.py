@@ -108,7 +108,7 @@ def create_lyria_action(
         fn=run,
         metadata=model_action_metadata(
             name=name,
-            info=info.model_dump(by_alias=True),
+            info=info,
             config_schema=LyriaConfig,
         ).metadata,
     )

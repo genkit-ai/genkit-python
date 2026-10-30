@@ -33,7 +33,7 @@ from pydantic import BaseModel, ValidationError
 
 from genkit import GenkitError
 from genkit.embedder import EmbedderRef
-from genkit.model import ModelInfo, ModelRef, model_ref
+from genkit.model import ModelInfo, ModelRef
 
 ConfigT = TypeVar('ConfigT', bound=BaseModel)
 
@@ -105,7 +105,7 @@ def family_model_ref(
     allowed = actual == family or (family == 'gemini' and actual == 'unknown')
     if not allowed:
         raise wrong_family_error(plugin_class=plugin_class, method=method, family=family, local=local, actual=actual)
-    return model_ref(local, config_schema=config_schema, namespace=namespace, config=config, info=info)
+    return ModelRef(name=f'{namespace}/{local}', config_schema=config_schema, config=config, info=info)
 
 
 def family_embedder_ref(

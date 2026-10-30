@@ -33,7 +33,7 @@ from genkit import (
     Role,
 )
 from genkit.middleware import MiddlewareContext, ModelHookParams
-from genkit.model import ModelConfig, ModelContext, ModelRequest, model_ref
+from genkit.model import ModelConfig, ModelContext, ModelRef, ModelRequest
 from genkit.plugin_api import provider_error
 from genkit.testing import define_scripted_model
 
@@ -187,7 +187,7 @@ async def test_fallback_ref_entry_config_reaches_fallback_model() -> None:
 
     ai.define_model(name='gem', fn=primary, config_schema=ThinkingConfig)
     ai.define_model(name='oai', fn=backup, config_schema=ModelConfig)
-    ref = model_ref('oai', config_schema=ModelConfig, config=ModelConfig(temperature=0.2))
+    ref = ModelRef(name='oai', config_schema=ModelConfig, config=ModelConfig(temperature=0.2))
 
     response = await ai.generate(
         model='gem',
@@ -206,7 +206,7 @@ async def test_fallback_ref_entry_config_reaches_fallback_model() -> None:
 @pytest.mark.parametrize(
     ('entry', 'temperature'),
     [
-        (model_ref('backup', config_schema=ThinkingConfig, config=ThinkingConfig(temperature=0.2)), 0.2),
+        (ModelRef(name='backup', config_schema=ThinkingConfig, config=ThinkingConfig(temperature=0.2)), 0.2),
         ('backup', None),
     ],
     ids=['ref_entry', 'string_entry'],
@@ -488,7 +488,7 @@ async def test_fallback_does_not_switch_when_model_wraps_the_callers_on_chunk_fa
 
 def test_fallback_model_ref_entry_dumps_camel_case_config_keys() -> None:
     """A ModelRef entry in Fallback writes camelCase config keys in the middleware ref."""
-    ref = model_ref('echo/b', config_schema=ModelConfig, config=ModelConfig(max_output_tokens=5, top_k=3))
+    ref = ModelRef(name='echo/b', config_schema=ModelConfig, config=ModelConfig(max_output_tokens=5, top_k=3))
     fb = Fallback(models=[ref])
     dumped = fb.config.model_dump(by_alias=True, exclude_none=True, mode='json')
     assert dumped['models'] == [{'name': 'echo/b', 'config': {'maxOutputTokens': 5, 'topK': 3}}]

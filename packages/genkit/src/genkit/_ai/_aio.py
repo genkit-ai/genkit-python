@@ -1894,6 +1894,7 @@ class Genkit:
         content: str | Document,
         metadata: dict[str, object] | None = None,
         config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for a single document or string.
 
@@ -1905,6 +1906,12 @@ class Genkit:
 
         ``metadata`` is attached to a string ``content``. A ``Document``
         already carries its own metadata, so passing both raises ``TypeError``.
+
+        ``context`` reaches the embedder as ``ctx.context``, as on
+        ``generate``. Omitted, the embedder sees the enclosing action's
+        context. Provider plugins read a per-request key from
+        ``context={'secrets': {'api_key': ...}}`` so the tenant, not the
+        plugin key, is billed.
 
         Example:
             from genkit_google_genai import GoogleAI
@@ -1927,7 +1934,8 @@ class Genkit:
                 EmbedRequest(
                     input=documents,
                     options=final_options,
-                )
+                ),
+                context=context,
             )
         ).response
         return response.embeddings
@@ -1939,10 +1947,11 @@ class Genkit:
         content: list[str] | list[Document],
         metadata: dict[str, object] | None = None,
         config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for multiple documents in a single batch call.
 
-        ``config`` and ``metadata`` work the same as on ``embed``.
+        ``config``, ``metadata`` and ``context`` work the same as on ``embed``.
         """
         if metadata is not None and any(isinstance(item, Document) for item in content):
             raise TypeError(_DOCUMENT_METADATA_CONFLICT)
@@ -1955,7 +1964,7 @@ class Genkit:
         embed_action, final_options = await self._embedder_and_options(embedder=embedder, config=config)
 
         response = (
-            await embed_action.run(EmbedRequest(input=documents, options=final_options))  # type: ignore[arg-type]
+            await embed_action.run(EmbedRequest(input=documents, options=final_options), context=context)  # type: ignore[arg-type]
         ).response
         return response.embeddings
 

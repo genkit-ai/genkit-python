@@ -24,7 +24,11 @@
 set -euo pipefail
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-DIST_DIR=$(cd "${1:-${TOP_DIR}/py/dist}" && pwd)
+DEFAULT_DIST="${TOP_DIR}/dist"
+if [[ ! -d "${DEFAULT_DIST}" && -d "${TOP_DIR}/py/dist" ]]; then
+  DEFAULT_DIST="${TOP_DIR}/py/dist"
+fi
+DIST_DIR=$(cd "${1:-${DEFAULT_DIST}}" && pwd)
 PYTHON_VERSION=${PYTHON_VERSION:-3.12}
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT

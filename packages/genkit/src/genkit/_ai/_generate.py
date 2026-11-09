@@ -1400,13 +1400,17 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     span = current_span.get()
     if span is not None and span.trace_id:
         fields['trace_id'] = span.trace_id
+    message = str(exc)
+    fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
         culprit = f'model {model!r}'
     else:
         culprit = 'generate'
-    logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+    # one line, no traceback: a pretty-printed traceback with locals costs
+    # hundreds of ms per failed turn and dumps the user's prompt into the logs.
+    logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
 
 
 def stamp_cancelled_error(

@@ -43,7 +43,6 @@ jobs:
           - basic-flows
           - context
           - django-hello
-          - evaluators
           - flask-hello
           - gemini-code-execution
           - gemini-context-caching

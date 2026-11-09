@@ -185,11 +185,14 @@ def resolve_project(
 
     # Check credentials for project_id
     if credentials:
-        if isinstance(credentials, dict) and credentials.get('project_id'):
-            return str(credentials['project_id'])
-        creds_project = getattr(credentials, 'project_id', None)
-        if creds_project:
-            return str(creds_project)
+        if isinstance(credentials, GoogleCredentials):
+            creds_project = getattr(credentials, 'project_id', None)
+            if creds_project:
+                return str(creds_project)
+        elif isinstance(credentials, dict):
+            project_id = credentials.get('project_id')
+            if project_id:
+                return str(project_id)
 
     return None
 

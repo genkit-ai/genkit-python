@@ -15,9 +15,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Global fallback owners
-* @genkit-ai/genkit-googlers
+* @huangjeff5
 
 # Strict ownership over CI/CD pipelines, workflows, and packaging
-.github/ @genkit-ai/genkit-googlers
-pyproject.toml @genkit-ai/genkit-googlers
-uv.lock @genkit-ai/genkit-googlers
+.github/ @huangjeff5
+pyproject.toml @huangjeff5
+uv.lock @huangjeff5

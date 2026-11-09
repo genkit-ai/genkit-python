@@ -64,7 +64,7 @@ from google.genai.types import HttpOptions, HttpRetryOptions, Model as GenaiMode
 from pydantic import BaseModel
 
 import genkit_google_genai._constants as const
-from genkit import FlowContext, GenkitError, ModelResponse, Operation, get_logger
+from genkit import FlowContext, GenkitError, ModelResponse, Operation
 from genkit.embedder import Embedder, EmbedderRef, EmbedRequest, EmbedResponse
 from genkit.model import (
     BackgroundModel,

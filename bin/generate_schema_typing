@@ -21,13 +21,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-SCHEMA_FILE="${TOP_DIR}/genkit-schema.json"
+SCHEMA_FILE="${TOP_DIR}/genkit-tools/genkit-schema.json"
 TYPING_FILE="${TOP_DIR}/packages/genkit/src/genkit/_core/_typing.py"
 GENERATOR="${TOP_DIR}/scripts/schema_to_typing.py"
 
 # Download the schema from the main genkit repository if it doesn't exist
 if [[ ! -f "$SCHEMA_FILE" ]]; then
   echo "Downloading genkit-schema.json from github.com/genkit-ai/genkit..."
+  mkdir -p "$(dirname "$SCHEMA_FILE")"
   curl -sSL "https://raw.githubusercontent.com/genkit-ai/genkit/main/genkit-tools/genkit-schema.json" -o "$SCHEMA_FILE"
 fi
 

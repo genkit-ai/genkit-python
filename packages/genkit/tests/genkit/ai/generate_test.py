@@ -3123,8 +3123,15 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
 ##########################################################################
 
 specs = []
-spec_path = pathlib.Path(__file__).parent / '../../../../../../tests/specs/generate.yaml'
-with spec_path.resolve().open() as stream:
+spec_path = None
+for parent in pathlib.Path(__file__).resolve().parents:
+    candidate = parent / 'tests' / 'specs' / 'generate.yaml'
+    if candidate.is_file():
+        spec_path = candidate
+        break
+if spec_path is None:
+    raise AssertionError('tests/specs/generate.yaml not found')
+with spec_path.open() as stream:
     tests_spec = yaml.safe_load(stream)
     specs = tests_spec['tests']
 

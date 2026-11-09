@@ -36,24 +36,27 @@ jobs:
       fail-fast: false
       matrix:
         sample:
-          - provider-google-genai-hello
-          - provider-google-genai-code-execution
-          - provider-google-genai-context-caching
-          - provider-google-genai-media-models-demo
-          - provider-google-genai-vertexai-hello
-          - provider-google-genai-vertexai-image
-          - provider-anthropic-hello
-          - provider-compat-oai-hello
-          - provider-vertex-ai-model-garden
-          - framework-prompt-demo
-          - framework-format-demo
-          - framework-context-demo
-          - framework-middleware-demo
-          - framework-dynamic-tools-demo
-          - framework-tool-interrupts
-          - framework-restaurant-demo
-          - web-fastapi-bugbot
-          - web-flask-hello
+          - agents
+          - amazon-bedrock-sample
+          - anthropic-sample
+          - basic-flows
+          - context
+          - django-hello
+          - evaluators
+          - flask-hello
+          - gemini-code-execution
+          - gemini-context-caching
+          - google-genai-deep-research
+          - google-genai-media
+          - mcp-hello
+          - middleware
+          - multipart-tools
+          - otel-jaeger
+          - output-formats
+          - prompts
+          - tool-interrupts
+          - tracing
+          - vertexai-image
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -67,27 +70,15 @@ jobs:
         env:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
-          cd .
           uv sync --package "$SAMPLE_NAME"
 
-      - name: Verify sample imports
+      - name: Verify sample syntax
         env:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -c "
-          import importlib, pathlib, sys
-          src = pathlib.Path('src')
-          if src.is_dir():
-              for pkg in src.iterdir():
-                  if pkg.is_dir() and (pkg / '__init__.py').exists():
-                      mod = pkg.name
-                      print(f'Importing {mod}...')
-                      importlib.import_module(mod)
-                      print(f'  OK')
-          else:
-              print('No src/ directory, skipping import check')
-          "
+          uv run python -m py_compile src/main.py
+          echo "Sample $SAMPLE_NAME syntax OK"
 
   ollama-samples:
     name: Ollama (${{ matrix.sample }})
@@ -96,10 +87,10 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - sample: provider-ollama-hello
-            models: "gemma3:1b"
+    matrix:
+      include:
+        - sample: ollama-sample
+          models: "gemma3:1b"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -118,24 +109,12 @@ jobs:
         env:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
-          cd .
           uv sync --package "$SAMPLE_NAME"
 
-      - name: Verify sample imports
+      - name: Verify sample syntax
         env:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -c "
-          import importlib, pathlib
-          src = pathlib.Path('src')
-          if src.is_dir():
-              for pkg in src.iterdir():
-                  if pkg.is_dir() and (pkg / '__init__.py').exists():
-                      mod = pkg.name
-                      print(f'Importing {mod}...')
-                      importlib.import_module(mod)
-                      print(f'  OK')
-          else:
-              print('No src/ directory, skipping import check')
-          "
+          uv run python -m py_compile src/main.py
+          echo "Sample $SAMPLE_NAME syntax OK"

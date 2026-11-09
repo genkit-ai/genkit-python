@@ -63,11 +63,10 @@ jobs:
           CUR=$(grep '^version = ' packages/genkit/pyproject.toml | cut -d'"' -f2)
           git config user.email "genkit-releaser@google.com" && git config user.name "genkit-releaser"
           git checkout -b "${BRANCH}"
-          cd .
           for f in packages/genkit/pyproject.toml packages/*/pyproject.toml; do
             [ -f "$f" ] && grep -q "version = \"$CUR\"" "$f" && sed -i "s/version = \"$CUR\"/version = \"$NEW\"/" "$f"
           done
-          uv lock && cd ..
+          uv lock
           git add .
           git diff --staged --quiet && { echo "::error::No version changes - $CUR may not match pyproject.toml files"; exit 1; }
           git commit -m "chore: bump version to $NEW"

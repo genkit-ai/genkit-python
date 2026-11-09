@@ -20,8 +20,10 @@ on:
   pull_request:
     paths:
       - "**"
-      - "genkit-tools/**"
       - ".github/workflows/python.yml"
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -173,10 +175,15 @@ jobs:
 
       - name: Run tests
         env:
-          PYTHON_VERSION: ${{ matrix.python-version }}
+          PY_VER: ${{ matrix.python-version }}
+          COVERAGE_CORE: sysmon
         run: |
-          uv run --python "$PYTHON_VERSION" --active --isolated --directory . \
-            pytest -xvs --log-level=DEBUG .
+          if [[ "$PY_VER" == "3.12" ]]; then
+            uv run --no-sync --python "$PY_VER" --directory . \
+              pytest --cov --cov-report=term-missing:skip-covered
+          else
+            uv run --no-sync --python "$PY_VER" --directory . pytest
+          fi
 
   build:
     name: Build Distributions
@@ -221,3 +228,25 @@ jobs:
           name: python-distributions
           path: dist/
           retention-days: 7
+
+  # =============================================================================
+  # Single fan-in gate job for branch protection required_status_checks
+  # =============================================================================
+  python-checks:
+    name: Run Python checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [lint-and-format, type-check, security-and-compliance, tests, build]
+    if: always()
+    steps:
+      - name: Verify all Python jobs succeeded
+        env:
+          RESULTS: >-
+            ${{ needs.lint-and-format.result }},${{ needs.type-check.result }},${{ needs.security-and-compliance.result }},${{ needs.tests.result }},${{ needs.build.result }}
+        run: |
+          echo "Python job results: $RESULTS"
+          if [[ "$RESULTS" != "success,success,success,success,success" ]]; then
+            echo "::error::One or more Python checks did not succeed: $RESULTS"
+            exit 1
+          fi

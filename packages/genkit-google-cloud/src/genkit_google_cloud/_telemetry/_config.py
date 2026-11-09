@@ -24,7 +24,7 @@ import logging
 import os
 import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from genkit_otel import GenAiInstrumentation
@@ -184,15 +184,14 @@ def resolve_project(
             return env_value
 
     # Check credentials for project_id
-    if credentials:
-        if isinstance(credentials, GoogleCredentials):
-            creds_project = getattr(credentials, 'project_id', None)
-            if creds_project:
-                return str(creds_project)
-        elif isinstance(credentials, dict):
-            project_id = credentials.get('project_id')
+    if credentials is not None:
+        if isinstance(credentials, dict):
+            project_id = cast(dict[str, Any], credentials).get('project_id')
             if project_id:
                 return str(project_id)
+        creds_project = getattr(credentials, 'project_id', None)
+        if creds_project:
+            return str(creds_project)
 
     return None
 

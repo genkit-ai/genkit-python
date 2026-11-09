@@ -16,7 +16,7 @@
 
 """Packaging contract: Firestore is an extra, and import stays warning-free."""
 
-import subprocess
+import subprocess  # noqa: S404
 import sys
 import textwrap
 

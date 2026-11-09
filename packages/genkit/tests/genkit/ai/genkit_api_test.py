@@ -646,4 +646,4 @@ def test_genkit_init_has_docstring() -> None:
     assert 'plugins:' in doc
     assert 'model:' in doc
     assert 'prompt_dir:' in doc
-    assert 'GoogleAI.gemini_model' in doc
+    assert "GoogleAI.gemini('gemini-flash-latest')" in doc

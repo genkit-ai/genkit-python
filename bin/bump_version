@@ -233,7 +233,7 @@ else
   echo -e "  1. Write the release notes in notes.md"
   echo -e "  2. Open the release PR:"
   echo -e "       ${CYAN}git commit -am \"chore(py): release Python SDK v$NEW_VERSION\"${NC}"
-  echo -e "       ${CYAN}gh pr create --base main --title \"chore(py): release Python SDK v$NEW_VERSION\" --body-file notes.md --label python${NC}"
+  echo -e "       ${CYAN}gh pr create --base main --title \"chore: release v$NEW_VERSION\" --body-file notes.md${NC}"
   echo -e "  3. Once merged, release it (add --dry-run to check first):"
-  echo -e "       ${CYAN}py/bin/create_release $NEW_VERSION <pr-number>${NC}"
+  echo -e "       ${CYAN}bin/create_release $NEW_VERSION <pr-number>${NC}"
 fi

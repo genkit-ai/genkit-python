@@ -69,5 +69,5 @@ The tests drive the same wiring with a fake model, so they need no API key and
 no network, and they launch the real server:
 
 ```bash
-uv run pytest samples/mcp-hello --no-cov   # from py/
+uv run pytest samples/mcp-hello --no-cov
 ```

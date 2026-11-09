@@ -91,27 +91,13 @@ jobs:
             echo "::endgroup::"
           done
 
-          # Python-floor shim (genkit 0.3.0): gives Python <= 3.9 users a clear
-          # upgrade message instead of resolving an unrelated pre-transfer
-          # package. sdist ONLY - a wheel would install as an empty package on
-          # old Pythons. skip-existing makes this a no-op after first publish.
-          # See floor-shim/README.md.
-          echo "::group::floor-shim (sdist only)"
-          if uv build --sdist floor-shim --out-dir dist/; then
-            echo "Build succeeded: floor-shim"
-          else
-            echo "::error::Build failed: floor-shim"
-            FAILED+=("floor-shim")
-          fi
-          echo "::endgroup::"
-
           if [ ${#FAILED[@]} -gt 0 ]; then
             echo "::error::Failed packages: ${FAILED[*]}"
             exit 1
           fi
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
           verbose: true

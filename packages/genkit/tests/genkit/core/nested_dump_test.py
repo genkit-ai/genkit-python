@@ -19,6 +19,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -58,13 +61,35 @@ def _tool_request_message() -> Message:
     return Message(role='model', content=[Part.from_tool_request('lookup', {'q': 1}, ref='r1')])
 
 
-def _schema_def(name: str) -> dict[str, Any]:
+def _find_schema() -> Path:
+    env_dir = os.environ.get('GENKIT_SPECS_DIR')
+    if env_dir:
+        cand = Path(env_dir) / 'genkit-schema.json'
+        if cand.is_file():
+            return cand
     for parent in Path(__file__).resolve().parents:
         candidate = parent / 'genkit-tools' / 'genkit-schema.json'
-        if candidate.exists():
-            schema = json.loads(candidate.read_text())
-            return {**schema, '$ref': f'#/$defs/{name}'}
-    raise AssertionError('genkit-tools/genkit-schema.json not found')
+        if candidate.is_file():
+            return candidate
+        sibling = parent.parent / 'genkit' / 'genkit-tools' / 'genkit-schema.json'
+        if sibling.is_file():
+            return sibling
+
+    cache_dir = Path(tempfile.gettempdir()) / 'genkit-specs'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / 'genkit-schema.json'
+    if not cached.is_file():
+        tmp_file = cache_dir / f'genkit-schema.{os.getpid()}.tmp'
+        url = 'https://raw.githubusercontent.com/genkit-ai/genkit/main/genkit-tools/genkit-schema.json'
+        urllib.request.urlretrieve(url, tmp_file)  # noqa: S310
+        os.replace(tmp_file, cached)
+    return cached
+
+
+def _schema_def(name: str) -> dict[str, Any]:
+    schema_path = _find_schema()
+    schema = json.loads(schema_path.read_text(encoding='utf-8'))
+    return {**schema, '$ref': f'#/$defs/{name}'}
 
 
 def test_message_inside_user_model_dumps_same_as_top_level_message() -> None:

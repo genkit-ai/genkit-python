@@ -11,44 +11,44 @@ Use the **Release Python RC** workflow in GitHub Actions:
 
 **What the workflow does:**
 
-1. Creates branch `release/py/X.Y.Z-rc.1` (one branch per RC)
+1. Creates branch `release/X.Y.Z-rc.1` (one branch per RC)
 2. Bumps all `pyproject.toml` versions from current to the RC version
 3. Commits and pushes to that branch
-4. Creates tag `py/vX.Y.Z-rc.1` pointing at the release branch
+4. Creates tag `vX.Y.Z-rc.1` pointing at the release branch
 5. Tag push triggers **Publish Python**, which builds and publishes to PyPI
 
 No PR required.
 
-**If you need to re-run publish** (e.g., it failed): Go to Actions → Publish Python → Run workflow → select the release branch (e.g., `release/py/X.Y.Z-rc.1`) from the branch dropdown → Run.
+**If you need to re-run publish** (e.g., it failed): Go to Actions → Publish Python → Run workflow → select the release branch (e.g., `release/X.Y.Z-rc.1`) from the branch dropdown → Run.
 
 ## Stable release steps
 
 There is one path. `create_release` refuses to run unless every step below was followed.
 
-1. `py/bin/bump_version X.Y.Z` on a branch from main. It bumps every `pyproject.toml` and `uv.lock`.
-2. Open a PR to main titled exactly `chore(py): release Python SDK vX.Y.Z`. Its description is the release notes, published word for word.
+1. `bin/bump_version X.Y.Z` on a branch from main. It bumps every `pyproject.toml` and `uv.lock`.
+2. Open a PR to main titled `chore: release vX.Y.Z` or `chore(py): release Python SDK vX.Y.Z`. Its description is the release notes, published word for word.
 3. Get it approved and merged.
-4. `py/bin/create_release X.Y.Z <PR_NUMBER> --dry-run`, then without `--dry-run`.
-5. Approve the publish at <https://github.com/genkit-ai/genkit/actions/workflows/publish_python.yml>. The tag push already started it; don't run it by hand.
+4. `bin/create_release X.Y.Z <PR_NUMBER> --dry-run`, then without `--dry-run`.
+5. Approve the publish at <https://github.com/genkit-ai/genkit-python/actions/workflows/publish_python.yml>. The tag push already started it; don't run it by hand.
 6. `pip index versions genkit` shows X.Y.Z.
 
 `create_release` runs every check before it changes anything and prints a fix for each failure:
 
 - **Merged into main**: the PR is merged, and into main
-- **Title**: exactly `chore(py): release Python SDK vX.Y.Z`
+- **Title**: matches `chore: release vX.Y.Z` or `chore(py): release Python SDK vX.Y.Z`
 - **Release notes**: the description isn't empty
-- **Versions**: every `py/packages/*/pyproject.toml` is at X.Y.Z in the merge commit
-- **Tag**: `py/vX.Y.Z` doesn't exist yet
+- **Versions**: every `packages/*/pyproject.toml` is at X.Y.Z in the merge commit
+- **Tag**: `vX.Y.Z` doesn't exist yet
 
 It tags the PR's merge commit, not the tip of main, so anything merged later stays out of the release. Exit codes: `0` ok, `1` usage or environment, `2` a check failed and nothing changed.
 
-To fix notes after release, edit the GitHub release: `gh release edit py/vX.Y.Z --notes-file notes.md`. The PR description isn't read again.
+To fix notes after release, edit the GitHub release: `gh release edit vX.Y.Z --notes-file notes.md`. The PR description isn't read again.
 
 ## After 0.13.0: retire genkit-evaluators
 
 genkit 1.0 removes evaluators (#6947). genkit-evaluators 0.13.0 is the last release and requires `genkit>=0.13.0,<1`. `bump_version` writes that floor; the steps above need no hand edits.
 
-Every earlier release (0.9.0 through 0.12.0) requires `genkit` with no upper bound. The cap alone isn't enough: when 0.13.0 conflicts with genkit 1.0, pip and uv backtrack to an older genkit-evaluators, and those accept genkit 1.0. So, once `py/v0.13.0` is on PyPI:
+Every earlier release (0.9.0 through 0.12.0) requires `genkit` with no upper bound. The cap alone isn't enough: when 0.13.0 conflicts with genkit 1.0, pip and uv backtrack to an older genkit-evaluators, and those accept genkit 1.0. So, once `v0.13.0` is on PyPI:
 
 1. Yank genkit-evaluators 0.9.0, 0.10.0, 0.11.0 and 0.12.0 on PyPI (Manage → Releases → Options → Yank). Reason: `unbounded genkit dependency; use 0.13.0`.
 2. Verify in a fresh venv:
@@ -67,7 +67,7 @@ Resolvers skip yanked versions unless pinned with `==`, so existing exact pins k
 
 ## Workflow: `publish_python.yml`
 
-**Triggers:** Tag push (`py/v*`) or manual `workflow_dispatch`. When triggered by tag, it checks out the tag (which points at the release branch). When run manually, **select the release branch** (e.g., `release/py/X.Y.Z-rc.1`) from the "Use workflow from" dropdown — otherwise it will build from main.
+**Triggers:** Tag push (`v*`) or manual `workflow_dispatch`. When triggered by tag, it checks out the tag (which points at the release branch). When run manually, **select the release branch** (e.g., `release/X.Y.Z-rc.1`) from the "Use workflow from" dropdown — otherwise it will build from main.
 
 **Two jobs:** publish → verify
 
@@ -76,4 +76,4 @@ Resolvers skip yanked versions unless pinned with `==`, so existing exact pins k
 
 ## Auth
 
-OIDC trusted publishing. No API tokens. PyPI is configured to trust: Owner `firebase`, Repository `genkit`, Workflow `publish_python.yml`, Environment `pypi_github_publishing`. Already set up. Don't rename the workflow file or this breaks.
+OIDC trusted publishing. No API tokens. PyPI is configured to trust: Owner `genkit-ai`, Repository `genkit-python`, Workflow `publish_python.yml`, Environment `pypi_github_publishing`. Don't rename the workflow file or this breaks.

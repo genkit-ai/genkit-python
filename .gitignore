@@ -34,3 +34,4 @@ wheels/
 
 *.bak
 release-manifest.json
+genkit-tools/

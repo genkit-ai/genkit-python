@@ -6,7 +6,7 @@ Swap in `FirestoreSessionStore()` from `genkit_google_cloud.exp` when you
 deploy.
 
 ```bash
-cd py/samples/agents
+cd samples/agents
 uv sync
 genkit start -- uv run testapp/server.py
 ```

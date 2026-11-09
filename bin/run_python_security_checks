@@ -24,7 +24,7 @@ PY_DIR="$(cd "${BIN_DIR}/.." && pwd)"
 echo "--- 🐍 Running Python Security Checks (PySentry) ---"
 
 # Run pysentry-rs via uv
-# The --directory flag ensures we run in the context of the `py` directory.
+# The --directory flag ensures we run in the context of the repository root.
 uv run --directory "${PY_DIR}" pysentry-rs .
 
 echo "--- ✅ Security Checks Passed ---"

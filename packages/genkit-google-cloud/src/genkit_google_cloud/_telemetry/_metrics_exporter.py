@@ -69,7 +69,7 @@ class GenkitMetricExporter(MetricExporter):
 
         # Cloud Monitoring converts DELTA to CUMULATIVE; we send DELTA.
         delta = AggregationTemporality.DELTA
-        preferred_temporality = {
+        self._preferred_temporality = {
             Counter: delta,
             UpDownCounter: delta,
             Histogram: delta,
@@ -77,10 +77,6 @@ class GenkitMetricExporter(MetricExporter):
             ObservableUpDownCounter: delta,
             ObservableGauge: delta,
         }
-        super().__init__(
-            preferred_temporality=preferred_temporality,
-            preferred_aggregation=getattr(exporter, '_preferred_aggregation', None),
-        )
 
     def export(
         self,

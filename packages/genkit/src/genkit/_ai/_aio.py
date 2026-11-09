@@ -1440,6 +1440,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[OutputT]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, output_schema=type[T] -> ModelResponse[T]
@@ -1467,6 +1468,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelResponse[Any]
@@ -1494,6 +1496,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[Any]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, no output_schema -> ModelResponse[Any]
@@ -1521,6 +1524,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[Any]: ...
 
     async def generate(
@@ -1546,6 +1550,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[Any]:
         """Generate text or structured data using a language model.
 
@@ -1588,6 +1593,14 @@ class Genkit:
         ``define_prompt`` (or a ``.prompt`` file), or build the text /
         ``Part.from_media(...)`` yourself. ``{{role}}`` in a generate string
         already raised; it now goes to the model as written too.
+
+        A failed turn raises the original error: a provider error, a tool or
+        middleware exception (a ``PublicError`` stays a ``PublicError``),
+        ``max_turns`` exhaustion (``ABORTED``), or output that fails
+        ``output_schema`` (``INTERNAL``, reason ``INVALID_OUTPUT``). Pass
+        ``raise_on_error=False`` (JS ``throwOnError: false``) to get the
+        boxed response instead, with ``finish_reason`` ``FAILED`` or
+        ``ABORTED`` and ``error`` set.
         """
         return await self._generate(
             model=model,
@@ -1610,6 +1623,7 @@ class Genkit:
             output_constrained=output_constrained,
             use=use,
             docs=docs,
+            raise_on_error=raise_on_error,
         )
 
     # Overload: config=ModelConfigDict, output_schema=type[T] -> ModelStreamResponse[T]
@@ -1637,6 +1651,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelStreamResponse[OutputT]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, output_schema=type[T] -> ModelStreamResponse[T]
@@ -1664,6 +1679,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelStreamResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelStreamResponse[Any]
@@ -1691,6 +1707,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelStreamResponse[Any]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, no output_schema -> ModelStreamResponse[Any]
@@ -1718,6 +1735,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelStreamResponse[Any]: ...
 
     def generate_stream(
@@ -1743,6 +1761,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
+        raise_on_error: bool = True,
     ) -> ModelStreamResponse[Any]:
         """Stream generated text, returning a ModelStreamResponse with .stream and .response.
 
@@ -1752,11 +1771,13 @@ class Genkit:
         ``Recipe`` is only ``(await result.response).output``, and it's ``None``
         when the reply isn't a ``Recipe``.
 
-        If the model fails partway through, the ``async for`` still ends
-        normally. The final response has ``finish_reason == FAILED``,
+        If the model or a tool fails partway through, the ``async for``
+        raises that error after the chunks already sent, and so does
+        ``await result.response``. The chunks you already received are the
+        record of what was shown. With ``raise_on_error=False`` the stream
+        ends normally and the final response has ``finish_reason == FAILED``,
         ``error`` set, ``text == ''``, ``message is None``, and ``messages``
-        ending at the last complete turn, so it's safe to send back. The
-        chunks you already received are the record of what was shown.
+        ending at the last complete turn, so it's safe to send back.
 
         Example:
             result = ai.generate_stream(prompt='Write a haiku about rain.')
@@ -1800,6 +1821,7 @@ class Genkit:
                 docs=docs,
                 on_chunk=send_chunk,
                 caller_stopped=caller_stopped,
+                raise_on_error=raise_on_error,
             )
 
         stream, task = start_generate_stream(initial_messages=initial_msgs, run=_run_generate)
@@ -1830,6 +1852,7 @@ class Genkit:
         docs: list[Document] | None = None,
         on_chunk: Callable[[ModelResponseChunk], None] | None = None,
         caller_stopped: asyncio.Event | None = None,
+        raise_on_error: bool = True,
     ) -> ModelResponse[Any]:
         """Fold ``ai.generate`` kwargs into engine ``options`` and run generate_action.
 
@@ -1885,6 +1908,7 @@ class Genkit:
             on_chunk=on_chunk,
             context=context,
             caller_stopped=caller_stopped,
+            raise_on_error=raise_on_error,
         )
 
     async def embed(

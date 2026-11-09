@@ -1089,6 +1089,7 @@ async def test_middleware_refusing_the_answer_keeps_the_tokens_it_cost() -> None
         model='scriptedModel',
         prompt='card please',
         use=[RefuseTheAnswerMiddleware()],
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -1128,7 +1129,7 @@ async def test_a_turn_that_never_reached_the_model_reports_no_tokens() -> None:
         )
     ]
 
-    response = await ai.generate(model='scriptedModel', prompt='hi', use=[RefuseBeforeTheModel()])
+    response = await ai.generate(model='scriptedModel', prompt='hi', use=[RefuseBeforeTheModel()], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.usage is not None
@@ -2530,6 +2531,7 @@ async def test_failing_tool_cancels_and_awaits_other_tools_in_turn() -> None:
             messages=[Message(role=Role.USER, content=[Part.from_text('order')])],
             tools=['check_allergens', 'charge_card'],
         ),
+        raise_on_error=False,
     )
 
     assert response.error is not None
@@ -2628,6 +2630,7 @@ async def test_failed_tool_turn_leaves_no_unretrieved_task_exceptions() -> None:
                 messages=[Message(role=Role.USER, content=[Part.from_text('order')])],
                 tools=['check_allergens', 'void_order'],
             ),
+            raise_on_error=False,
         )
         assert response.error is not None
         assert response.error.message == 'allergen db down'
@@ -2717,6 +2720,7 @@ async def test_failing_tool_with_sibling_interrupt_retrieves_base_exception_clea
                 messages=[Message(role=Role.USER, content=[Part.from_text('order')])],
                 tools=['check_allergens', 'refund_order'],
             ),
+            raise_on_error=False,
         )
         assert response.finish_reason == FinishReason.FAILED
         assert response.error is not None
@@ -2774,6 +2778,7 @@ async def test_failing_restart_cancels_and_awaits_other_restarts() -> None:
             tools=list(names),
             resume=Resume(restart=[Part.from_tool_request(name=n, input={}, ref=f'ref-{n}') for n in names]),
         ),
+        raise_on_error=False,
     )
 
     assert response.error is not None
@@ -3394,7 +3399,7 @@ async def test_generate_max_turns_zero_drops_first_tool_round() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='hi', tools=['lookup'], max_turns=0)
+    response = await ai.generate(prompt='hi', tools=['lookup'], max_turns=0, raise_on_error=False)
 
     assert response.finish_reason == FinishReason.ABORTED
     assert response.finish_message == 'Exceeded maximum tool call iterations (0)'
@@ -3514,7 +3519,7 @@ async def test_generate_schema_failure_preserves_history() -> None:
         )
     ]
 
-    response = await ai.generate(prompt='give me a recipe', output_schema=Recipe)
+    response = await ai.generate(prompt='give me a recipe', output_schema=Recipe, raise_on_error=False)
     assert response.finish_reason == FinishReason.STOP
     assert response.text == 'not json'
     assert response.output is None
@@ -3650,7 +3655,7 @@ async def test_max_turns_exceeded_leaves_the_unanswered_round_out_of_history() -
 
     pm.responses = [_model_calls_tool(name='step', ref=str(index)) for index in range(DEFAULT_MAX_TURNS + 1)]
 
-    response = await ai.generate(prompt='keep going', tools=['step'])
+    response = await ai.generate(prompt='keep going', tools=['step'], raise_on_error=False)
 
     model_turns = range(1, 2 * DEFAULT_MAX_TURNS + 1, 2)
     tool_turns = range(2, 2 * DEFAULT_MAX_TURNS + 2, 2)
@@ -3701,6 +3706,7 @@ async def test_closed_history_after_tool_turn_keeps_intermediate_messages() -> N
         output_schema=Recipe,
         output_instructions=False,
         tools=['lookup'],
+        raise_on_error=False,
     )
     assert response.finish_reason == FinishReason.STOP
     assert response.finish_message is None
@@ -3953,6 +3959,7 @@ async def test_generate_schema_failure_after_tool_turn_preserves_history() -> No
         output_schema=Recipe,
         output_instructions=False,
         tools=['lookup'],
+        raise_on_error=False,
     )
 
     # Bad JSON is not a dead turn: the turn closed, the model text stands.
@@ -3984,7 +3991,7 @@ async def test_max_turns_after_tool_turn_drops_unanswered_request() -> None:
         _model_calls_tool(name='lookup', ref='r2'),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], max_turns=1)
+    response = await ai.generate(prompt='keep going', tools=['lookup'], max_turns=1, raise_on_error=False)
 
     assert response.finish_reason == FinishReason.ABORTED
     assert response.finish_message is not None
@@ -4008,7 +4015,7 @@ async def test_unknown_tool_on_first_turn_drops_unanswered_request() -> None:
 
     pm.responses = [_model_calls_tool(name='ghost', ref='r1')]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'Tool ghost not found'
@@ -4037,7 +4044,7 @@ async def test_unknown_tool_after_tool_turn_drops_unanswered_request() -> None:
         _model_calls_tool(name='ghost', ref='r2'),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'Tool ghost not found'
@@ -4102,7 +4109,9 @@ async def test_wrap_generate_injected_tool_does_not_run() -> None:
 
     pm.responses = [_model_calls_tool(name='sneaky', ref='r1')]
 
-    response = await ai.generate(prompt='hi', use=[_rewrite_tools_middleware(lambda tools: [*tools, 'sneaky'])])
+    response = await ai.generate(
+        prompt='hi', use=[_rewrite_tools_middleware(lambda tools: [*tools, 'sneaky'])], raise_on_error=False
+    )
 
     assert ran == []
     assert response.finish_reason == FinishReason.FAILED
@@ -4138,6 +4147,7 @@ async def test_wrap_generate_cannot_swap_the_named_tool_for_another() -> None:
         prompt='hi',
         tools=['lookup'],
         use=[_rewrite_tools_middleware(lambda _tools: ['sneaky'])],
+        raise_on_error=False,
     )
 
     assert ran == []
@@ -4236,6 +4246,7 @@ async def test_wrap_generate_injected_tool_after_closed_round_does_not_run() -> 
         prompt='keep going',
         tools=['lookup'],
         use=[_rewrite_tools_middleware(lambda tools: [*tools, 'sneaky'])],
+        raise_on_error=False,
     )
 
     assert ran == ['lookup']
@@ -4438,7 +4449,7 @@ async def test_tool_failure_after_tool_turn_keeps_closed_rounds() -> None:
         _model_calls_tool(name='lookup', ref='r2'),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -4464,7 +4475,7 @@ async def test_tool_runtime_error_message_is_internal() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='hi', tools=['lookup'])
+    response = await ai.generate(prompt='hi', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -4486,7 +4497,7 @@ async def test_tool_public_error_message_is_the_sentence() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup_order', ref='r1')]
 
-    response = await ai.generate(prompt='hi', tools=['lookup_order'])
+    response = await ai.generate(prompt='hi', tools=['lookup_order'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'No order 99'
     assert response.error is not None
@@ -4517,6 +4528,7 @@ async def test_output_schema_does_not_replace_tool_failure() -> None:
         tools=['broken'],
         output_schema=Recipe,
         output_instructions=False,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -4593,7 +4605,7 @@ async def test_one_parallel_tool_failure_drops_successful_sibling() -> None:
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['stable', 'broken'])
+    response = await ai.generate(prompt='keep going', tools=['stable', 'broken'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.message is None
@@ -4636,7 +4648,7 @@ async def test_sibling_interrupt_goes_with_failed_tool_round() -> None:
         )
     ]
 
-    response = await ai.generate(prompt='start', tools=['pauser', 'boom'])
+    response = await ai.generate(prompt='start', tools=['pauser', 'boom'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
@@ -4661,7 +4673,7 @@ async def test_first_turn_model_failure_returns_closed_history() -> None:
 
     pm.response_cb = die
 
-    response = await ai.generate(prompt='start')
+    response = await ai.generate(prompt='start', raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
@@ -4694,7 +4706,7 @@ async def test_model_failure_after_tool_turn_keeps_closed_rounds() -> None:
 
     pm.response_cb = once_then_die
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -4725,7 +4737,7 @@ async def test_generate_chat_model_returning_dict_after_tool_keeps_closed_rounds
     async def lookup() -> str:
         return '72F'
 
-    response = await ai.generate(model='plain-dict', prompt='keep going', tools=['lookup'])
+    response = await ai.generate(model='plain-dict', prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Model 'plain-dict' did not return a ModelResponse" in response.finish_message
@@ -4756,7 +4768,7 @@ async def test_generate_invalid_tool_args_drops_unanswered_request() -> None:
 
     pm.response_cb = lambda _request: _model_calls_tool(name='lookup', ref='r1')
 
-    response = await ai.generate(prompt='weather in paris?', tools=['lookup'])
+    response = await ai.generate(prompt='weather in paris?', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'lookup' in response.finish_message
@@ -4790,7 +4802,7 @@ async def test_generate_invalid_tool_args_after_tool_turn_keeps_closed_rounds() 
 
     pm.response_cb = once_ok_then_empty
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'lookup' in response.finish_message
@@ -4821,7 +4833,7 @@ async def test_generate_unserializable_tool_output_drops_unanswered_request() ->
 
     pm.response_cb = lambda _request: _model_calls_tool(name='lookup', ref='r1')
 
-    response = await ai.generate(prompt='weather in paris?', tools=['lookup'])
+    response = await ai.generate(prompt='weather in paris?', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'lookup' in response.finish_message
@@ -4854,7 +4866,7 @@ async def test_generate_unserializable_tool_output_after_tool_turn_keeps_closed_
         _model_calls_tool(name='lookup', ref='r2'),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'lookup' in response.finish_message
@@ -4887,7 +4899,7 @@ async def test_failed_history_can_be_reused_without_rerunning_closed_tool() -> N
         raise RuntimeError('provider disconnected')
 
     pm.response_cb = fail_after_tool
-    failed = await ai.generate(prompt='start', tools=['lookup'])
+    failed = await ai.generate(prompt='start', tools=['lookup'], raise_on_error=False)
 
     assert failed.finish_reason == FinishReason.FAILED
     assert failed.message is None
@@ -4903,7 +4915,7 @@ async def test_failed_history_can_be_reused_without_rerunning_closed_tool() -> N
         finish_reason=FinishReason.STOP,
         message=Message(role=Role.MODEL, content=[Part.from_text('recovered')]),
     )
-    recovered = await ai.generate(messages=failed.messages, prompt='try again', tools=['lookup'])
+    recovered = await ai.generate(messages=failed.messages, prompt='try again', tools=['lookup'], raise_on_error=False)
 
     assert recovered.finish_reason == FinishReason.STOP
     assert recovered.finish_message is None
@@ -4962,6 +4974,7 @@ async def test_generate_stream_closes_with_structured_max_turns_response() -> No
         max_turns=0,
         output_schema=Recipe,
         output_instructions=False,
+        raise_on_error=False,
     )
 
     chunks = [chunk async for chunk in stream]
@@ -4997,13 +5010,43 @@ async def _run_dies_midway(surface: str) -> tuple[list[str] | None, ModelRespons
     ai = Genkit(model='diesMidway')
     _model_dies_after_hello_wor(ai, 'diesMidway')
     if surface == 'generate':
-        return None, await ai.generate(prompt='start')
+        return None, await ai.generate(prompt='start', raise_on_error=False)
     if surface == 'generate_stream':
-        stream = ai.generate_stream(prompt='start')
+        stream = ai.generate_stream(prompt='start', raise_on_error=False)
     else:
-        stream = ai.define_prompt(name='greet', prompt='start').stream()
+        stream = ai.define_prompt(name='greet', prompt='start').stream(raise_on_error=False)
     chunks = [chunk.text async for chunk in stream]
     return chunks, await stream.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('surface', ['generate_stream', 'prompt.stream', 'generate', 'prompt'])
+async def test_model_dies_midway_raises_by_default(surface: str) -> None:
+    """Without raise_on_error=False every surface raises the model's error; streams still deliver the chunks first."""
+    ai = Genkit(model='diesMidway')
+    _model_dies_after_hello_wor(ai, 'diesMidway')
+    chunks: list[str] = []
+    with pytest.raises(GenkitError) as raised:
+        if surface == 'generate':
+            await ai.generate(prompt='start')
+        elif surface == 'prompt':
+            await ai.define_prompt(name='greet', prompt='start')()
+        else:
+            stream = (
+                ai.generate_stream(prompt='start')
+                if surface == 'generate_stream'
+                else ai.define_prompt(name='greet', prompt='start').stream()
+            )
+            async for chunk in stream:
+                chunks.append(chunk.text)
+
+    assert raised.value.status == 'INTERNAL'
+    assert raised.value.message == 'RuntimeError: stream died'
+    if surface.endswith('stream'):
+        assert chunks == ['Hello, ', 'wor']
+        with pytest.raises(GenkitError) as from_response:
+            await stream.response  # pyright: ignore[reportPossiblyUnboundVariable]
+        assert from_response.value.message == 'RuntimeError: stream died'
 
 
 @pytest.mark.asyncio
@@ -5044,7 +5087,7 @@ async def test_generate_stream_fails_midway_with_schema_output_is_none() -> None
 
     ai.define_model(name='diesMidJson', fn=model)
 
-    stream = ai.generate_stream(prompt='a city', output_schema=City)
+    stream = ai.generate_stream(prompt='a city', output_schema=City, raise_on_error=False)
     chunks = [chunk async for chunk in stream]
     response = await stream.response
 
@@ -5082,7 +5125,7 @@ async def test_generate_stream_fails_after_tool_turn_keeps_closed_round() -> Non
 
     ai.define_model(name='diesAfterTool', fn=model)
 
-    stream = ai.generate_stream(prompt='start', tools=['lookup'])
+    stream = ai.generate_stream(prompt='start', tools=['lookup'], raise_on_error=False)
     chunks = [chunk async for chunk in stream]
     response = await stream.response
 
@@ -5134,6 +5177,7 @@ async def test_generate_on_chunk_failure_returns_closed_history() -> None:
             messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
         ),
         on_chunk=on_chunk,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -5181,6 +5225,7 @@ async def test_generate_on_chunk_failure_echoes_full_request() -> None:
             output=GenerateActionOutputConfig(format='json'),
         ),
         on_chunk=on_chunk,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -5221,6 +5266,7 @@ async def test_generate_on_chunk_genkit_error_is_internal_not_the_sink_reason() 
             messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
         ),
         on_chunk=on_chunk,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -5354,6 +5400,7 @@ async def test_generate_with_five_middleware_and_max_turns_50_returns_aborted_af
         tools=['step'],
         max_turns=50,
         use=_five_noop_middleware(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.ABORTED
@@ -5380,6 +5427,7 @@ async def test_generate_stream_with_five_middleware_and_max_turns_50_returns_abo
         tools=['step'],
         max_turns=50,
         use=_five_noop_middleware(),
+        raise_on_error=False,
     )
     _ = [chunk async for chunk in stream]
     response = await stream.response
@@ -5408,6 +5456,7 @@ async def test_generate_with_five_middleware_and_max_turns_200_returns_aborted()
         tools=['step'],
         max_turns=200,
         use=_five_noop_middleware(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.ABORTED
@@ -5434,6 +5483,7 @@ async def test_generate_stream_with_five_middleware_and_max_turns_200_returns_ab
         tools=['step'],
         max_turns=200,
         use=_five_noop_middleware(),
+        raise_on_error=False,
     )
     _ = [chunk async for chunk in stream]
     response = await stream.response
@@ -5469,6 +5519,7 @@ async def test_generate_eager_task_factory_two_hundred_tool_turns_returns() -> N
             prompt='keep going',
             tools=['step'],
             max_turns=200,
+            raise_on_error=False,
         )
 
         assert response.finish_reason == FinishReason.ABORTED
@@ -5543,6 +5594,7 @@ async def test_generate_error_on_a_later_turn_returns_failed_with_that_error() -
         tools=['step'],
         max_turns=10,
         use=_five_noop_middleware(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -6112,6 +6164,7 @@ async def test_generate_with_400_middleware_second_turn_error_keeps_the_closed_t
         prompt='keep going',
         tools=['lookup'],
         use=[DenySecondTurn(), *_four_hundred_noop_middleware()],
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -6144,6 +6197,7 @@ async def test_generate_with_400_middleware_model_hook_error_returns_internal() 
     response = await ai.generate(
         prompt='go',
         use=[*_four_hundred_noop_middleware(), BoomModel()],
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -6180,6 +6234,7 @@ async def test_generate_with_400_middleware_tool_hook_error_returns_internal() -
         prompt='go',
         tools=['lookup'],
         use=[*_four_hundred_noop_middleware(), BoomTool()],
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -6222,6 +6277,7 @@ async def test_generate_with_400_middleware_one_of_two_tools_failing_drops_the_o
         prompt='go',
         tools=['stable', 'broken'],
         use=_four_hundred_noop_middleware(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -6667,7 +6723,7 @@ async def test_recovered_middleware_failure_uses_latest_closed_history() -> None
         raise RuntimeError('later failure')
 
     pm.response_cb = always_fail
-    response = await ai.generate(prompt='start', tools=['lookup'], use=[RecoverOnce()])
+    response = await ai.generate(prompt='start', tools=['lookup'], use=[RecoverOnce()], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
@@ -7037,7 +7093,7 @@ async def test_provider_status_failure_keeps_closed_rounds(status: str) -> None:
 
     pm.response_cb = once_then_fail
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'provider stopped' in response.finish_message
@@ -7077,7 +7133,7 @@ async def test_generate_middleware_failure_keeps_closed_rounds() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenySecondTurn()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenySecondTurn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -7126,7 +7182,7 @@ async def test_middleware_rewrite_then_raise_keeps_one_model_turn() -> None:
             await next_fn(params, ctx)
             raise RuntimeError('outer failed')
 
-    response = await ai.generate(prompt='hi', use=[OuterBoom(), Redact()])
+    response = await ai.generate(prompt='hi', use=[OuterBoom(), Redact()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.message is None
@@ -7165,7 +7221,7 @@ async def test_generate_middleware_genkit_error_keeps_closed_rounds() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenySecondTurn()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenySecondTurn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'hook denied'
     assert response.error is not None
@@ -7206,7 +7262,7 @@ async def test_generate_first_turn_middleware_genkit_error_drops_unanswered_mode
                 reason=ErrorReason.INVALID_INPUT,
             )
 
-    response = await ai.generate(prompt='start', use=[DenyFirstTurn()])
+    response = await ai.generate(prompt='start', use=[DenyFirstTurn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'hook denied'
     assert response.error is not None
@@ -7241,7 +7297,7 @@ async def test_generate_first_turn_middleware_runtime_error_drops_unanswered_mod
         ) -> ModelResponse:
             raise RuntimeError('hook denied')
 
-    response = await ai.generate(prompt='start', use=[DenyFirstTurn()])
+    response = await ai.generate(prompt='start', use=[DenyFirstTurn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -7286,7 +7342,7 @@ async def test_generate_middleware_genkit_error_after_next_fn_keeps_closed_round
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'hook after closed'
     assert response.error is not None
@@ -7329,7 +7385,7 @@ async def test_generate_middleware_genkit_error_after_next_fn_keeps_model_turn()
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'hook after closed'
     assert response.error is not None
@@ -7371,7 +7427,7 @@ async def test_generate_middleware_validation_error_after_next_fn_keeps_model_tu
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -7419,7 +7475,7 @@ async def test_generate_middleware_validation_error_after_next_fn_keeps_closed_r
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -7462,7 +7518,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_model_
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7507,7 +7563,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_drops_unansw
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DenyAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7561,7 +7617,7 @@ async def test_generate_wrap_model_action_input_error_after_next_fn_keeps_closed
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterModel()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7603,7 +7659,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_drops_unans
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DenyBeforeModel()])
+    response = await ai.generate(prompt='keep going', use=[DenyBeforeModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7653,7 +7709,7 @@ async def test_generate_wrap_model_action_input_error_before_next_fn_keeps_close
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyBeforeSecond()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyBeforeSecond()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7709,7 +7765,7 @@ async def test_generate_wrap_model_action_input_error_after_short_circuit_next_f
         )
     ]
 
-    response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheModel()])
+    response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7747,7 +7803,7 @@ async def test_generate_wrap_generate_dict_after_next_fn_keeps_model_turn() -> N
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DumpAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DumpAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -7791,7 +7847,7 @@ async def test_generate_wrap_generate_dict_after_next_fn_keeps_closed_rounds() -
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DumpAfterClosed()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DumpAfterClosed()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -7829,7 +7885,7 @@ async def test_generate_wrap_generate_dict_before_next_fn_drops_unanswered_model
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DumpBeforeNext()])
+    response = await ai.generate(prompt='keep going', use=[DumpBeforeNext()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -7880,7 +7936,7 @@ async def test_generate_wrap_generate_dict_after_short_circuit_next_fn_keeps_mod
         )
     ]
 
-    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheGenerate()])
+    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheGenerate()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -7941,7 +7997,7 @@ async def test_generate_wrap_generate_action_input_error_after_short_circuit_nex
         )
     ]
 
-    response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheGenerate()])
+    response = await ai.generate(prompt='hi', use=[DenyAfterCache(), CacheGenerate()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -7994,7 +8050,7 @@ async def test_generate_wrap_generate_dict_after_short_circuit_dict_next_fn_drop
         )
     ]
 
-    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheGenerate()])
+    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheGenerate()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -8041,7 +8097,7 @@ async def test_generate_wrap_model_dict_after_short_circuit_dict_next_fn_drops_u
         )
     ]
 
-    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheModel()])
+    response = await ai.generate(prompt='hi', use=[DumpAfterCache(), CacheModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -8077,7 +8133,7 @@ async def test_generate_wrap_model_dict_before_next_fn_drops_unanswered_model() 
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DumpBeforeModel()])
+    response = await ai.generate(prompt='keep going', use=[DumpBeforeModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -8113,7 +8169,7 @@ async def test_generate_wrap_model_runtime_error_before_next_fn_drops_unanswered
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[BoomBeforeModel()])
+    response = await ai.generate(prompt='keep going', use=[BoomBeforeModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -8149,7 +8205,7 @@ async def test_generate_wrap_model_dict_after_next_fn_drops_unanswered_model() -
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[DumpAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[DumpAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert 'did not return a ModelResponse' in response.finish_message
@@ -8196,7 +8252,7 @@ async def test_generate_middleware_action_input_error_after_next_fn_keeps_closed
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()])
+    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DenyAfterNextFn()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message is not None
     assert "Invalid input for model 'conforming'" in response.finish_message
@@ -8237,7 +8293,7 @@ async def test_generate_middleware_interrupt_after_next_fn_keeps_model_turn() ->
         )
     ]
 
-    response = await ai.generate(prompt='keep going', use=[InterruptAfterModel()])
+    response = await ai.generate(prompt='keep going', use=[InterruptAfterModel()], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -8281,7 +8337,9 @@ async def test_generate_middleware_interrupt_after_next_fn_keeps_closed_rounds()
         ),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[InterruptAfterNextFn()])
+    response = await ai.generate(
+        prompt='keep going', tools=['lookup'], use=[InterruptAfterNextFn()], raise_on_error=False
+    )
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -8320,6 +8378,7 @@ async def test_generate_on_chunk_validation_error_returns_closed_history() -> No
             messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
         ),
         on_chunk=on_chunk,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -8373,6 +8432,7 @@ async def test_generate_format_parse_error_keeps_model_text() -> None:
         output_schema=Recipe,
         output_format='boom',
         output_instructions=False,
+        raise_on_error=False,
     )
     assert response.finish_reason == FinishReason.STOP
     assert response.text == 'not a recipe'
@@ -8442,7 +8502,7 @@ async def test_failed_generate_marks_span_error(exporter) -> None:
         )
     ]
 
-    response = await ai.generate(prompt='give me a recipe', output_schema=Recipe)
+    response = await ai.generate(prompt='give me a recipe', output_schema=Recipe, raise_on_error=False)
     assert response.error is not None
     generate_spans = [span for span in exporter.get_finished_spans() if span.name == 'generate']
     assert generate_spans
@@ -8482,7 +8542,9 @@ async def test_generate_middleware_dropping_failure_still_keeps_closed_rounds() 
         _model_calls_tool(name='ghost', ref='r2'),
     ]
 
-    response = await ai.generate(prompt='keep going', tools=['lookup'], use=[DropFailureResponse()])
+    response = await ai.generate(
+        prompt='keep going', tools=['lookup'], use=[DropFailureResponse()], raise_on_error=False
+    )
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
     assert response.error is not None
@@ -8544,7 +8606,7 @@ async def test_model_response_output_is_typed_optional() -> None:
         )
     ]
 
-    response = await ai.generate(prompt='a city', output_schema=City)
+    response = await ai.generate(prompt='a city', output_schema=City, raise_on_error=False)
 
     assert_type(response.output, City | None)
 
@@ -8565,6 +8627,7 @@ async def test_generate_enum_off_list_is_error_finish() -> None:
         prompt='classify',
         output_format='enum',
         output_schema={'type': 'string', 'enum': ['POSITIVE', 'NEGATIVE', 'NEUTRAL']},
+        raise_on_error=False,
     )
     assert response.finish_reason == FinishReason.STOP
     assert response.output is None
@@ -8778,7 +8841,7 @@ async def test_generate_four_output_scenarios_with_schema() -> None:
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_only)]),
         )
     ]
-    r1 = await ai.generate(prompt='give me dish', output_schema=Dish)
+    r1 = await ai.generate(prompt='give me dish', output_schema=Dish, raise_on_error=False)
     assert r1.finish_reason == FinishReason.STOP
     assert r1.text == raw_text_only
     assert r1.output is None
@@ -8798,7 +8861,7 @@ async def test_generate_four_output_scenarios_with_schema() -> None:
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_unparseable)]),
         )
     ]
-    r2 = await ai.generate(prompt='give me dish', output_schema=Dish)
+    r2 = await ai.generate(prompt='give me dish', output_schema=Dish, raise_on_error=False)
     assert r2.finish_reason == FinishReason.STOP
     assert r2.text == raw_text_unparseable
     assert r2.output is None
@@ -8818,7 +8881,7 @@ async def test_generate_four_output_scenarios_with_schema() -> None:
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_parseable)]),
         )
     ]
-    r3 = await ai.generate(prompt='give me dish', output_schema=Dish)
+    r3 = await ai.generate(prompt='give me dish', output_schema=Dish, raise_on_error=False)
     assert r3.finish_reason == FinishReason.STOP
     assert r3.text == raw_text_parseable
     assert r3.output == Dish(dish='Smoked Salmon Tartine')
@@ -8834,7 +8897,7 @@ async def test_generate_four_output_scenarios_with_schema() -> None:
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_parseable_only)]),
         )
     ]
-    r4 = await ai.generate(prompt='give me dish', output_schema=Dish)
+    r4 = await ai.generate(prompt='give me dish', output_schema=Dish, raise_on_error=False)
     assert r4.finish_reason == FinishReason.STOP
     assert r4.text == raw_parseable_only
     assert r4.output == Dish(dish='Smoked Salmon Tartine')
@@ -8867,7 +8930,7 @@ async def test_generate_four_output_scenarios_with_format_json_no_schema() -> No
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_only)]),
         )
     ]
-    r1 = await ai.generate(prompt='give me dish', output_format='json')
+    r1 = await ai.generate(prompt='give me dish', output_format='json', raise_on_error=False)
     assert r1.finish_reason == FinishReason.STOP
     assert r1.text == raw_text_only
     assert r1.output is None
@@ -8887,7 +8950,7 @@ async def test_generate_four_output_scenarios_with_format_json_no_schema() -> No
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_unparseable)]),
         )
     ]
-    r2 = await ai.generate(prompt='give me dish', output_format='json')
+    r2 = await ai.generate(prompt='give me dish', output_format='json', raise_on_error=False)
     assert r2.finish_reason == FinishReason.STOP
     assert r2.text == raw_text_unparseable
     assert r2.output is None
@@ -8907,7 +8970,7 @@ async def test_generate_four_output_scenarios_with_format_json_no_schema() -> No
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_text_parseable)]),
         )
     ]
-    r3 = await ai.generate(prompt='give me dish', output_format='json')
+    r3 = await ai.generate(prompt='give me dish', output_format='json', raise_on_error=False)
     assert r3.finish_reason == FinishReason.STOP
     assert r3.text == raw_text_parseable
     assert r3.output == {'dish': 'Smoked Salmon Tartine'}
@@ -8923,7 +8986,7 @@ async def test_generate_four_output_scenarios_with_format_json_no_schema() -> No
             message=Message(role=Role.MODEL, content=[Part.from_text(raw_parseable_only)]),
         )
     ]
-    r4 = await ai.generate(prompt='give me dish', output_format='json')
+    r4 = await ai.generate(prompt='give me dish', output_format='json', raise_on_error=False)
     assert r4.finish_reason == FinishReason.STOP
     assert r4.text == raw_parseable_only
     assert r4.output == {'dish': 'Smoked Salmon Tartine'}
@@ -8944,7 +9007,7 @@ async def test_generate_array_format_no_schema_unparseable_records_invalid_outpu
         )
     ]
 
-    response = await ai.generate(prompt='give me list', output_format='array')
+    response = await ai.generate(prompt='give me list', output_format='array', raise_on_error=False)
     assert response.finish_reason == FinishReason.STOP
     assert response.text == 'Sorry, I cannot do that.'
     assert response.output is None
@@ -8968,7 +9031,7 @@ async def test_generate_array_format_object_reply_records_invalid_output() -> No
         )
     ]
 
-    response = await ai.generate(prompt='give me list', output_format='array')
+    response = await ai.generate(prompt='give me list', output_format='array', raise_on_error=False)
     assert response.finish_reason == FinishReason.STOP
     assert response.text == '{"dish": "Tartine"}'
     assert response.output is None
@@ -9041,7 +9104,7 @@ async def test_generate_with_failing_tool_still_returns_internal_error() -> None
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='weather?', tools=['lookup'])
+    response = await ai.generate(prompt='weather?', tools=['lookup'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
@@ -9064,7 +9127,7 @@ async def test_generate_with_public_error_tool_returns_its_message() -> None:
 
     pm.responses = [_model_calls_tool(name='lookup', ref='r1')]
 
-    response = await ai.generate(prompt='weather?', tools=['lookup'])
+    response = await ai.generate(prompt='weather?', tools=['lookup'], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'no forecast for Atlantis'
@@ -9122,6 +9185,7 @@ async def test_generate_with_failing_streaming_callback_returns_callback_message
             messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
         ),
         on_chunk=on_chunk,
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -9179,7 +9243,7 @@ async def test_generate_stream_with_raising_middleware_chunk_callback_fails_with
     ai = Genkit(model='scriptedModel')
     pm = _two_chunk_model(ai)
 
-    stream = ai.generate_stream(prompt='Suggest a dish.', use=[_RaisingChunkRewriter()])
+    stream = ai.generate_stream(prompt='Suggest a dish.', use=[_RaisingChunkRewriter()], raise_on_error=False)
     chunks = [chunk.text async for chunk in stream]
     response = await stream.response
 
@@ -9217,7 +9281,7 @@ async def test_generate_stream_with_middleware_assigning_raising_on_chunk_fails_
             finally:
                 ctx.on_chunk = previous
 
-    stream = ai.generate_stream(prompt='Suggest a dish.', use=[AssignsOnChunk()])
+    stream = ai.generate_stream(prompt='Suggest a dish.', use=[AssignsOnChunk()], raise_on_error=False)
     chunks = [chunk.text async for chunk in stream]
     response = await stream.response
 
@@ -9281,7 +9345,7 @@ async def test_generate_with_middleware_forwarding_to_raising_caller_keeps_calle
         raise RuntimeError('client disconnected')
 
     prompt = ai.define_prompt(prompt='Suggest a dish.')
-    response = await prompt(on_chunk=on_chunk, use=[Forwards()])
+    response = await prompt(on_chunk=on_chunk, use=[Forwards()], raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.error is not None
@@ -9303,7 +9367,7 @@ async def test_generate_with_model_raising_wrapped_provider_500_returns_internal
 
     ai.define_model(name='down', fn=down)
 
-    response = await ai.generate(model='down', prompt='hi')
+    response = await ai.generate(model='down', prompt='hi', raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'internal error'
@@ -9334,8 +9398,8 @@ async def test_generate_with_model_raising_non_500_provider_error_keeps_provider
 
     ai.define_model(name='provider_fail', fn=provider_fail)
 
-    response = await ai.generate(model='provider_fail', prompt='hi')
-    stream_response = await ai.generate_stream(model='provider_fail', prompt='hi').response
+    response = await ai.generate(model='provider_fail', prompt='hi', raise_on_error=False)
+    stream_response = await ai.generate_stream(model='provider_fail', prompt='hi', raise_on_error=False).response
 
     for res in (response, stream_response):
         assert res.finish_reason == FinishReason.FAILED
@@ -9373,7 +9437,7 @@ async def test_failed_model_response_releases_frame_locals_and_survives_deepcopy
 
     ai.define_model(name='failing_model', fn=failing_model)
 
-    response = await ai.generate(model='failing_model', prompt='hi')
+    response = await ai.generate(model='failing_model', prompt='hi', raise_on_error=False)
     gc.collect()
 
     assert len(sentinel_refs) == 1
@@ -9404,7 +9468,7 @@ async def test_generate_with_genkit_error_wrapping_public_error_uses_outer_messa
 
     ai.define_model(name='down', fn=down)
 
-    response = await ai.generate(model='down', prompt='hi')
+    response = await ai.generate(model='down', prompt='hi', raise_on_error=False)
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == 'outer wrapper'
@@ -9435,7 +9499,7 @@ async def test_generate_output_schema_cut_off_with_length_returns_none() -> None
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{"name":"X","population": 21', FinishReason.LENGTH)]
 
-    response = await ai.generate(prompt='a city', output_schema=_City)
+    response = await ai.generate(prompt='a city', output_schema=_City, raise_on_error=False)
 
     assert response.output is None
     assert response.finish_reason == FinishReason.LENGTH
@@ -9451,7 +9515,7 @@ async def test_generate_output_schema_cut_off_with_stop_returns_none() -> None:
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{"name":"X","population": 21')]
 
-    response = await ai.generate(prompt='a city', output_schema=_City)
+    response = await ai.generate(prompt='a city', output_schema=_City, raise_on_error=False)
 
     assert response.output is None
     assert response.finish_reason == FinishReason.STOP
@@ -9493,7 +9557,7 @@ async def test_generate_json_format_cut_off_returns_none() -> None:
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{"a": 1, "b": [1, 2', FinishReason.LENGTH)]
 
-    response = await ai.generate(prompt='json please', output_format='json')
+    response = await ai.generate(prompt='json please', output_format='json', raise_on_error=False)
 
     assert response.output is None
     assert response.error is not None
@@ -9533,7 +9597,7 @@ async def test_generate_output_schema_brace_in_prose_wrong_shape_returns_none() 
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{x} {"other": 1}')]
 
-    response = await ai.generate(prompt='a city', output_schema=_City)
+    response = await ai.generate(prompt='a city', output_schema=_City, raise_on_error=False)
 
     assert response.output is None
     assert response.error is not None
@@ -9547,7 +9611,7 @@ async def test_generate_output_schema_cut_off_with_length_error_says_cut_off() -
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{"name":"X","population": 21', FinishReason.LENGTH)]
 
-    response = await ai.generate(prompt='a city', output_schema=_City)
+    response = await ai.generate(prompt='a city', output_schema=_City, raise_on_error=False)
 
     assert response.output is None
     assert response.error is not None
@@ -9563,7 +9627,7 @@ async def test_generate_output_schema_bad_json_with_stop_error_says_not_valid_js
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('{not json}')]
 
-    response = await ai.generate(prompt='a city', output_schema=_City)
+    response = await ai.generate(prompt='a city', output_schema=_City, raise_on_error=False)
 
     assert response.output is None
     assert response.error is not None
@@ -9605,7 +9669,7 @@ async def test_generate_array_format_cut_off_before_first_item_returns_none() ->
     pm, _ = define_scripted_model(ai)
     pm.responses = [_reply('[{"a":', FinishReason.LENGTH)]
 
-    response = await ai.generate(prompt='list 50 recipes', output_format='array')
+    response = await ai.generate(prompt='list 50 recipes', output_format='array', raise_on_error=False)
 
     assert response.output is None
     assert response.error is not None
@@ -9710,7 +9774,7 @@ async def test_failed_tool_finish_message_redacts_only_an_attached_cause(
 
     pm.responses = [_model_calls_tool(name='refund_order', ref='r1')]
 
-    response = await ai.generate(prompt='refund A-17', tools=['refund_order'])
+    response = await ai.generate(prompt='refund A-17', tools=['refund_order'], raise_on_error=False)
     assert response.finish_reason == FinishReason.FAILED
     assert response.finish_message == finish_message
     assert response.error is not None
@@ -9755,7 +9819,7 @@ async def test_parallel_tool_failure_after_sibling_completes_returns_no_unfinish
         ),
     ]
 
-    failed = await ai.generate(prompt='book dinner', tools=['charge_card', 'reserve_table'])
+    failed = await ai.generate(prompt='book dinner', tools=['charge_card', 'reserve_table'], raise_on_error=False)
 
     assert failed.finish_reason == FinishReason.FAILED
     assert failed.error is not None
@@ -9989,6 +10053,7 @@ async def test_failing_restart_after_sibling_restart_completes_returns_no_unfini
         messages=history,
         tools=['charge_card', 'reserve_table'],
         resume_restart=[paused_turn.content[0].restart(), paused_turn.content[1].restart()],
+        raise_on_error=False,
     )
 
     assert failed.finish_reason == FinishReason.FAILED

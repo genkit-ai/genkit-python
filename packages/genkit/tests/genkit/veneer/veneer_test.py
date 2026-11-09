@@ -1783,6 +1783,7 @@ async def test_generate_echoes_full_request_when_model_raises(setup_test: SetupF
         prompt='hi',
         tools=['test_tool'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -1811,6 +1812,7 @@ async def test_generate_echoes_full_request_when_hook_raises(setup_test: SetupFi
         tools=['test_tool'],
         use=cast(Any, [MiddlewareRef(name='raising_mw')]),
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -1836,6 +1838,7 @@ async def test_generate_echoes_full_request_when_max_turns_exceeded(
         tools=['test_tool'],
         max_turns=1,
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.ABORTED
@@ -1860,6 +1863,7 @@ async def test_generate_echoes_full_request_when_tool_missing(setup_test: SetupF
         prompt='hi',
         tools=['test_tool'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert response.finish_reason == FinishReason.FAILED
@@ -1899,6 +1903,7 @@ async def test_generate_echoes_full_request_across_interrupt_and_resume(
         prompt='hi',
         tools=['test_interrupt'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
     assert interrupted.finish_reason == FinishReason.INTERRUPTED
     _assert_request_fully_echoed(interrupted)
@@ -1909,6 +1914,7 @@ async def test_generate_echoes_full_request_across_interrupt_and_resume(
         resume_respond=[interrupted.interrupts[0].respond({'bar': 2})],
         tools=['test_interrupt'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
     _assert_request_fully_echoed(resumed)
 
@@ -1944,6 +1950,7 @@ async def test_generate_echoes_full_request_when_restart_interrupts_again(
         prompt='hi',
         tools=['test_interrupt'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
     _assert_request_fully_echoed(interrupted)
 
@@ -1953,6 +1960,7 @@ async def test_generate_echoes_full_request_when_restart_interrupts_again(
         resume_restart=interrupted.interrupts[0].restart(),
         tools=['test_interrupt'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert again.finish_reason == FinishReason.INTERRUPTED
@@ -1975,6 +1983,7 @@ async def test_generate_echoes_full_request_when_restart_interrupts_again(
         resume_respond=[again.interrupts[0].respond({'ok': True})],
         tools=['test_interrupt'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert answered.finish_reason == FinishReason.STOP
@@ -2025,6 +2034,7 @@ async def test_generate_restart_can_pause_any_number_of_times(
         prompt='hi',
         tools=['gatekeeper'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
     history = response.messages
 
@@ -2036,6 +2046,7 @@ async def test_generate_restart_can_pause_any_number_of_times(
             resume_restart=response.interrupts[0].restart(),
             tools=['gatekeeper'],
             **_echo_request_kwargs(),
+            raise_on_error=False,
         )
         assert response.finish_reason == FinishReason.INTERRUPTED
         _assert_request_fully_echoed(response)
@@ -2055,6 +2066,7 @@ async def test_generate_restart_can_pause_any_number_of_times(
         resume_restart=response.interrupts[0].restart(),
         tools=['gatekeeper'],
         **_echo_request_kwargs(),
+        raise_on_error=False,
     )
 
     assert answered.finish_reason == FinishReason.STOP

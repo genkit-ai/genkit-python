@@ -1,6 +1,9 @@
 name: Deploy Python API Docs
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -9,6 +12,7 @@ permissions:
 jobs:
   deploy-docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -40,6 +44,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: genkit-ai/hosting-templates
+          token: ${{ secrets.DOCS_DEPLOY_TOKEN || secrets.GITHUB_TOKEN }}
           path: hosting-templates
           persist-credentials: false
 
@@ -57,7 +62,7 @@ jobs:
         run: npm install -g firebase-tools
 
       - name: Deploy to Firebase Hosting
-        working-directory: hosting-templates
+        working-directory: hosting-templates/api-ref
         run: firebase deploy --only hosting:py-prod --project project-kaizen-404017
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}

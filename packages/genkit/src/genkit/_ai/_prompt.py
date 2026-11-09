@@ -85,6 +85,8 @@ from genkit._core._model import (
 )
 from genkit._core._registry import Registry
 from genkit._core._schema import InvalidOutputSchemaError, check_output_schema, parse_schema, to_json_schema
+from genkit._core._telemetry._attrs import metadata_key
+from genkit._core._telemetry._instrumentation import SpanContext, run_in_new_span, set_span_state
 from genkit._core._tool import Tool
 from genkit._core._typing import (
     GenerateActionOutputConfig,
@@ -464,14 +466,33 @@ class Prompt(Generic[InputT, OutputT]):
         on_chunk: ModelStreamingCallback | None,
         caller_stopped: asyncio.Event | None,
     ) -> ModelResponse[OutputT]:
-        prepared = await prepare_prompt(prompt=self, input=input, opts=opts)
-        result = await generate_action(
-            prepared.scope,
-            prepared.options,
-            on_chunk=on_chunk,
-            # Same context the template already rendered, so {{@auth}} and tools agree.
-            context=prepared.context,
-            caller_stopped=caller_stopped,
+        async def run() -> ModelResponse:
+            prepared = await render_prompt(prompt=self, input=input, opts=opts)
+            return await generate_action(
+                prepared.scope,
+                prepared.options,
+                on_chunk=on_chunk,
+                # Same context the template already rendered, so {{@auth}} and tools agree.
+                context=prepared.context,
+                caller_stopped=caller_stopped,
+            )
+
+        # An unnamed prompt has nothing to label a span with, so its render and
+        # generate sit directly under the caller.
+        if not self._name:
+            return cast(ModelResponse[OutputT], await run())
+
+        async def body(_span: SpanContext) -> ModelResponse:
+            result = await run()
+            if result.error is not None:
+                set_span_state('error')
+            return result
+
+        result = await run_in_new_span(
+            registry_definition_key(self._name, self._variant, self._ns),
+            body,
+            action_type='dotprompt',
+            input=input,
         )
         return cast(ModelResponse[OutputT], result)
 
@@ -564,7 +585,7 @@ class Prompt(Generic[InputT, OutputT]):
             resume_restart=resume_restart,
             resume_metadata=resume_metadata,
         )
-        return (await prepare_prompt(prompt=self, input=input, opts=opts)).options
+        return (await render_prompt(prompt=self, input=input, opts=opts)).options
 
 
 class PreparedPrompt(NamedTuple):
@@ -618,6 +639,26 @@ async def prepare_prompt(
     return PreparedPrompt(scope=scope, options=options, context=context)
 
 
+async def render_prompt(
+    *,
+    prompt: Prompt[Any, Any],
+    input: Any | None,  # noqa: ANN401
+    opts: PromptGenerateOptions | None,
+) -> PreparedPrompt:
+    """``prepare_prompt`` inside a ``render`` span, so the trace shows exactly what the template produced."""
+    prepared: PreparedPrompt | None = None
+
+    async def body(_span: SpanContext) -> GenerateActionOptions:
+        nonlocal prepared
+        prepared = await prepare_prompt(prompt=prompt, input=input, opts=opts)
+        return prepared.options
+
+    attributes = {metadata_key('promptName'): prompt._name} if prompt._name else None  # pyright: ignore[reportPrivateUsage]
+    await run_in_new_span('render', body, action_type='promptTemplate', input=input, attributes=attributes)
+    assert prepared is not None
+    return prepared
+
+
 def unoverridden_prompt_config(
     *,
     stored: Mapping[str, Any] | BaseModel | None,
@@ -663,7 +704,7 @@ def _register_prompt_action_pair(
 
     async def prompt_action_fn(input: Any = None) -> ModelRequest:  # noqa: ANN401
         ep = await ep_factory()
-        prepared = await prepare_prompt(prompt=ep, input=input)
+        prepared = await render_prompt(prompt=ep, input=input, opts=None)
         return await to_prompt_model_request(registry=prepared.scope.registry, options=prepared.options)
 
     async def executable_prompt_action_fn(input: Any = None) -> GenerateActionOptions:  # noqa: ANN401

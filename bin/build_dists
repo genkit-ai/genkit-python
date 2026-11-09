@@ -35,7 +35,7 @@ while IFS= read -r -d '' pyproject; do
   project_dir=$(dirname "${pyproject}")
   project_dir="${project_dir#"${PY_DIR}"/}"
   PROJECT_DIRS+=("$project_dir")
-done < <(find "${PY_DIR}/packages" "${PY_DIR}/plugins" "${PY_DIR}/samples" "${PY_DIR}/tests" \
+done < <(find "${PY_DIR}/packages" "${PY_DIR}/samples" "${PY_DIR}/tests" \
   -name "pyproject.toml" -type f -print0 2>/dev/null)
 
 echo "Discovered ${#PROJECT_DIRS[@]} projects to build:"

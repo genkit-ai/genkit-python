@@ -703,14 +703,15 @@ async def test_fallback_does_not_fail_over_after_chunks_reached_the_caller() -> 
     ai.define_model(name='primary', fn=primary)
     ai.define_model(name='backup', fn=backup)
 
-    async with ai.generate_stream(model='primary', prompt='hi', use=[Fallback(models=['backup'])]) as stream:
-        chunks = [c.text async for c in stream]
+    chunks: list[str] = []
     try:
+        async with ai.generate_stream(model='primary', prompt='hi', use=[Fallback(models=['backup'])]) as stream:
+            async for c in stream:
+                chunks.append(c.text)
         response = await stream.response
-    except GenkitError:
-        pass
-    else:
         assert response.finish_reason == FinishReason.FAILED
+    except GenkitError as e:
+        assert 'RST_STREAM' in str(e)
 
     assert chunks == ['{"dish": "Sal']
     assert backup_calls == 0

@@ -569,18 +569,17 @@ async def test_retry_does_not_retry_after_chunks_reached_the_caller() -> None:
     ai.define_model(name='flaky', fn=flaky)
 
     seen: list[str] = []
-    async with ai.generate_stream(
-        model='flaky', prompt='hi', use=[Retry(max_retries=3, initial_delay_ms=1, no_jitter=True)]
-    ) as stream:
-        async for chunk in stream:
-            seen.append(chunk.text)
     # Boxed on main; raises once the D1 error contract lands. Either way, one call.
     try:
+        async with ai.generate_stream(
+            model='flaky', prompt='hi', use=[Retry(max_retries=3, initial_delay_ms=1, no_jitter=True)]
+        ) as stream:
+            async for chunk in stream:
+                seen.append(chunk.text)
         response = await stream.response
+        assert response.finish_reason == FinishReason.FAILED
     except GenkitError as e:
         assert 'RST_STREAM' in str(e)
-    else:
-        assert response.finish_reason == FinishReason.FAILED
 
     assert call_count == 1
     assert seen == ['{"dish": "Sal']

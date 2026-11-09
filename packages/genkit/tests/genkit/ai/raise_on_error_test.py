@@ -69,12 +69,17 @@ def _overloaded(_request: ModelRequest) -> ModelResponse:
 
 @pytest.mark.asyncio
 async def test_provider_error_raises_from_generate() -> None:
-    """A model error reaches the caller with its status instead of FAILED and text ''."""
+    """A model error reaches the caller with its status when raise_on_error=True; default is boxed."""
     ai = Genkit(model='flaky')
     _model(ai, 'flaky', _overloaded)
 
+    boxed = await ai.generate(prompt='Suggest a dish.')
+    assert boxed.finish_reason == FinishReason.FAILED
+    assert boxed.error is not None
+    assert boxed.error.status == 'UNAVAILABLE'
+
     with pytest.raises(GenkitError) as raised:
-        await ai.generate(prompt='Suggest a dish.')
+        await ai.generate(prompt='Suggest a dish.', raise_on_error=True)
 
     assert raised.value.status == 'UNAVAILABLE'
     assert raised.value.message == 'model overloaded'
@@ -89,11 +94,14 @@ async def test_provider_error_raises_from_prompt_call_and_stream() -> None:
     _model(ai, 'flaky', _overloaded)
     menu = ai.define_prompt(name='menu', prompt='Suggest a dish.')
 
+    boxed = await menu()
+    assert boxed.finish_reason == FinishReason.FAILED
+
     with pytest.raises(GenkitError) as from_call:
-        await menu()
+        await menu(raise_on_error=True)
     assert from_call.value.status == 'UNAVAILABLE'
 
-    stream = menu.stream()
+    stream = menu.stream(raise_on_error=True)
     with pytest.raises(GenkitError) as from_iter:
         async for _ in stream:
             pass
@@ -107,15 +115,19 @@ async def test_provider_error_raises_from_prompt_call_and_stream() -> None:
 async def test_tool_public_error_propagates_as_public_error() -> None:
     """RBAC in a tool: PublicError keeps status and details, so a served flow returns 403."""
     ai = Genkit(model='waiter')
-    turns = iter([_calls('refund_order'), _says('done')])
-    _model(ai, 'waiter', lambda _r: next(turns))
+    _model(ai, 'waiter', lambda _r: _calls('refund_order'))
 
     @ai.tool()
     async def refund_order(order_id: str) -> str:
         raise PublicError('PERMISSION_DENIED', 'Not your order.', details={'order_id': order_id})
 
+    boxed = await ai.generate(prompt='Refund order A-17.', tools=['refund_order'])
+    assert boxed.finish_reason == FinishReason.FAILED
+    assert boxed.error is not None
+    assert boxed.error.status == 'PERMISSION_DENIED'
+
     with pytest.raises(PublicError) as raised:
-        await ai.generate(prompt='Refund order A-17.', tools=['refund_order'])
+        await ai.generate(prompt='Refund order A-17.', tools=['refund_order'], raise_on_error=True)
 
     assert raised.value.status == 'PERMISSION_DENIED'
     assert raised.value.message == 'Not your order.'
@@ -141,8 +153,12 @@ async def test_guardrail_exception_in_wrap_model_raises() -> None:
                 raise ValueError('contains peanuts')
             return response
 
+    boxed = await ai.generate(prompt='Suggest a dish.', use=[AllergyGuard()])
+    assert boxed.finish_reason == FinishReason.FAILED
+    assert boxed.error is not None
+
     with pytest.raises(GenkitError) as raised:
-        await ai.generate(prompt='Suggest a dish.', use=[AllergyGuard()])
+        await ai.generate(prompt='Suggest a dish.', use=[AllergyGuard()], raise_on_error=True)
 
     assert raised.value.status == 'INTERNAL'
     assert raised.value.message == 'ValueError: contains peanuts'
@@ -159,7 +175,7 @@ async def test_max_turns_raises_aborted() -> None:
         return 'in stock'
 
     with pytest.raises(GenkitError) as raised:
-        await ai.generate(prompt='Is A-17 in stock?', tools=['check_stock'], max_turns=1)
+        await ai.generate(prompt='Is A-17 in stock?', tools=['check_stock'], max_turns=1, raise_on_error=True)
 
     assert raised.value.status == 'ABORTED'
     assert raised.value.reason is ErrorReason.MAX_TURNS_EXCEEDED
@@ -178,7 +194,7 @@ async def test_invalid_output_raises_and_boxed_keeps_text() -> None:
     _model(ai, 'chef', lambda _r: _says('Just make pancakes.'))
 
     with pytest.raises(GenkitError) as raised:
-        await ai.generate(prompt='A recipe.', output_schema=Recipe)
+        await ai.generate(prompt='A recipe.', output_schema=Recipe, raise_on_error=True)
 
     assert raised.value.status == 'INTERNAL'
     assert raised.value.reason is ErrorReason.INVALID_OUTPUT
@@ -201,8 +217,11 @@ async def test_missing_tool_raises_not_found() -> None:
     async def check_stock(order_id: str) -> str:
         return 'in stock'
 
+    boxed = await ai.generate(prompt='Cancel A-17.', tools=['check_stock'])
+    assert boxed.finish_reason == FinishReason.FAILED
+
     with pytest.raises(GenkitError) as raised:
-        await ai.generate(prompt='Cancel A-17.', tools=['check_stock'])
+        await ai.generate(prompt='Cancel A-17.', tools=['check_stock'], raise_on_error=True)
 
     assert raised.value.status == 'NOT_FOUND'
     assert raised.value.reason is ErrorReason.TOOL_NOT_FOUND
@@ -215,10 +234,17 @@ async def test_invalid_resume_raises() -> None:
     _model(ai, 'waiter', lambda _r: _says('ok'))
 
     approval = Part(tool_response=ToolResponse(name='refund_order', ref='1', output={'approved': True}))
+    boxed = await ai.generate(
+        messages=[Message(role=Role.USER, content=[Part.from_text('Refund A-17.')])],
+        resume_respond=[approval],
+    )
+    assert boxed.finish_reason == FinishReason.FAILED
+
     with pytest.raises(GenkitError) as raised:
         await ai.generate(
             messages=[Message(role=Role.USER, content=[Part.from_text('Refund A-17.')])],
             resume_respond=[approval],
+            raise_on_error=True,
         )
 
     assert raised.value.status == 'FAILED_PRECONDITION'

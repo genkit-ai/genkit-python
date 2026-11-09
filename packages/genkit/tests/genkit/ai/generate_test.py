@@ -5021,21 +5021,21 @@ async def _run_dies_midway(surface: str) -> tuple[list[str] | None, ModelRespons
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('surface', ['generate_stream', 'prompt.stream', 'generate', 'prompt'])
-async def test_model_dies_midway_raises_by_default(surface: str) -> None:
-    """Without raise_on_error=False every surface raises the model's error; streams still deliver the chunks first."""
+async def test_model_dies_midway_raises_when_requested(surface: str) -> None:
+    """With raise_on_error=True every surface raises the model's error; streams still deliver the chunks first."""
     ai = Genkit(model='diesMidway')
     _model_dies_after_hello_wor(ai, 'diesMidway')
     chunks: list[str] = []
     with pytest.raises(GenkitError) as raised:
         if surface == 'generate':
-            await ai.generate(prompt='start')
+            await ai.generate(prompt='start', raise_on_error=True)
         elif surface == 'prompt':
-            await ai.define_prompt(name='greet', prompt='start')()
+            await ai.define_prompt(name='greet', prompt='start')(raise_on_error=True)
         else:
             stream = (
-                ai.generate_stream(prompt='start')
+                ai.generate_stream(prompt='start', raise_on_error=True)
                 if surface == 'generate_stream'
-                else ai.define_prompt(name='greet', prompt='start').stream()
+                else ai.define_prompt(name='greet', prompt='start').stream(raise_on_error=True)
             )
             async for chunk in stream:
                 chunks.append(chunk.text)

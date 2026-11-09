@@ -186,14 +186,14 @@ async def test_bad_value_raises_before_the_model_runs(kind: Kind, declared: Decl
 @every_kind
 @every_declaration
 async def test_missing_required_field_fails_inside_the_action(kind: Kind, declared: Declared) -> None:
-    """Nothing fills voice, so the action rejects it: generate and generate_operation both raise."""
+    """Nothing fills voice, so the action rejects it: generate boxes the error, generate_operation raises."""
     tts = Tts(Genkit(), kind=kind, declared=declared)
 
     failure = await tts.failure(config={'speed': 1.2})
 
     assert failure is not None
     where, status, text = failure
-    assert where == 'raised'
+    assert where == ('turn' if kind == 'model' else 'raised')
     assert status == 'INVALID_ARGUMENT'
     assert 'voice' in text
     assert tts.seen == []

@@ -831,7 +831,7 @@ async def generate_action(
     current_turn: int = 0,
     context: dict[str, Any] | None = None,
     caller_stopped: asyncio.Event | None = None,
-    raise_on_error: bool = True,
+    raise_on_error: bool = False,
 ) -> ModelResponse:
     """Open the user-facing ``generate`` span and delegate to the engine.
 

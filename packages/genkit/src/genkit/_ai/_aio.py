@@ -1440,7 +1440,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[OutputT]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, output_schema=type[T] -> ModelResponse[T]
@@ -1468,7 +1468,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelResponse[Any]
@@ -1496,7 +1496,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[Any]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, no output_schema -> ModelResponse[Any]
@@ -1524,7 +1524,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[Any]: ...
 
     async def generate(
@@ -1550,7 +1550,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[Any]:
         """Generate text or structured data using a language model.
 
@@ -1651,7 +1651,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[OutputT]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, output_schema=type[T] -> ModelStreamResponse[T]
@@ -1679,7 +1679,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelStreamResponse[Any]
@@ -1707,7 +1707,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[Any]: ...
 
     # Overload: config=ModelRefConfigT | Mapping, no output_schema -> ModelStreamResponse[Any]
@@ -1735,7 +1735,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[Any]: ...
 
     def generate_stream(
@@ -1761,7 +1761,7 @@ class Genkit:
         output_constrained: bool | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[Any]:
         """Stream generated text, returning a ModelStreamResponse with .stream and .response.
 
@@ -1852,7 +1852,7 @@ class Genkit:
         docs: list[Document] | None = None,
         on_chunk: Callable[[ModelResponseChunk], None] | None = None,
         caller_stopped: asyncio.Event | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[Any]:
         """Fold ``ai.generate`` kwargs into engine ``options`` and run generate_action.
 
@@ -2199,6 +2199,7 @@ class Genkit:
             context=context,
             use=use,
             docs=docs,
+            raise_on_error=True,
         )
 
         if response.error is not None:

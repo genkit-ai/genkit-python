@@ -432,7 +432,7 @@ class Prompt(Generic[InputT, OutputT]):
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
         on_chunk: ModelStreamingCallback | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[OutputT]:
         """Render the prompt with ``input`` as template variables, run it, and return the response.
 
@@ -471,7 +471,7 @@ class Prompt(Generic[InputT, OutputT]):
         opts: PromptGenerateOptions,
         on_chunk: ModelStreamingCallback | None,
         caller_stopped: asyncio.Event | None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelResponse[OutputT]:
         prepared = await prepare_prompt(prompt=self, input=input, opts=opts)
         result = await generate_action(
@@ -502,7 +502,7 @@ class Prompt(Generic[InputT, OutputT]):
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        raise_on_error: bool = True,
+        raise_on_error: bool = False,
     ) -> ModelStreamResponse[OutputT]:
         """Stream the prompt execution. Same keywords as ``__call__``, minus ``on_chunk``.
 

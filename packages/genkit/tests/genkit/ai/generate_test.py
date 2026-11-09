@@ -3122,15 +3122,34 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
 # run tests from /tests/specs/generate.yaml
 ##########################################################################
 
+def _find_generate_spec() -> pathlib.Path:
+    import os
+    import urllib.request
+
+    if 'GENKIT_SPECS_DIR' in os.environ:
+        candidate = pathlib.Path(os.environ['GENKIT_SPECS_DIR']) / 'generate.yaml'
+        if candidate.is_file():
+            return candidate
+
+    for parent in pathlib.Path(__file__).resolve().parents:
+        candidate = parent / 'tests' / 'specs' / 'generate.yaml'
+        if candidate.is_file():
+            return candidate
+        sibling = parent.parent / 'genkit' / 'tests' / 'specs' / 'generate.yaml'
+        if sibling.is_file():
+            return sibling
+
+    cache_dir = pathlib.Path('/tmp/genkit-specs')
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / 'generate.yaml'
+    if not cached.is_file():
+        url = 'https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/generate.yaml'
+        urllib.request.urlretrieve(url, cached)
+    return cached
+
+
 specs = []
-spec_path = None
-for parent in pathlib.Path(__file__).resolve().parents:
-    candidate = parent / 'tests' / 'specs' / 'generate.yaml'
-    if candidate.is_file():
-        spec_path = candidate
-        break
-if spec_path is None:
-    raise AssertionError('tests/specs/generate.yaml not found')
+spec_path = _find_generate_spec()
 with spec_path.open() as stream:
     tests_spec = yaml.safe_load(stream)
     specs = tests_spec['tests']

@@ -70,12 +70,30 @@ DEFAULT_STEP_TIMEOUT_S = 5.0
 
 
 def spec_path() -> pathlib.Path:
-    """Walk up from this file to the repo's tests/specs/agent.yaml."""
+    """Resolve tests/specs/agent.yaml from genkit repo, environment, or upstream raw URL."""
+    import os
+    import urllib.request
+
+    if 'GENKIT_SPECS_DIR' in os.environ:
+        candidate = pathlib.Path(os.environ['GENKIT_SPECS_DIR']) / 'agent.yaml'
+        if candidate.is_file():
+            return candidate
+
     for parent in pathlib.Path(__file__).resolve().parents:
         candidate = parent / 'tests' / 'specs' / 'agent.yaml'
         if candidate.is_file():
             return candidate
-    raise AssertionError('tests/specs/agent.yaml not found from agent_conformance_test.py')
+        sibling = parent.parent / 'genkit' / 'tests' / 'specs' / 'agent.yaml'
+        if sibling.is_file():
+            return sibling
+
+    cache_dir = pathlib.Path('/tmp/genkit-specs')
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / 'agent.yaml'
+    if not cached.is_file():
+        url = 'https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/agent.yaml'
+        urllib.request.urlretrieve(url, cached)
+    return cached
 
 
 # ---------------------------------------------------------------------------

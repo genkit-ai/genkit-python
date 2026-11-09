@@ -24,7 +24,7 @@ dependencies = [
   "genkit-django",
   "genkit-fastapi",
   "genkit-flask",
-  "genkit-google-cloud",
+  "genkit-google-cloud[firestore]",
   "genkit-google-genai",
   "genkit-mcp",
   "genkit-middleware",

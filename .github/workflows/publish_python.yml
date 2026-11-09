@@ -65,9 +65,11 @@ jobs:
             packages/genkit-flask
             packages/genkit-google-cloud
             packages/genkit-google-genai
+            packages/genkit-mcp
             packages/genkit-middleware
             packages/genkit-ollama
             packages/genkit-openai
+            packages/genkit-otel
             packages/genkit-vertexai
           )
 

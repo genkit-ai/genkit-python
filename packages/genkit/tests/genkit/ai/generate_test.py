@@ -3122,6 +3122,7 @@ async def test_middleware_contributed_tool_resolvable_during_restart() -> None:
 # run tests from /tests/specs/generate.yaml
 ##########################################################################
 
+
 def _find_generate_spec() -> pathlib.Path:
     import os
     import urllib.request
@@ -3139,12 +3140,16 @@ def _find_generate_spec() -> pathlib.Path:
         if sibling.is_file():
             return sibling
 
-    cache_dir = pathlib.Path('/tmp/genkit-specs')
+    import tempfile
+
+    cache_dir = pathlib.Path(tempfile.gettempdir()) / 'genkit-specs'
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / 'generate.yaml'
     if not cached.is_file():
+        tmp_file = cache_dir / f'generate.{os.getpid()}.tmp'
         url = 'https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/generate.yaml'
-        urllib.request.urlretrieve(url, cached)
+        urllib.request.urlretrieve(url, tmp_file)
+        os.replace(tmp_file, cached)
     return cached
 
 

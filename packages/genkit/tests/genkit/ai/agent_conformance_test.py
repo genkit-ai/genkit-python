@@ -87,12 +87,16 @@ def spec_path() -> pathlib.Path:
         if sibling.is_file():
             return sibling
 
-    cache_dir = pathlib.Path('/tmp/genkit-specs')
+    import tempfile
+
+    cache_dir = pathlib.Path(tempfile.gettempdir()) / 'genkit-specs'
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / 'agent.yaml'
     if not cached.is_file():
+        tmp_file = cache_dir / f'agent.{os.getpid()}.tmp'
         url = 'https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/agent.yaml'
-        urllib.request.urlretrieve(url, cached)
+        urllib.request.urlretrieve(url, tmp_file)
+        os.replace(tmp_file, cached)
     return cached
 
 

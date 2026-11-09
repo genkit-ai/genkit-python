@@ -87,10 +87,10 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-    matrix:
-      include:
-        - sample: ollama-sample
-          models: "gemma3:1b"
+      matrix:
+        include:
+          - sample: ollama-sample
+            models: "gemma3:1b"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 

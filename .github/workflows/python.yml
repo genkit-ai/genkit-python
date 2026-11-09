@@ -173,6 +173,14 @@ jobs:
       - name: Generate schema typing
         run: ./bin/generate_schema_typing --ci
 
+      - name: Fetch cross-SDK conformance specs
+        run: |
+          SPEC_DIR="${RUNNER_TEMP:-/tmp}/genkit-specs"
+          mkdir -p "$SPEC_DIR"
+          curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/agent.yaml -o "$SPEC_DIR/agent.yaml"
+          curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/generate.yaml -o "$SPEC_DIR/generate.yaml"
+          echo "GENKIT_SPECS_DIR=$SPEC_DIR" >> "$GITHUB_ENV"
+
       - name: Run tests
         env:
           PY_VER: ${{ matrix.python-version }}

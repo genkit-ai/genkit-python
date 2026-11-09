@@ -125,5 +125,5 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
-          pip install "genkit==${VERSION}"
+          pip install --retries 10 "genkit==${VERSION}"
           python -c "from genkit import Genkit; Genkit(); print('ok')"

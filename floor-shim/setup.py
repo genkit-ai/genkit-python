@@ -122,7 +122,7 @@ if sys.version_info < MIN_PYTHON and not _METADATA_ONLY_COMMANDS.intersection(sy
 # here (after the version guard, so old interpreters still get the upgrade
 # box) makes sdist-only self-enforcing instead of workflow-flag-dependent.
 if 'bdist_wheel' in sys.argv[1:]:
-    sys.exit('The genkit floor shim is sdist-only; refusing to build a wheel. See py/floor-shim/README.md.')
+    sys.exit('The genkit floor shim is sdist-only; refusing to build a wheel. See floor-shim/README.md.')
 
 from setuptools import setup  # noqa: E402
 

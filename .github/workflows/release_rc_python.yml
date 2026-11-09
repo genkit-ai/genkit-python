@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          token: ${{ secrets.GENKIT_RELEASER_GITHUB_TOKEN }}
+          token: ${{ secrets.GENKIT_RELEASER_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Pull latest & fetch tags

@@ -77,7 +77,7 @@ jobs:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -m py_compile src/main.py
+          uv run python -m compileall -q .
           echo "Sample $SAMPLE_NAME syntax OK"
 
   ollama-samples:
@@ -116,5 +116,5 @@ jobs:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -m py_compile src/main.py
+          uv run python -m compileall -q .
           echo "Sample $SAMPLE_NAME syntax OK"

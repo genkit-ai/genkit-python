@@ -22,6 +22,7 @@ Logs reach the Developer UI through Genkit's own log exporter, not here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import secrets
@@ -108,6 +109,10 @@ class DirectSpanContext:
         self._span.attributes[Attr.STATE] = state
         if state == State.ERROR:
             self._span.status_code = 2
+
+    def set_status_message(self, message: str) -> None:
+        self._span.attributes[Attr.ERROR] = message
+        self._span.status_message = message
 
 
 def now_unix_nano() -> int:
@@ -261,6 +266,8 @@ class DirectHttpInstrumentation:
             start_time_unix_nano=now_unix_nano(),
             attributes=start_attributes(metadata, qualified_path=qualified_path, is_action=is_action),
         )
+        if parent is None:
+            span.attributes[Attr.IS_ROOT] = True
         self.sink.export_spans([span], resource_attributes=self.resource_attributes)
         path_token = parent_path_context.set(qualified_path)
         parent_token = _parent_span.set(span)
@@ -274,9 +281,12 @@ class DirectHttpInstrumentation:
                     span.attributes[Attr.STATE] = State.SUCCESS
                     span.status_code = 1
                 return result
-            except Interrupt:
-                span.attributes[Attr.STATE] = State.SUCCESS
-                span.status_code = 1
+            except Interrupt as e:
+                # the Dev UI draws an interrupted tool from the error state plus
+                # genkit:metadata:interrupt; generate above it still succeeds.
+                span.attributes[Attr.STATE] = State.ERROR
+                span.status_code = 2
+                mark_failure_source(span=span, exc=e)
                 raise
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -287,6 +297,7 @@ class DirectHttpInstrumentation:
                 span.attributes[Attr.ERROR] = err_text
                 span.status_code = 2
                 span.status_message = str(actual)
+                mark_failure_source(span=span, exc=actual)
                 raise
         finally:
             span.end_time_unix_nano = now_unix_nano()
@@ -308,6 +319,25 @@ class DevUIInstrumentation(DirectHttpInstrumentation):
     used in tests is a plain DirectHttpInstrumentation and does not
     count as the Traces tab already being on.
     """
+
+
+# Set on an exception once the span it was raised in claims it. Every span it
+# then passes through still turns red, but only the first one says the failure
+# started there, so the Traces tab can point at the culprit.
+FAILURE_SOURCE_MARK = '_genkit_failure_source'
+
+
+def mark_failure_source(*, span: ActiveSpan, exc: BaseException) -> None:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if getattr(current, FAILURE_SOURCE_MARK, False):
+            return
+        seen.add(id(current))
+        current = current.__cause__
+    span.attributes[Attr.IS_FAILURE_SOURCE] = True
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, FAILURE_SOURCE_MARK, True)
 
 
 def reset_parent_span() -> None:

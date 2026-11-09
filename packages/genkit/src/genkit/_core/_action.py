@@ -1655,8 +1655,9 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 else:
                     output = await self._invoke(input, ctx)
             except Interrupt as e:
-                if e.metadata:
-                    span.set_metadata({'interrupt': e.metadata})
+                # the Dev UI shows the interrupted icon off this key, so a bare
+                # interrupt with nothing to say still needs it.
+                span.set_metadata({'interrupt': e.metadata or True})
                 # Only generate's tool loop turns an Interrupt into a pause.
                 # With no tool above, it is a BaseException that `except
                 # Exception` handlers (web adapters, agent transports) would

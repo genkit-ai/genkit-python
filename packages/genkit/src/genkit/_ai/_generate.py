@@ -793,6 +793,13 @@ def start_generate_stream(
     return StoppableStream(chunks=channel, stop=stop_model), task
 
 
+def failed_span_message(response: ModelResponse) -> str | None:
+    """Status text for a generate span whose response came back failed."""
+    if response._failure is not None:
+        return response._failure.trace_message or response._failure.message
+    return response.error.message if response.error is not None else None
+
+
 def define_generate_action(ai: _aio.Genkit) -> None:
     """Register the generation action triggered by the Dev UI."""
 
@@ -808,7 +815,7 @@ def define_generate_action(ai: _aio.Genkit) -> None:
             context=dict(ctx.context),
         )
         if response.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(response))
         return response
 
     _ = ai._registry.register_action(
@@ -851,7 +858,7 @@ async def generate_action(
             context=context,
         )
         if result.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(result))
         return result
 
     return await run_in_new_span('generate', body, action_type='util', input=options)
@@ -1835,7 +1842,7 @@ async def generate_turn(
             resolved=resolved,
         )
         if result.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(result))
         return result
 
     return await hop(

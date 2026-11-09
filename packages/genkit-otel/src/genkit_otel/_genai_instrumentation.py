@@ -460,6 +460,9 @@ class GenAiSpanContext(SpanContext):
         if state == 'error':
             self._span.set_status(StatusCode.ERROR)
 
+    def set_status_message(self, message: str) -> None:
+        self._span.set_status(StatusCode.ERROR, message)
+
 
 def _content_capturing_mode_from_env() -> ContentCapturingMode:
     raw = os.environ.get(CAPTURE_CONTENT_ENV_VAR, '')

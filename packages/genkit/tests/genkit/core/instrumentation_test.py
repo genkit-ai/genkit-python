@@ -182,6 +182,46 @@ async def test_set_span_state_writes_to_every_backend() -> None:
     assert b.spans[0].states == ['error']
 
 
+class MessageRecordingSpan(RecordedSpan):
+    def __init__(self, label: str) -> None:
+        super().__init__(label)
+        self.messages: list[str] = []
+
+    def set_status_message(self, message: str) -> None:
+        self.messages.append(message)
+
+
+class MessageRecordingInstrumentation(FakeInstrumentation):
+    async def run_in_new_span(
+        self,
+        metadata: SpanMetadata,
+        next: Callable[[SpanContext], Awaitable[object]],
+    ) -> object:
+        span = MessageRecordingSpan(self.label)
+        self.spans.append(span)
+        return await next(span)
+
+
+@pytest.mark.asyncio
+async def test_custom_backend_without_status_message_still_turns_red_and_one_with_it_gets_the_cause() -> None:
+    """A backend that only has set_state still records the error; one with set_status_message also gets why."""
+    log: list[str] = []
+    old = FakeInstrumentation('old', log)
+    new = MessageRecordingInstrumentation('new', log)
+    configure_instrumentation(old)
+    configure_instrumentation(new)
+
+    async def body(_span: SpanContext) -> None:
+        set_span_state('error', message='tool exploded')
+
+    await run_in_new_span('op', body)
+    assert old.spans[0].states == ['error']
+    new_span = new.spans[0]
+    assert isinstance(new_span, MessageRecordingSpan)
+    assert new_span.states == ['error']
+    assert new_span.messages == ['tool exploded']
+
+
 def test_configure_rejects_a_non_instrumentation() -> None:
     """configure_instrumentation(object()) raises; it does not silently no-op."""
     with pytest.raises(TypeError, match='Instrumentation instance'):

@@ -30,6 +30,7 @@ from genkit._core._telemetry._instrumentation import (
     SpanContext,
     SpanMetadata,
     SpanNext,
+    StatusMessageSpanContext,
     configure_instrumentation,
     flush_instrumentations,
     is_instrumented_by,
@@ -46,6 +47,7 @@ __all__ = [
     'SpanContext',
     'SpanMetadata',
     'SpanNext',
+    'StatusMessageSpanContext',
     'configure_instrumentation',
     'run_in_new_span',
     # App helpers

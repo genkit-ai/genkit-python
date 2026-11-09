@@ -88,6 +88,17 @@ class SpanContext(Protocol):
 
 
 @runtime_checkable
+class StatusMessageSpanContext(Protocol):
+    """Optional: a span that can say why it failed.
+
+    After ``set_state('error')`` on a generate that returned a failure, genkit
+    passes the cause here so the trace reads "tool exploded", not just red.
+    """
+
+    def set_status_message(self, message: str) -> None: ...
+
+
+@runtime_checkable
 class Instrumentation(Protocol):
     """Pluggable provider. ``run_in_new_span`` wraps ``next`` like middleware."""
 
@@ -255,11 +266,14 @@ def set_custom_metadata_attributes(attributes: Mapping[str, object]) -> None:
         span.set_metadata(attributes)
 
 
-def set_span_state(state: SpanState) -> None:
-    """Write genkit:state on the active span. No-op outside a span."""
+def set_span_state(state: SpanState, *, message: str | None = None) -> None:
+    """Write genkit:state (and an error's status text) on the active span. No-op outside a span."""
     span = current_span.get()
-    if span is not None:
-        span.set_state(state)
+    if span is None:
+        return
+    span.set_state(state)
+    if message and isinstance(span, StatusMessageSpanContext):
+        span.set_status_message(message)
 
 
 async def run_in_new_span(
@@ -363,6 +377,12 @@ class CompositeSpanContext:
         for span in self._spans:
             with contextlib.suppress(Exception):
                 span.set_state(state)
+
+    def set_status_message(self, message: str) -> None:
+        for span in self._spans:
+            if isinstance(span, StatusMessageSpanContext):
+                with contextlib.suppress(Exception):
+                    span.set_status_message(message)
 
     def _first_non_empty(self, get: Callable[[SpanContext], str]) -> str:
         for span in self._spans:

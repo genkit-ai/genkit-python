@@ -12,14 +12,21 @@ plugins:
         python:
           paths: 
             - packages/genkit/src
-            - packages/genkit/src/genkit/_ai
-            - packages/genkit/src/genkit/_core
-            - packages/genkit-ollama/src
-            - packages/genkit-google-genai/src
-            - packages/genkit-google-cloud/src
-            - packages/genkit-vertexai/src
+            - packages/genkit-a2ui/src
+            - packages/genkit-amazon-bedrock/src
+            - packages/genkit-anthropic/src
+            - packages/genkit-django/src
+            - packages/genkit-evaluators/src
             - packages/genkit-fastapi/src
             - packages/genkit-flask/src
+            - packages/genkit-google-cloud/src
+            - packages/genkit-google-genai/src
+            - packages/genkit-mcp/src
+            - packages/genkit-middleware/src
+            - packages/genkit-ollama/src
+            - packages/genkit-openai/src
+            - packages/genkit-otel/src
+            - packages/genkit-vertexai/src
           options:
             docstring_style: google
             annotations_path: full
@@ -29,5 +36,5 @@ plugins:
 nav:
   - API Reference:
     - Index: index.md
-    - Types: types.md
+    - Migration from 0.12: migrating-from-0.12.md
     - Release Playbook: release_playbook.md

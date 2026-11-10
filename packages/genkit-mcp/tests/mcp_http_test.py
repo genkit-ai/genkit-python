@@ -244,18 +244,19 @@ async def test_a_refused_request_leaves_no_session_behind() -> None:
     async with app.router.lifespan_context(app):
         async with http_client(app) as http:
             statuses = [
-                (await http.post('/mcp', headers={**accept, **refused}, json=INITIALIZE)).status_code
-                for refused in ({'host': 'evil.example'}, {'origin': 'http://evil.example'})
+                (await http.post('/mcp', headers={**accept, **headers}, json=INITIALIZE)).status_code
+                for headers in ({}, {'host': 'evil.example'}, {'origin': 'http://evil.example'})
             ]
-            sessions = dict(route.endpoint.manager._server_instances)
+            sessions = len(route.endpoint.manager._server_instances)
 
-    assert statuses == [421, 403]
-    assert sessions == {}
+    assert statuses == [200, 421, 403]
+    assert sessions == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'origin', ['http://localhost', 'http://localhost:5173', 'https://localhost:3000', 'https://127.0.0.1']
+    'origin',
+    ['http://localhost', 'http://localhost:5173', 'https://localhost:3000', 'https://127.0.0.1', 'https://[::1]:8443'],
 )
 async def test_a_local_origin_is_served(origin: str) -> None:
     server = create_mcp_server(app_with_tools(), 'bookshop')
@@ -302,10 +303,11 @@ def test_a_single_string_for_allowed_origins_is_refused() -> None:
 
 class RecordingEventStore(EventStore):
     def __init__(self) -> None:
-        self.stored: list[StreamId] = []
+        self.stored: list[str] = []
 
     async def store_event(self, stream_id: StreamId, message: JSONRPCMessage | None) -> EventId:
-        self.stored.append(stream_id)
+        if message is not None:
+            self.stored.append(message.model_dump_json(exclude_none=True))
         return str(len(self.stored))
 
     async def replay_events_after(self, last_event_id: EventId, send_callback: EventCallback) -> StreamId | None:
@@ -320,7 +322,7 @@ async def test_a_stateful_app_records_events_in_the_given_store() -> None:
     async with session_over(server.asgi_app(event_store=store)) as session:
         await session.call_tool('ping', {})
 
-    assert store.stored
+    assert any('"text":"pong"' in message for message in store.stored)
 
 
 def test_an_event_store_on_a_stateless_app_is_refused() -> None:

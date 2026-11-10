@@ -568,6 +568,11 @@ except GenkitError as e:
 ```python
 res = await ai.generate(model=m, prompt=p)
 if res.error and res.error.status == 'UNAVAILABLE': ...
+
+try:
+    await ai.embed(embedder=e, content=doc)
+except GenkitError as err:
+    if err.status == 'UNAVAILABLE': ...
 ```
 
 ## Interrupts and except Exception

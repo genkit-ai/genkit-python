@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 import pytest
 
@@ -27,7 +27,9 @@ from genkit import Genkit, Message, ModelResponse
 from genkit._core._error import GenkitError
 from genkit._core._telemetry._attrs import Attr
 from genkit._core._telemetry._http import ActiveSpan
+from genkit._core._telemetry._instrumentation import run_in_new_span
 from genkit._core._typing import FinishReason, Role
+from genkit.middleware import GenerateHookParams, Middleware, MiddlewareContext
 from genkit.model import ModelContext, ModelRequest
 
 
@@ -79,13 +81,20 @@ def _tree(spans: Sequence[ActiveSpan]) -> list[tuple[str, str | None, int]]:
 
     def depth(s: ActiveSpan) -> int:
         d = 0
-        while s.parent_span_id in by_id:
+        while s.parent_span_id is not None and s.parent_span_id in by_id:
             s = by_id[s.parent_span_id]
             d += 1
         return d
 
     ordered = sorted(spans, key=lambda s: s.start_time_unix_nano)
-    return [(s.name, by_id[s.parent_span_id].name if s.parent_span_id in by_id else None, depth(s)) for s in ordered]
+    return [
+        (
+            s.name,
+            by_id[s.parent_span_id].name if s.parent_span_id is not None and s.parent_span_id in by_id else None,
+            depth(s),
+        )
+        for s in ordered
+    ]
 
 
 def _generate_spans(spans: Sequence[ActiveSpan]) -> list[ActiveSpan]:
@@ -240,3 +249,90 @@ async def test_generate_without_tools_has_a_single_generate_span(exporter) -> No
     ]
     (outer,) = _generate_spans(exporter.get_finished_spans())
     assert outer.attributes[Attr.STATE] == 'success'
+
+
+@pytest.mark.asyncio
+async def test_wrap_generate_runs_inside_each_turns_generate_span(exporter) -> None:
+    """wrap_generate hooks run inside each turn's generate span (matching JS)."""
+    ai = Genkit()
+    _weather_tools(ai)
+    _fake_model(ai, [_tool_call('get_weather'), _answer('done')])
+
+    @ai.middleware(name='turn_mw')
+    class TurnMw(Middleware):
+        name = 'turn_mw'
+
+        async def wrap_generate(
+            self,
+            params: GenerateHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            async def run_next(_span: object) -> ModelResponse:
+                return await next_fn(params, ctx)
+
+            return await run_in_new_span(f'mw_turn_{params.iteration}', run_next)
+
+    response = await ai.generate(model='fake', prompt='weather in Paris', tools=['get_weather'], use=[TurnMw()])
+
+    assert response.text == 'done'
+    assert _tree(exporter.get_finished_spans()) == [
+        ('generate', None, 0),
+        ('mw_turn_0', 'generate', 1),
+        ('fake', 'mw_turn_0', 2),
+        ('get_weather', 'mw_turn_0', 2),
+        ('generate', 'mw_turn_0', 2),
+        ('mw_turn_1', 'generate', 3),
+        ('fake', 'mw_turn_1', 4),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_nests_second_turn_in_its_own_generate_span(exporter) -> None:
+    """generate_stream produces the same nested per-turn generate spans as generate."""
+    ai = Genkit()
+    _weather_tools(ai)
+    _fake_model(ai, [_tool_call('get_weather'), _answer('done')])
+
+    stream_resp = ai.generate_stream(model='fake', prompt='weather in Paris', tools=['get_weather'])
+    async for _ in stream_resp.stream:
+        pass
+    response = await stream_resp.response
+
+    assert response.text == 'done'
+    assert _tree(exporter.get_finished_spans()) == [
+        ('generate', None, 0),
+        ('fake', 'generate', 1),
+        ('get_weather', 'generate', 1),
+        ('generate', 'generate', 1),
+        ('fake', 'generate', 2),
+    ]
+    outer, inner = _generate_spans(exporter.get_finished_spans())
+    assert [s.attributes[Attr.STATE] for s in (outer, inner)] == ['success', 'success']
+
+
+@pytest.mark.asyncio
+async def test_interrupt_on_second_turn_stops_at_second_turn_generate_span(exporter) -> None:
+    """An interrupt tool on turn 2 runs inside turn 2's generate span and stops the loop cleanly."""
+    ai = Genkit()
+    _weather_tools(ai)
+    ai.define_interrupt('confirm', description='Ask before deleting')
+    _fake_model(ai, [_tool_call('get_weather'), _tool_call('confirm'), _answer('unreachable')])
+
+    response = await ai.generate(
+        model='fake',
+        prompt='weather in Paris',
+        tools=['get_weather', 'confirm'],
+    )
+
+    assert response.finish_reason == FinishReason.INTERRUPTED
+    assert _tree(exporter.get_finished_spans()) == [
+        ('generate', None, 0),
+        ('fake', 'generate', 1),
+        ('get_weather', 'generate', 1),
+        ('generate', 'generate', 1),
+        ('fake', 'generate', 2),
+        ('confirm', 'generate', 2),
+    ]
+    outer, inner = _generate_spans(exporter.get_finished_spans())
+    assert [s.attributes[Attr.STATE] for s in (outer, inner)] == ['success', 'success']

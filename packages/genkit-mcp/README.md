@@ -200,21 +200,23 @@ The app's tools are read with `ai.list_tools()` on every `tools/list`, so a tool
 server was built is still served. A tool whose input is not an object, such as a single scalar or an
 optional model, is skipped: MCP arguments are always an object, and such a tool is not callable by
 name either, rather than being listed and then failing. A model that refers to itself is served.
-An output schema is advertised only for a tool defined with `@ai.tool()` that returns an object
-itself, such as `-> Shelf`. A client rejects a result that lacks the structured content a schema
-promised, and a tool returning `MultipartToolResponse[Shelf]` may leave its output out. Tools a
-dynamic action provider supplies, from `define_mcp_client` for instance, are not defined on the app
-and are not served.
+An output schema is advertised only for a tool built as a `Tool`, as `@ai.tool()` builds one, that
+returns an object itself, such as `-> Shelf`. A client rejects a result that lacks the structured
+content a schema promised, and a tool returning `MultipartToolResponse[Shelf]` may leave its output
+out. Tools a dynamic action provider supplies, from `define_mcp_client` for instance, are not
+defined on the app and are not served.
 
-A tool that raises answers with an error result, worded as a served flow's error body is. A
-`PublicError` sends its status and message, and arguments the tool's input model rejects send the
-failing fields without their values. Any other `GenkitError` sends `Tool '<name>' failed: <status>`,
-and any other exception `Tool '<name>' failed`, since a provider's error text can name a project, a
-resource path or a URL. So raise a `PublicError` for a failure the model should read and retry. The
-full error is logged on the server either way. A tool that interrupts for the user's input answers
-with an error result saying so, since MCP cannot pause a call, and so does a result that cannot be
-encoded as UTF-8. A plugin that fails to start fails the listing, and the client is told only that
-the server could not list its tools.
+Arguments that do not match a tool's input schema are rejected by the MCP SDK before the tool runs,
+with an error that quotes them. A tool that raises answers with an error result, worded as a served
+flow's error body is. A `PublicError` sends its status and message, and arguments the input model's
+own validators reject send the failing fields without their values. Any other `GenkitError` sends
+`Tool '<name>' failed: <status>`, and any other exception `Tool '<name>' failed`, since a provider's
+error text can name a project, a resource path or a URL. So raise a `PublicError` for a failure the
+model should read and retry. The full error is logged on the server either way. A tool that
+interrupts for the user's input answers with an error result saying so, since MCP cannot pause a
+call. A result that cannot be encoded as UTF-8 answers with `Tool '<name>' failed`. A plugin that
+fails to start fails the listing, and the client is told only that the server could not list its
+tools.
 
 ### stdio
 
@@ -241,8 +243,7 @@ input is not an object is not served at all, and an output schema is advertised 
 above, so a client is told less about such a tool than Genkit knows. The advertised schema is the
 one Genkit validates input against, so an output model whose dumped JSON differs from it, through a
 `serialization_alias` or a `computed_field` on a model that forbids extra fields, fails the client's
-check of the result. Nothing sends
-`notifications/tools/list_changed`; the list is re-read per request instead. A client's
-`notifications/cancelled` cancels the tool call. Progress, sampling and elicitation are not
-supported. A plugin-namespaced tool name carries a `/`, which the MCP SDK warns about. stdio reads
-and writes UTF-8 whatever the locale, but is untested on Windows.
+check of the result. Nothing sends `notifications/tools/list_changed`; the list is re-read per
+request instead. A client's `notifications/cancelled` cancels the tool call. Progress, sampling and
+elicitation are not supported. A plugin-namespaced tool name carries a `/`, which the MCP SDK warns
+about. stdio reads and writes UTF-8 whatever the locale, but is untested on Windows.

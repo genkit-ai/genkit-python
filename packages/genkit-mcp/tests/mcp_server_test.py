@@ -251,11 +251,41 @@ async def test_a_result_that_cannot_be_encoded_is_an_error_result() -> None:
         """Name a file."""
         return 'notes-\udcff.txt'
 
-    async with connected(create_mcp_server(ai, 'bookshop')) as session:
-        result = await session.call_tool('filename', {})
+    @ai.tool()
+    async def missing() -> str:
+        """Report a file that is not there."""
+        raise PublicError(status='NOT_FOUND', message='no file notes-\udcff.txt')
 
-    assert result.isError is True
-    assert text_of(result) == "Tool 'filename' failed"
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        returned = await session.call_tool('filename', {})
+        raised = await session.call_tool('missing', {})
+
+    assert (returned.isError, text_of(returned)) == (True, "Tool 'filename' failed")
+    assert (raised.isError, text_of(raised)) == (True, "Tool 'missing' failed")
+
+
+@pytest.mark.asyncio
+async def test_a_tool_registered_again_under_its_name_is_described_afresh() -> None:
+    """A plugin may hand the same metadata to a replacement, so the description follows what it is built from."""
+    ai = app()
+    metadata: dict[str, object] = {}
+
+    async def lookup(_: dict[str, object]) -> str:
+        return 'found'
+
+    def register(input_schema: dict[str, object]) -> None:
+        action = Action(kind=ActionKind.TOOL, name='lookup', fn=lookup, metadata=metadata)
+        action.input_schema = input_schema
+        ai._registry.register_action_from_instance(action)
+
+    register({'type': 'object', 'properties': {'isbn': {'type': 'string'}}})
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        before = await session.list_tools()
+        register({'type': 'object', 'properties': {'title': {'type': 'string'}}})
+        after = await session.list_tools()
+
+    assert list(before.tools[0].inputSchema['properties']) == ['isbn']
+    assert list(after.tools[0].inputSchema['properties']) == ['title']
 
 
 @pytest.mark.asyncio

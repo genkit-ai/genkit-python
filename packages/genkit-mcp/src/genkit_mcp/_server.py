@@ -71,7 +71,7 @@ class McpServer:
         self._name = name
         self._version = version
         self._redirect_stdout = redirect_stdout
-        self._described: dict[str, tuple[dict[str, Any], McpTool | None]] = {}
+        self._described: dict[str, tuple[tuple[object, ...], McpTool | None]] = {}
         self._server: Server[Any, Any] = Server(name, version=version, instructions=instructions)
         self._server.list_tools()(self._list_tools)
         self._server.call_tool()(self._call_tool)
@@ -113,9 +113,9 @@ class McpServer:
         processes can neither write between frames nor read them.
         """
         stdin, stdout = _wire_files()
-        if self._redirect_stdout:
-            _move_stdio_off_the_wire()
         with stdin, stdout:
+            if self._redirect_stdout:
+                _move_stdio_off_the_wire()
             async with stdio_server(stdin=anyio.wrap_file(stdin), stdout=anyio.wrap_file(stdout)) as streams:
                 await self.serve(*streams)
 
@@ -137,10 +137,11 @@ class McpServer:
         served: list[tuple[Tool, McpTool]] = []
         for tool in tools:
             # A plain tool action comes back as a new view on every listing, so
-            # the description is keyed by name and the metadata the view shares.
+            # the description is keyed by name and by everything it is built from.
+            source = _description_source(tool)
             cached = self._described.get(tool.name)
-            if cached is None or cached[0] is not tool.metadata:
-                cached = (tool.metadata, tool_to_mcp(tool))
+            if cached is None or cached[0] != source:
+                cached = (source, tool_to_mcp(tool))
                 self._described[tool.name] = cached
             described = cached[1]
             if described is not None:
@@ -149,6 +150,20 @@ class McpServer:
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         """Run one tool and map what it returned, reporting every failure as a result.
+
+        A result that cannot be encoded, such as text with a lone surrogate,
+        fails here rather than in the transport, where it would end the session.
+        """
+        result = await self._answer(name, arguments)
+        try:
+            result.model_dump_json(by_alias=True, exclude_none=True)
+        except ValueError:
+            logger.exception('an MCP tool result could not be encoded', tool=name)
+            return error_result(f'Tool {name!r} failed')
+        return result
+
+    async def _answer(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
+        """Run one tool and map what it returned or raised.
 
         A raised error becomes an ``isError`` result and is logged here, where
         its traceback is still useful.
@@ -159,11 +174,7 @@ class McpServer:
 
         context = self._request_context()
         try:
-            result = multipart_to_call_result(await _run(tool, arguments, context), name)
-            # Fail here rather than in the transport, where a result that cannot
-            # be encoded, such as text with a lone surrogate, ends the session.
-            result.model_dump_json(by_alias=True, exclude_none=True)
-            return result
+            return multipart_to_call_result(await _run(tool, arguments, context), name)
         except Interrupt:
             logger.warning('an MCP tool call paused for input, which MCP cannot ask for', tool=name)
             return error_result(f'Tool {name!r} paused for input from the user, which this server cannot ask for')
@@ -204,7 +215,8 @@ def create_mcp_server(
         name: Name the server advertises.
         version: Version the server advertises.
         instructions: How a client should use this server.
-        redirect_stdout: Whether ``start`` moves this process's stdout to stderr.
+        redirect_stdout: Whether ``start`` moves this process's stdout to stderr
+            and its stdin to the null device.
 
     Returns:
         A server ready for ``start`` or ``serve``.
@@ -215,6 +227,18 @@ def create_mcp_server(
         version=version,
         instructions=instructions,
         redirect_stdout=redirect_stdout,
+    )
+
+
+def _description_source(tool: Tool) -> tuple[object, ...]:
+    """Everything ``tool_to_mcp`` reads, so an unchanged tool reuses its description."""
+    return (
+        tool.description,
+        tool.input_schema,
+        tool.output_schema,
+        tool.model_output_schema,
+        tool.wire_action is None,
+        tool.metadata.get('mcp'),
     )
 
 
@@ -278,9 +302,9 @@ def _move_stdio_off_the_wire() -> None:
     bound to the originals. Rebinding ``sys.stdout`` covers ``print`` and
     structlog's default logger, which reads ``sys.stdout`` on every call.
     """
-    os.dup2(2, 1)
     null = os.open(os.devnull, os.O_RDONLY)
     try:
+        os.dup2(2, 1)
         os.dup2(null, 0)
     finally:
         os.close(null)

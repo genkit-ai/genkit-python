@@ -83,8 +83,12 @@ def spec_path(relative: str, *, start: pathlib.Path | None = None) -> pathlib.Pa
     cached = cache_dir / name
     if not cached.is_file():
         tmp_file = cache_dir / f'{name}.{os.getpid()}.tmp'
-        urllib.request.urlretrieve(SPEC_UPSTREAM + relative, tmp_file)  # noqa: S310 - fixed https URL
-        os.replace(tmp_file, cached)
+        try:
+            urllib.request.urlretrieve(SPEC_UPSTREAM + relative, tmp_file)  # noqa: S310 - fixed https URL
+            os.replace(tmp_file, cached)
+        except BaseException:
+            tmp_file.unlink(missing_ok=True)
+            raise
     return cached
 
 
@@ -179,6 +183,8 @@ async def test_reflection_api_spec(test: dict[str, Any]) -> None:
     """Each request in reflection_api.yaml gets 200 and a body matching the spec."""
     app = create_reflection_asgi_app(build_test_app()._registry)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        health = await client.get('/api/__health')
+        assert health.status_code == 200
         if 'post' in test:
             response = await client.post(test['path'], json=test['post'])
         else:

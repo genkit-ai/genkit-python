@@ -73,8 +73,12 @@ def spec_path(relative: str, *, start: pathlib.Path | None = None) -> pathlib.Pa
     cached = cache_dir / name
     if not cached.is_file():
         tmp_file = cache_dir / f'{name}.{os.getpid()}.tmp'
-        urllib.request.urlretrieve(SPEC_UPSTREAM + relative, tmp_file)  # noqa: S310 - fixed https URL
-        os.replace(tmp_file, cached)
+        try:
+            urllib.request.urlretrieve(SPEC_UPSTREAM + relative, tmp_file)  # noqa: S310 - fixed https URL
+            os.replace(tmp_file, cached)
+        except BaseException:
+            tmp_file.unlink(missing_ok=True)
+            raise
     return cached
 
 
@@ -113,7 +117,9 @@ def parse_flow_stream(body: str) -> tuple[list[Any], Any]:
     buffer = body
     while FLOW_STREAM_DELIMITER in buffer:
         frame, buffer = buffer.split(FLOW_STREAM_DELIMITER, 1)
-        payload = json.loads(frame[len('data: ') :])
+        if not frame.startswith('data: '):
+            raise AssertionError(f'expected SSE data: prefix, got {frame!r}')
+        payload = json.loads(frame.removeprefix('data: '))
         if 'message' in payload:
             chunks.append(payload['message'])
         elif 'result' in payload:
@@ -143,6 +149,9 @@ async def test_flow_server_spec(test: dict[str, Any]) -> None:
     want_result: str = test['response']['result']
 
     async with AsyncClient(transport=ASGITransport(app=build_flow_server()), base_url='http://test') as client:
+        # Non-SSE probe sent by tests/src/flow_server_test.ts before streaming tests run.
+        probe = await client.post(f'/{test["path"]}', json={'data': 1})
+        assert probe.status_code == 200
         response = await client.post(
             f'/{test["path"]}',
             json={'data': data},
@@ -173,6 +182,8 @@ def test_parse_flow_stream_follows_client_envelope() -> None:
         parse_flow_stream('data: {"message":{"count":0}}\n\n')
     with pytest.raises(AssertionError, match='unknown chunk format'):
         parse_flow_stream('data: {"order":"ramen"}\n\n')
+    with pytest.raises(AssertionError, match='expected SSE data: prefix'):
+        parse_flow_stream('event: {"result":"done"}\n\n')
 
 
 def test_spec_path_downloads_flow_server_spec_from_tests_root(

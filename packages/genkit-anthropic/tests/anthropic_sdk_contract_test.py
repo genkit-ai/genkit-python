@@ -48,6 +48,6 @@ def test_sdk_transport_is_httpx() -> None:
 
 def test_declared_anthropic_range_excludes_1x() -> None:
     """``genkit-anthropic`` caps ``anthropic`` below 1.0 until it supports 1.x."""
-    reqs = [r for r in requires('genkit-anthropic') or [] if re.match(r'anthropic\b', r)]
+    reqs = [Requirement(r) for r in requires('genkit-anthropic') or [] if re.match(r'anthropic\b', r)]
     assert len(reqs) == 1, reqs
-    assert '<1' in reqs[0].replace(' ', ''), reqs[0]
+    assert '1.0.0' not in reqs[0].specifier, reqs[0]

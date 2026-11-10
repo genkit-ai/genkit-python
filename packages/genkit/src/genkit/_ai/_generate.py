@@ -286,10 +286,12 @@ def register_middleware(
 ) -> list[MiddlewareRef] | None:
     """Normalize ``use=`` to ``MiddlewareRef`` entries (name + config only).
 
-    Inline ``Middleware`` instances are not stored on the registry. Their
-    config is serialized onto the ref and, when the class is not registered on
-    a parent registry, a ``_MiddlewareMetadata`` is registered on this layer so
-    ``resolve_middleware_from_use`` can build a fresh instance per ``generate()``.
+    Inline ``Middleware`` instances keep their config on the ref for traces
+    and the Dev UI. When the class is not registered on a parent registry, a
+    ``_MiddlewareMetadata`` is registered on this layer under a synthetic
+    name. The instances themselves are stored on this layer so
+    ``resolve_middleware_from_use`` hands back the caller's instance instead
+    of rebuilding it from the serialized config.
     """
     if use is None:
         return None
@@ -307,8 +309,8 @@ def register_middleware(
             # with any globally registered middleware.
             mw_cls = type(entry)
             registered = cls_index.get(mw_cls)
-            # Each ref carries its own config and resolves to a fresh instance,
-            # so the same registered name can appear more than once.
+            # Each entry keeps its own instance and ref, so the same
+            # registered name can appear more than once.
             reg_name = registered or f'dynamic-middleware-{i}-{secrets.token_hex(5)}'
             if registered is None:
                 registry.register_value(

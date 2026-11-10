@@ -170,6 +170,7 @@ async def test_google_ai_sends_requests_through_your_http_client() -> None:
     ai = Genkit(plugins=[plugin])
 
     await plugin.init()
+    await plugin.list_actions()
     response = await ai.generate(model='googleai/gemini-2.5-flash', prompt='Suggest a dish.')
 
     assert response.text == 'Smoked Salmon Tartine'
@@ -185,6 +186,7 @@ async def test_vertex_ai_sends_requests_through_your_http_client() -> None:
     ai = Genkit(plugins=[plugin])
 
     await plugin.init()
+    await plugin.list_actions()
     response = await ai.generate(
         model='vertexai/gemini-2.5-flash',
         prompt='Suggest a dish.',

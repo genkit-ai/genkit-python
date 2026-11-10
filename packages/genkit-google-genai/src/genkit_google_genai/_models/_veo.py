@@ -21,7 +21,7 @@ Veo is Google's video generation model that creates videos from text prompts.
 
 import base64
 from collections.abc import Mapping
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
 from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
@@ -56,6 +56,9 @@ KnownVertexAIVeo: TypeAlias = Literal[
     'veo-3.1-fast-generate-001',
     'veo-3.1-lite-generate-001',
 ]
+
+GOOGLEAI_KNOWN_VEO: tuple[str, ...] = get_args(KnownGoogleAIVeo)
+VERTEX_KNOWN_VEO: tuple[str, ...] = get_args(KnownVertexAIVeo)
 
 VideoCompressionQuality: TypeAlias = Literal['OPTIMIZED', 'LOSSLESS']
 """Values of ``genai_types.VideoCompressionQuality``."""

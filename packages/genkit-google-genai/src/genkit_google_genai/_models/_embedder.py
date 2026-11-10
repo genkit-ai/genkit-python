@@ -122,6 +122,15 @@ EMBEDDER_DIMENSIONS: dict[str, int] = {
 }
 
 
+# Curated set of Google AI embedders advertised statically without a discovery round-trip.
+GOOGLEAI_KNOWN_EMBEDDERS: tuple[str, ...] = (
+    'gemini-embedding-001',
+    'gemini-embedding-2',
+    'gemini-embedding-2-preview',
+    'text-embedding-004',
+)
+
+
 # Curated set of Vertex AI embedders that are verified to be callable.
 # The Vertex catalog over-lists embedders (and returns supported_actions=None),
 # so embedders are advertised from this list rather than discovered. Multimodal

@@ -995,16 +995,18 @@ async def test_vertexai_resolve_veo_background_model(mock_list_models: MagicMock
 @patch('genkit_google_genai._google.genai.client.Client')
 @patch('genkit_google_genai._google._list_genai_models')
 @pytest.mark.asyncio
-async def test_vertexai_init_registers_veo_as_background(mock_list_models: MagicMock, mock_client: MagicMock) -> None:
-    """Vertex init registers Veo start/check, never a blocking MODEL action."""
+async def test_vertexai_list_actions_registers_veo_as_background(
+    mock_list_models: MagicMock, mock_client: MagicMock
+) -> None:
+    """Vertex list_actions registers Veo start/check, never a blocking MODEL action."""
     models = GenaiModels()
     models.veo = ['veo-3.1-generate-001']
     mock_list_models.return_value = models
 
     plugin = VertexAI(project='test-project')
-    actions = await plugin.init()
+    actions = await plugin.list_actions()
 
-    # init returns the BackgroundModel itself; the registry files start + check.
+    # list_actions returns the BackgroundModel itself; the registry files start + check.
     veo = [a for a in actions if 'veo' in a.name]
     assert len(veo) == 1
     assert isinstance(veo[0], BackgroundModel)

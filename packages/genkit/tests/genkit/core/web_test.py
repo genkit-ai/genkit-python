@@ -27,6 +27,10 @@ from pydantic.alias_generators import to_camel
 import genkit
 import genkit.web
 from genkit import FlowContext, Genkit, PublicError
+
+# to_error_details and AgentOutput are private: this test pins the served wire shape.
+from genkit._ai._agents._runtime import to_error_details  # noqa: TID251
+from genkit._core._model import AgentOutput  # noqa: TID251
 from genkit.plugin_api import Action
 from genkit.web import error_json, error_sse, read_body, result_json, to_sse, wants_stream
 
@@ -127,6 +131,23 @@ def test_wants_stream_on_event_stream_accept_or_stream_true() -> None:
     assert wants_stream(accept='application/json', stream=None) is False
     assert wants_stream(accept=None, stream='false') is False
     assert wants_stream(accept=None, stream=None) is False
+
+
+def test_result_json_redacts_a_failed_agent_turn_unless_public() -> None:
+    """Flask, Django and FastAPI all send result_json, so a failed turn's error leaves the process redacted."""
+    # to_error_details is the runtime's own Failure builder; it marks a PublicError.
+    private = AgentOutput(finish_reason='failed', error=to_error_details(ValueError('db password=hunter2')))
+    public = AgentOutput(finish_reason='failed', error=to_error_details(PublicError('NOT_FOUND', 'no order A-17')))
+
+    assert result_json(private) == (
+        '{"result":{"finishReason":"failed","error":{"status":"INTERNAL","message":"Internal Error"}}}'
+    )
+    assert result_json(public) == (
+        '{"result":{"finishReason":"failed","error":{"status":"NOT_FOUND","message":"no order A-17"}}}'
+    )
+    # The object itself still carries the text for in-process callers.
+    assert private.error is not None
+    assert private.error.message == 'db password=hunter2'
 
 
 def test_result_json_encodes_nested_models_by_alias_without_none_fields() -> None:

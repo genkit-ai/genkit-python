@@ -41,7 +41,6 @@ from genkit._ai._agents._session_stores._util import session_id_of
 from genkit._ai._agents._snapshot import walk_back_to_resumable
 from genkit._ai._agents._types import ChunkTransform, StateTransform, TurnContext, TurnResult
 from genkit._ai._generate import (
-    INTERNAL_FINISH_MESSAGE,
     CallScope,
     boxed_finish_message,
     generate_action,
@@ -61,6 +60,7 @@ from genkit._core._error import (
     TaskGroupError,
     attached_cause,
     interrupt_escape_error,
+    mark_public_failure,
 )
 from genkit._core._logger import get_logger
 from genkit._core._model import (
@@ -1188,12 +1188,13 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
     attribute (aiohttp's ``status=429``) isn't a Genkit status, so it never
     leaks through.
 
-    The message follows generate's rule for a raising tool: a GenkitError
-    keeps its own text (an INTERNAL one wrapping a foreign cause does not),
-    and anything else becomes ``internal error``. The Failure lands on
-    ``AgentOutput.error`` and in snapshots, which a served agent returns
-    in a 200, so raw exception text would reach the client. What gets
-    hidden is logged here with its traceback instead.
+    The Failure keeps the exception's own text, like JS ``toErrorDetails``
+    and Go ``convertKeepText``, so in-process callers, the session store and
+    the Dev UI see what went wrong. A served agent's HTTP caller doesn't:
+    ``genkit.web`` swaps in a generic message unless the turn raised a
+    ``PublicError`` (see ``client_safe_failure``). A cause that generate's
+    rule for a raising tool would hide is also logged here with its
+    traceback, so the server log has it when the wire doesn't.
 
     Args:
         exc: The exception that ended the turn or invocation.
@@ -1203,14 +1204,14 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
     details: dict[str, Any] | None = None
     if isinstance(exc, GenkitError):
         status = exc.status
+        message = exc.message
         cause = attached_cause(exc)
-        if cause is not None and interrupt_escape_error(cause) is not None:
-            # interrupt_escape_error's own sentence; the attached Interrupt
-            # is tool metadata, not foreign exception text.
-            message = exc.message
-        else:
-            message = boxed_finish_message(exc=exc, pipe_failed=False)
-        redacted = message != exc.message
+        # interrupt_escape_error's sentence isn't foreign text: the attached
+        # Interrupt is tool metadata. A prompt agent re-raises generate's
+        # already-boxed failure as a fresh GenkitError carrying
+        # ``internal error``; generate logged that cause already.
+        escaped_interrupt = cause is not None and interrupt_escape_error(cause) is not None
+        hides_cause = not escaped_interrupt and boxed_finish_message(exc=exc, pipe_failed=False) != exc.message
         if isinstance(exc.details, Mapping) and exc.details:
             details = dict(cast(Mapping[str, Any], exc.details))
     else:
@@ -1221,14 +1222,14 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
             status = 'DEADLINE_EXCEEDED'
         else:
             status = 'INTERNAL'
-        message = INTERNAL_FINISH_MESSAGE
-        redacted = True
-    # A prompt agent re-raises generate's already-boxed error as a fresh
-    # GenkitError carrying ``internal error``; nothing is hidden there, and
-    # generate logged the cause, so only log when this call hid text.
-    if redacted:
+        message = str(exc) or 'Internal failure'
+        hides_cause = True
+    if hides_cause:
         log_dropped_failure(exc, agent=agent)
-    return Failure(status=status, message=message, details=details)
+    failure = Failure(status=status, message=message, details=details)
+    if isinstance(exc, PublicError):
+        mark_public_failure(failure)
+    return failure
 
 
 def to_agent_finish_reason(fr: FinishReason) -> AgentFinishReason:

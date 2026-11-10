@@ -28,7 +28,7 @@ from email.utils import parsedate_to_datetime
 from enum import IntEnum
 from typing import Any, ClassVar, Literal, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter, ValidationError, model_validator
 from pydantic.alias_generators import to_camel
 from pydantic_core import ErrorDetails
 from pydantic_core.core_schema import ErrorType
@@ -149,6 +149,10 @@ class Failure(_RuntimeErrorWire):
 
     status: StatusName | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  # pyrefly: ignore[bad-override]
     details: dict[str, Any] | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  # pyrefly: ignore[bad-override]
+    # Set when the failure came from a PublicError, so a served agent may send
+    # its message. Not serialized, like Go's status.Error.Public: a failure
+    # read back from a store or another process is redacted on the wire.
+    _public: bool = PrivateAttr(default=False)
 
     @model_validator(mode='before')
     @classmethod
@@ -175,6 +179,29 @@ class Failure(_RuntimeErrorWire):
     @property
     def reason(self) -> ErrorReason | None:
         return error_reason(self.details)
+
+
+def mark_public_failure(failure: Failure) -> Failure:
+    """Mark ``failure`` as built from a PublicError, so a served agent sends its text."""
+    failure._public = True
+    return failure
+
+
+def client_safe_failure(failure: Failure) -> Failure:
+    """``failure`` as the HTTP caller of a served agent may see it.
+
+    Same rule as ``error_body`` for a served flow: a PublicError's message
+    and details go out as is. Anything else keeps its status, since callers
+    branch on it, but gets a generic message for that status and no
+    details, so exception text, provider responses and internal ids stay in
+    the process, the store and the server log. Mirrors Go's
+    ``clientSafeError``.
+    """
+    if failure._public:
+        return failure
+    status = failure.status
+    message = 'Internal Error' if status is None or status == 'INTERNAL' else status.replace('_', ' ').title()
+    return Failure(status=status, message=message)
 
 
 # Mapping of status names to HTTP status codes

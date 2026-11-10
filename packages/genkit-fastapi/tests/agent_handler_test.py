@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,17 +21,30 @@ from genkit_fastapi.exp import serve_agent
 from genkit import (
     ErrorReason,
     FinishReason,
+    GenkitError,
     Message,
     ModelResponse,
     ModelResponseChunk,
     Part,
+    PublicError,
     Role,
 )
 
 # error_from_http is private: this test pins the client-side HTTP error mapping.
 from genkit._ai._agents._client import error_from_http  # noqa: TID251
 from genkit.exp import Genkit
-from genkit.exp.agent import AgentInit, InMemorySessionStore
+from genkit.exp.agent import (
+    AgentContext,
+    AgentInit,
+    AgentInput,
+    AgentResult,
+    InMemorySessionStore,
+    SessionRunner,
+    SnapshotStatus,
+    TurnContext,
+    TurnResult,
+)
+from genkit.plugin_api import provider_error
 from genkit.testing import define_scripted_model
 from genkit.web import to_sse
 
@@ -340,3 +354,83 @@ def test_hand_rolled_routes_send_the_same_frames_as_serve_agent() -> None:
     assert frames(served.text) == expected
     assert frames(hand.post('/request?stream=true', json=wire_body).text) == expected
     assert frames(hand.post('/to_sse').text) == expected
+
+
+class _ProviderHttpError(Exception):
+    """Stands in for an SDK's HTTP error whose text carries the request URL."""
+
+
+def _failing_agent(name: str, exc: Exception) -> Any:
+    """A server-managed custom agent whose every turn raises ``exc``."""
+    ai = Genkit()
+
+    async def fn(session_runner: SessionRunner, _ctx: AgentContext) -> AgentResult:
+        async def turn(_inp: AgentInput, _tc: TurnContext) -> TurnResult | None:
+            raise exc
+
+        await session_runner.run(turn)
+        return await session_runner.result()
+
+    return ai.define_custom_agent(name=name, fn=fn, store=InMemorySessionStore())
+
+
+@pytest.mark.parametrize(
+    ('exc', 'expected'),
+    [
+        (ValueError('db password=hunter2'), {'status': 'INTERNAL', 'message': 'Internal Error'}),
+        (
+            PublicError('PERMISSION_DENIED', 'table 12 is reserved'),
+            {'status': 'PERMISSION_DENIED', 'message': 'table 12 is reserved'},
+        ),
+        (
+            GenkitError(status='NOT_FOUND', message='no row in tenant_secrets for key=hunter2'),
+            {'status': 'NOT_FOUND', 'message': 'Not Found'},
+        ),
+        (
+            provider_error(_ProviderHttpError('429 https://api.example.com/v1?key=hunter2'), http_status=429),
+            {'status': 'RESOURCE_EXHAUSTED', 'message': 'Resource Exhausted'},
+        ),
+    ],
+    ids=['foreign', 'public', 'genkit_not_found', 'provider_429'],
+)
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+def test_failed_turn_sends_only_public_error_text(exc: Exception, expected: dict[str, str], stream: bool) -> None:
+    """A failed turn is a 200; its error follows error_body's rule, so only a PublicError's text goes out."""
+    response = client(_failing_agent('ordersDb', exc)).post(
+        f'/api/chat?stream={str(stream).lower()}', json={'message': 'refund A-17'}
+    )
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    assert result['error'] == expected
+    assert 'hunter2' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_keeps_error_text_in_process_and_in_the_store() -> None:
+    """Redaction is at the wire: res.error and the stored snapshot keep the exception's text."""
+    agent = _failing_agent('ordersDb', RuntimeError('pos sync failed: dsn=pg://admin@10.0.0.4'))
+
+    # 1. Detach so the background finalize writes the failure into the store.
+    out = await agent.run(
+        input=AgentInput(message=Message(role=Role.USER, content=[Part.from_text('refund A-17')]), detach=True),
+        init=AgentInit(),
+    )
+    snapshot_id = out.response.snapshot_id
+    assert snapshot_id is not None
+    for _ in range(200):
+        snap = await agent.get_snapshot_data(snapshot_id=snapshot_id)
+        if snap is not None and snap.status == SnapshotStatus.FAILED:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError('detached turn never finalized')
+
+    # 2. In process, the stored snapshot keeps the exception's text.
+    assert snap.error is not None
+    assert snap.error.message == 'pos sync failed: dsn=pg://admin@10.0.0.4'
+
+    # 3. Over HTTP, getSnapshot sends the generic message.
+    served = client(agent).post('/api/chat/getSnapshot', json={'snapshotId': snapshot_id})
+    assert served.json()['result']['error'] == {'status': 'INTERNAL', 'message': 'Internal Error'}

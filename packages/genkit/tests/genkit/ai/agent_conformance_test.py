@@ -555,13 +555,10 @@ def _register_custom_agents(*, ai: Genkit, agents: dict[str, Agent]) -> None:
         )
 
     # Raise inside the turn so run() records last_turn_error, then return
-    # result() so an attached caller gets a graceful failed output. A
-    # GenkitError, not a bare exception: the spec reads the message back off
-    # the snapshot, and Python records foreign exception text as 'internal
-    # error' (the cause goes to the server log).
+    # result() so an attached caller gets a graceful failed output.
     async def failing_agent_fn(session_runner: SessionRunner, _ctx: AgentContext) -> AgentResult:
         async def handle_turn(_inp: AgentInput, _tc: TurnContext) -> TurnResult | None:
-            raise GenkitError(status='INTERNAL', message='intentional failure')
+            raise RuntimeError('intentional failure')
 
         await session_runner.run(handle_turn)
         return await session_runner.result()

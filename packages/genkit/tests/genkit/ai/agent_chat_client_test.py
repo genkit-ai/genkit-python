@@ -38,7 +38,7 @@ from genkit._ai._agents._runtime import AgentInitError, SessionRunner, to_error_
 from genkit._ai._agents._types import StateManagement, TurnResult
 from genkit._ai._json_patch import apply_json_patch
 from genkit._core._channel import CloseableQueue
-from genkit._core._error import ErrorReason, Failure, GenkitError, Interrupt, PublicError
+from genkit._core._error import ErrorReason, Failure, GenkitError, Interrupt, PublicError, client_safe_failure
 from genkit._core._model import (
     AgentInit,
     AgentInput,
@@ -1745,8 +1745,11 @@ def _logged_errors(entries: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
 
 
 @pytest.mark.asyncio
-async def test_custom_agent_raising_foreign_error_redacts_message_and_logs_cause() -> None:
-    """A ValueError's text stays server-side; the caller gets INTERNAL 'internal error'."""
+async def test_custom_agent_raising_foreign_error_keeps_text_and_logs_cause() -> None:
+    """In process, res.error keeps the ValueError's text; the cause is also logged with its traceback.
+
+    Redaction happens where a served agent writes to HTTP (genkit.web), not here.
+    """
     structlog.reset_defaults()
     agent = _flaky(
         Genkit(),
@@ -1758,9 +1761,8 @@ async def test_custom_agent_raising_foreign_error_redacts_message_and_logs_cause
     with capture_logs() as entries:
         res = await agent.chat().send('please fail now')
 
-    err = _assert_failed(res, message='internal error')
+    err = _assert_failed(res, message='db password=hunter2')
     assert err.status == 'INTERNAL'
-    assert 'hunter2' not in err.model_dump_json()
     errors = _logged_errors(entries)
     assert len(errors) == 1
     assert errors[0]['event'] == "agent 'ordersDb' raised, returning finish_reason=failed"
@@ -2388,30 +2390,38 @@ class _ClientResponseError(Exception):
         ),
         (GenkitError(status='ABORTED', message='stopped'), 'ABORTED', 'stopped', None),
         (PublicError('PERMISSION_DENIED', 'table 12 is reserved'), 'PERMISSION_DENIED', 'table 12 is reserved', None),
-        # An INTERNAL wrapper around a foreign cause hides it, as generate does for a tool.
         (
             GenkitError(status='INTERNAL', message='pos sync failed', cause=ValueError('dsn=pg://admin@10.0.0.4')),
             'INTERNAL',
-            'internal error',
+            'pos sync failed',
             None,
         ),
-        (asyncio.CancelledError(), 'CANCELLED', 'internal error', None),
-        (TimeoutError('kitchen printer 10.0.0.9 timed out'), 'DEADLINE_EXCEEDED', 'internal error', None),
-        (asyncio.TimeoutError('kitchen printer 10.0.0.9 timed out'), 'DEADLINE_EXCEEDED', 'internal error', None),
-        (_ClientResponseError(), 'INTERNAL', 'internal error', None),
-        (ValueError('db password=hunter2'), 'INTERNAL', 'internal error', None),
+        (asyncio.CancelledError(), 'CANCELLED', 'Internal failure', None),
+        (TimeoutError('kitchen printer timed out'), 'DEADLINE_EXCEEDED', 'kitchen printer timed out', None),
+        (asyncio.TimeoutError('kitchen printer timed out'), 'DEADLINE_EXCEEDED', 'kitchen printer timed out', None),
+        (_ClientResponseError(), 'INTERNAL', '429, message=Too Many Requests', None),
+        (ValueError('bad table number'), 'INTERNAL', 'bad table number', None),
     ],
 )
 def test_to_error_details_classifies_status_like_go(
     exc: BaseException, status: str, message: str, details: dict[str, Any] | None
 ) -> None:
-    """Only a GenkitError names its status and message; anything else is classified and redacted.
+    """Only a GenkitError names its status; a foreign int ``.status`` (aiohttp's 429) is INTERNAL.
 
-    A foreign int ``.status`` (aiohttp's 429) is INTERNAL, and no foreign
-    exception text reaches the Failure.
+    The message is the exception's own text, as in JS and Go; genkit.web
+    redacts it for HTTP callers.
     """
     failure = to_error_details(exc)
 
     assert failure.status == status
     assert failure.message == message
     assert failure.details == details
+
+
+def test_to_error_details_marks_only_a_public_error_safe_for_the_wire() -> None:
+    """A PublicError's Failure survives client_safe_failure; a plain GenkitError's text does not."""
+    public = to_error_details(PublicError('PERMISSION_DENIED', 'table 12 is reserved'))
+    private = to_error_details(GenkitError(status='NOT_FOUND', message='no row for key=hunter2'))
+
+    assert client_safe_failure(public) is public
+    assert client_safe_failure(private) == Failure(status='NOT_FOUND', message='Not Found')

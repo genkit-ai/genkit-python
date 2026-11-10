@@ -25,8 +25,11 @@ send ``error_json`` (or the ``error_body`` dict) with ``error_status`` as the
 HTTP status, or yield ``error_sse`` if a stream fails before ``to_sse`` starts.
 A PublicError's text reaches the caller, and bad input names the failing
 fields; anything else is a generic ``Internal Error`` so server details stay in
-your logs. A ``ContextProvider`` reads the ``RequestData`` for one request and
-returns what goes into the flow's context.
+your logs. ``result_json`` and ``to_sse`` apply the same rule to a failed
+agent turn's ``error`` (an ``AgentOutput`` or ``SessionSnapshot``), which goes
+out in a 200: it keeps its status, and a non-public message becomes generic.
+A ``ContextProvider`` reads the ``RequestData`` for one request and returns
+what goes into the flow's context.
 
 ``to_sse`` frames a streaming handle (``flow.stream()``,
 ``ai.generate_stream()``, ``prompt.stream()``, ``chat.send_stream()``) as the

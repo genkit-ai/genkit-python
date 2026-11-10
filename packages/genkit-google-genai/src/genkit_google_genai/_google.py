@@ -139,6 +139,8 @@ from genkit_google_genai._models._routing import (
 )
 from genkit_google_genai._models._sdk_config import check_timeout_seconds, timeout_seconds_to_ms
 from genkit_google_genai._models._veo import (
+    GOOGLEAI_KNOWN_VEO,
+    VERTEX_KNOWN_VEO,
     KnownGoogleAIVeo,
     KnownVertexAIVeo,
     VeoConfig,
@@ -733,6 +735,8 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         Returns:
             Actions and background models for known/supported models.
         """
+        # Build this loop's http client now so a factory that returns the wrong
+        # type raises TypeError here, at setup, not inside the first model run.
         if self._http_client_factory is not None:
             self._http_client_factory()
 
@@ -742,6 +746,10 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         for name in sorted(GEMINI_CATALOG_IDS):
             if action := self._resolve_model(name):
                 actions.append(action)
+
+        # Veo Models (background models)
+        for name in GOOGLEAI_KNOWN_VEO:
+            actions.append(self._resolve_veo_model(name))
 
         client_options = self._interactions_client_options()
         plugin_api_key = self._plugin_api_key()
@@ -1204,6 +1212,8 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         Returns:
             Actions and background models for known/supported models.
         """
+        # Build this loop's http client now so a factory that returns the wrong
+        # type raises TypeError here, at setup, not inside the first model run.
         if self._http_client_factory is not None:
             self._http_client_factory()
 
@@ -1215,6 +1225,10 @@ class VertexAI(GoogleFamilyRefs, Plugin):
                 continue
             if action := self._resolve_model(name):
                 actions.append(action)
+
+        # Veo Models (background models)
+        for name in VERTEX_KNOWN_VEO:
+            actions.append(self._resolve_veo_model(name))
 
         for name in VERTEX_KNOWN_VIRTUAL_TRY_ON:
             if action := self._resolve_model(name):

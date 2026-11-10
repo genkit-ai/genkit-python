@@ -1067,3 +1067,54 @@ async def test_googleai_list_actions_caches_dynamic_discovery(googleai_plugin_in
 async def _single_page_iter(items: list[Any]) -> AsyncIterator[Any]:
     for item in items:
         yield item
+
+
+@pytest.mark.asyncio
+async def test_googleai_init_registers_known_embedders_and_veo(googleai_plugin_instance: GoogleAI) -> None:
+    """Init registers the live Gemini embedders and known Veo ids, never the retired text-embedding-004."""
+    names = {a.name for a in await googleai_plugin_instance.init()}
+
+    assert {'googleai/gemini-embedding-001', 'googleai/gemini-embedding-2'} <= names
+    assert 'googleai/text-embedding-004' not in names
+    assert 'googleai/veo-3.1-generate-preview' in names
+
+
+@pytest.mark.asyncio
+async def test_vertexai_init_registers_known_veo(vertexai_plugin_instance: VertexAI) -> None:
+    """Vertex init registers known Veo ids as background models without listing the catalog."""
+    actions = await vertexai_plugin_instance.init()
+
+    veo = [a for a in actions if a.name == 'vertexai/veo-3.1-generate-001']
+    assert len(veo) == 1
+    assert isinstance(veo[0], BackgroundModel)
+
+
+@pytest.mark.asyncio
+async def test_googleai_resolves_unlisted_model_without_listing(googleai_plugin_instance: GoogleAI) -> None:
+    """A model id missing from the static catalog resolves by name with no models.list() call."""
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=AssertionError('resolve must not list models'))
+    googleai_plugin_instance._runtime_client = lambda: mock_client
+
+    action = await googleai_plugin_instance.resolve(ActionKind.MODEL, 'gemini-custom-experiment')
+
+    assert action is not None
+    assert action.name == 'googleai/gemini-custom-experiment'
+    mock_client.aio.models.list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_listing_keeps_static_catalog_and_retries() -> None:
+    """With no network, the Dev UI catalog still shows static models, and the next listing tries again."""
+    plugin = GoogleAI(api_key='k')
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=httpx.ConnectError('[Errno 61] Connection refused'))
+    plugin._runtime_client = lambda: mock_client
+    ai = Genkit(plugins=[plugin])
+
+    catalog = await ai._registry.list_actions()
+    await ai._registry.list_actions()
+
+    assert '/model/googleai/gemini-2.5-flash' in catalog
+    assert '/embedder/googleai/gemini-embedding-001' in catalog
+    assert mock_client.aio.models.list.call_count == 2

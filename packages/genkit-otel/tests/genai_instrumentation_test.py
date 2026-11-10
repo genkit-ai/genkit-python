@@ -397,17 +397,20 @@ async def test_span_and_event_records_tool_arguments_on_span_and_event(harness) 
 
 @pytest.mark.asyncio
 async def test_tool_arguments_pydantic_serialized_as_valid_json(harness) -> None:
-    """Pydantic model input is serialized to valid JSON on tool spans and events."""
+    """Pydantic tool input and result serialize to valid JSON on tool spans and events."""
     from pydantic import BaseModel
 
     class OrderInput(BaseModel):
         dish: str
         quantity: int
 
+    class OrderOutput(BaseModel):
+        status: str
+
     instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT', emit_tool_spans=True)
 
     async def order_tool(span=None):
-        return {'status': 'confirmed'}
+        return OrderOutput(status='confirmed')
 
     await instr.run_in_new_span(
         SpanMetadata(name='order_food', action_type='tool.v2', input=OrderInput(dish='pad thai', quantity=2)),
@@ -419,6 +422,9 @@ async def test_tool_arguments_pydantic_serialized_as_valid_json(harness) -> None
     assert raw_args is not None
     parsed = json.loads(raw_args)
     assert parsed == {'dish': 'pad thai', 'quantity': 2}
+    raw_result = harness.attr(span, GenAiAttr.TOOL_CALL_RESULT)
+    assert raw_result is not None
+    assert json.loads(raw_result) == {'status': 'confirmed'}
 
     record = _operation_details_record(harness)
     assert record is not None
@@ -427,6 +433,9 @@ async def test_tool_arguments_pydantic_serialized_as_valid_json(harness) -> None
     assert isinstance(raw_event_args, str)
     event_parsed = json.loads(raw_event_args)
     assert event_parsed == {'dish': 'pad thai', 'quantity': 2}
+    raw_event_result = attrs[GenAiAttr.TOOL_CALL_RESULT]
+    assert isinstance(raw_event_result, str)
+    assert json.loads(raw_event_result) == {'status': 'confirmed'}
 
 
 @pytest.mark.asyncio

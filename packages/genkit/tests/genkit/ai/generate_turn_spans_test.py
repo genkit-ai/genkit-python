@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 import pytest
@@ -116,6 +117,11 @@ async def test_generate_with_one_tool_call_nests_the_second_model_call_in_its_ow
     ]
     outer, inner = _generate_spans(exporter.get_finished_spans())
     assert [s.attributes[Attr.STATE] for s in (outer, inner)] == ['success', 'success']
+    # turn 2's span holds the conversation it was sent and the answer it got back
+    inner_input = json.loads(str(inner.attributes[Attr.INPUT]))
+    inner_output = json.loads(str(inner.attributes[Attr.OUTPUT]))
+    assert [m['role'] for m in inner_input['messages']] == ['user', 'model', 'tool']
+    assert inner_output['message']['content'] == [{'text': 'done'}]
 
 
 @pytest.mark.asyncio

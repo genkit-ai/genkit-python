@@ -218,3 +218,19 @@ async def test_rendering_a_prompt_from_the_dev_ui_records_a_render_span(exporter
             ]
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_prompt_variant_names_the_prompt_and_render_spans_with_the_variant(exporter) -> None:
+    """A variant prompt uses `name.variant` for both the prompt span and render's promptName, like JS."""
+    ai = _app()
+    formal = ai.define_prompt(
+        name='greeting_prompt', variant='formal', model=MODEL, input_schema=Greeting, prompt='Good day, {{name}}'
+    )
+
+    assert (await formal(input={'name': 'Ada'})).text == 'echo: Good day, Ada'
+
+    spans = exporter.get_finished_spans()
+    assert ('greeting_prompt.formal', None, 'dotprompt') in _tree(spans)
+    render_span = next(s for s in spans if s.name == 'render')
+    assert render_span.attributes['genkit:metadata:promptName'] == 'greeting_prompt.formal'

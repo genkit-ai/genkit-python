@@ -653,7 +653,12 @@ async def render_prompt(
         prepared = await prepare_prompt(prompt=prompt, input=input, opts=opts)
         return prepared.options
 
-    attributes = {metadata_key('promptName'): prompt._name} if prompt._name else None  # pyright: ignore[reportPrivateUsage]
+    # Same key as the prompt span and the registered action, variant included (matches JS).
+    attributes = (
+        {metadata_key('promptName'): registry_definition_key(prompt._name, prompt._variant, prompt._ns)}  # pyright: ignore[reportPrivateUsage]
+        if prompt._name  # pyright: ignore[reportPrivateUsage]
+        else None
+    )
     await run_in_new_span('render', body, action_type='promptTemplate', input=input, attributes=attributes)
     assert prepared is not None
     return prepared

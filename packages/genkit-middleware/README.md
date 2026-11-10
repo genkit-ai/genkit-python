@@ -179,7 +179,7 @@ description: Expert Python programming assistance
 You are an expert Python programmer...
 ```
 
-When two skill paths hold the same name, the earlier path wins. A skill directory that resolves outside its skill path is skipped, and a `SKILL.md` that is a symlink, not a regular file, or over 1 MiB isn't read. To load skills from a shared directory, list it in `skill_paths` instead of symlinking it in.
+When two skill paths hold the same name, the later path wins. A symlinked skill directory is followed, so `skills/plating -> ~/shared/plating` works. A `SKILL.md` that is itself a symlink, not a regular file, or over 1 MiB isn't read.
 
 ### Filesystem
 

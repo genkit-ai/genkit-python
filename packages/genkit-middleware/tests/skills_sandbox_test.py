@@ -18,7 +18,8 @@
 
 Every fixture lives under pytest's ``tmp_path``: a ``skills`` root, plus an
 ``outside`` directory holding a canary file and a skill pack that the root
-must never expose.
+doesn't expose unless it's listed in ``skill_paths`` or linked in as a skill
+directory.
 """
 
 import os
@@ -92,13 +93,47 @@ async def test_symlinked_skill_file_is_not_read(ctx: MiddlewareContext, sandbox:
 
 
 @posix_only
-def test_symlinked_skill_dir_outside_root_is_skipped(sandbox: dict[str, Path]) -> None:
-    (sandbox['root'] / 'external-pack').symlink_to(sandbox['outside'] / 'external-pack', target_is_directory=True)
+@pytest.mark.asyncio
+async def test_follows_symlinked_skill_directory(
+    ctx: MiddlewareContext, tmp_path: Path, sandbox: dict[str, Path]
+) -> None:
+    """Mirrors Go's TestSkillsFollowsSymlinkedSkillDirectory: ``skills/linked -> elsewhere/linked``."""
+    real = _skill(tmp_path / 'elsewhere', 'linked', 'description: Shared plating guide.', body='Plate the tartine.')
+    (sandbox['root'] / 'linked').symlink_to(real, target_is_directory=True)
     skills = Skills(skill_paths=[str(sandbox['root'])])
 
     scanned = skills._scan_skills()
-    assert set(scanned) == {'allergy-check'}
-    assert 'external-pack' not in skills._build_skills_prompt(scanned)
+    assert set(scanned) == {'allergy-check', 'linked'}
+    assert ' - linked - Shared plating guide.' in skills._build_skills_prompt(scanned)
+    assert 'Plate the tartine.' in await _use_skill(skills, ctx, 'linked')
+
+
+@posix_only
+@pytest.mark.asyncio
+async def test_symlinked_skill_md_in_followed_directory_is_not_read(
+    ctx: MiddlewareContext, tmp_path: Path, sandbox: dict[str, Path]
+) -> None:
+    """Following a skill directory doesn't relax the SKILL.md rule inside it."""
+    real = tmp_path / 'elsewhere' / 'linked'
+    real.mkdir(parents=True)
+    (real / 'SKILL.md').symlink_to(sandbox['canary'])
+    (sandbox['root'] / 'linked').symlink_to(real, target_is_directory=True)
+    skills = Skills(skill_paths=[str(sandbox['root'])])
+
+    assert set(skills._scan_skills()) == {'allergy-check'}
+    assert _CANARY not in await _use_skill(skills, ctx, 'linked')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'name',
+    ['../outside/external-pack', '..', 'allergy-check/../../outside/external-pack', '/etc', 'allergy-check/SKILL.md'],
+)
+async def test_use_skill_name_cannot_traverse(ctx: MiddlewareContext, sandbox: dict[str, Path], name: str) -> None:
+    """A name is a catalog key, never a path: traversal spellings are unknown skills."""
+    result = await _use_skill(Skills(skill_paths=[str(sandbox['root'])]), ctx, name)
+    assert result.startswith(f'Unknown skill "{name}"')
+    assert _CANARY not in result
 
 
 @posix_only
@@ -111,7 +146,7 @@ def test_symlinked_skill_dir_inside_root_still_loads(sandbox: dict[str, Path]) -
 
 
 def test_external_pack_is_reachable_by_listing_it_explicitly(sandbox: dict[str, Path]) -> None:
-    """The supported way to use a pack that lives elsewhere: add its parent to skill_paths."""
+    """Listing a pack's parent in skill_paths loads every skill in it."""
     skills = Skills(skill_paths=[str(sandbox['root']), str(sandbox['outside'])])
     assert set(skills._scan_skills()) == {'allergy-check', 'external-pack'}
 
@@ -357,12 +392,14 @@ def test_later_dir_cannot_shadow_earlier_name_in_same_root(sandbox: dict[str, Pa
     assert scanned['allergy-check']['description'] == 'Flags nut and shellfish allergens.'
 
 
-def test_earlier_skill_path_wins_across_roots(tmp_path: Path, sandbox: dict[str, Path]) -> None:
+def test_skills_collision_later_path_wins(tmp_path: Path, sandbox: dict[str, Path]) -> None:
+    """Mirrors Go's TestSkillsCollisionLaterPathWins; JS and pre-1.0 Python agree."""
     tenant = tmp_path / 'tenant_skills'
     _skill(tenant, 'allergy-check', 'name: allergy-check\ndescription: Tenant override')
     scanned = Skills(skill_paths=[str(sandbox['root']), str(tenant)])._scan_skills()
 
-    assert scanned['allergy-check']['description'] == 'Flags nut and shellfish allergens.'
+    assert scanned['allergy-check']['description'] == 'Tenant override'
+    assert scanned['allergy-check']['path'] == str(tenant.resolve() / 'allergy-check' / 'SKILL.md')
 
 
 def test_unreadable_skill_path_is_skipped(tmp_path: Path, sandbox: dict[str, Path]) -> None:

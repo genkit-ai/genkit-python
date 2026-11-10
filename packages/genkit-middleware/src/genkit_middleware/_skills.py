@@ -17,10 +17,11 @@
 """Skills middleware for Genkit.
 
 Each entry in ``skill_paths`` is a skill root. Every direct subdirectory that
-holds a regular ``SKILL.md`` is a skill. The scan and ``use_skill`` stay inside
-the skill root: a subdirectory or ``SKILL.md`` whose real path leaves the root
-is skipped, and a ``SKILL.md`` that is a symlink, is not a regular file, or is
-over 1 MiB is never read.
+holds a regular ``SKILL.md`` is a skill, named after the directory. A
+symlinked skill directory is followed, as in Go. A ``SKILL.md`` that is a
+symlink, is not a regular file, or is over 1 MiB is never read. ``use_skill``
+looks a name up in the scanned catalog and never joins it into a path, so a
+name like ``../secrets`` can't reach outside a skill directory.
 """
 
 from __future__ import annotations
@@ -107,20 +108,23 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def _read_skill_file(path: Path, root: Path) -> str:
-    """Read a ``SKILL.md`` that is a regular, in-root, non-symlink file within the size limit.
+def _read_skill_file(path: Path, skill_dir: Path) -> str:
+    """Read a ``SKILL.md`` that is a regular, non-symlink file in ``skill_dir`` within the size limit.
 
-    Type and size are checked on ``lstat`` before the open, so a symlink or a
-    named pipe is never opened. ``O_NOFOLLOW`` and the ``fstat`` identity check
-    catch a swap between the check and the open.
+    ``skill_dir`` is the skill directory's resolved path. Type and size are
+    checked on ``lstat`` before the open, so a symlinked ``SKILL.md`` or a named
+    pipe is never opened. ``O_NOFOLLOW`` refuses a ``SKILL.md`` replaced by a
+    symlink after the check, and the ``fstat`` identity check refuses a file
+    replaced by a different one. Neither guards against a parent directory
+    being swapped by someone who can write to the skill path.
     """
     st = os.lstat(path)
     if not stat.S_ISREG(st.st_mode):
         raise ValueError(f'{_SKILL_FILE_NAME} is not a regular file.')
     if st.st_size > _SKILL_MAX_BYTES:
         raise ValueError(f'{_SKILL_FILE_NAME} is {st.st_size:,} bytes, over the {_SKILL_MAX_BYTES:,} byte limit.')
-    if not _is_within(path, root):
-        raise ValueError(f'{_SKILL_FILE_NAME} is outside its skill root.')
+    if not _is_within(path, skill_dir):
+        raise ValueError(f'{_SKILL_FILE_NAME} is outside its skill directory.')
     fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK)
     with os.fdopen(fd, 'rb') as fh:
         opened = os.fstat(fh.fileno())
@@ -136,8 +140,9 @@ class Skills(Middleware[SkillsConfig]):
     """Skills middleware that exposes ``SKILL.md`` files as loadable instructions.
 
     A skill's name is its directory name, matching JS and Go. When frontmatter
-    defines a different name, the directory name is used. When two skill paths
-    hold the same skill name, the earlier path wins.
+    defines a different name, the directory name is used. A symlinked skill
+    directory is followed, as in Go. When two skill paths hold the same skill
+    name, the later path wins, as in JS and Go.
     """
 
     name = 'skills'
@@ -161,12 +166,10 @@ class Skills(Middleware[SkillsConfig]):
                 try:
                     if not subdir.is_dir():
                         continue
-                    if not _is_within(subdir, root):
-                        logger.warning('skill directory resolves outside its skill root, skipping', path=str(subdir))
-                        continue
+                    skill_dir = subdir.resolve()
                     if not os.path.lexists(skill_file):
                         continue
-                    content = _read_skill_file(skill_file, root)
+                    content = _read_skill_file(skill_file, skill_dir)
                 except (OSError, RuntimeError, ValueError) as exc:
                     logger.warning('skill could not be loaded, skipping', path=str(subdir), error=str(exc))
                     continue
@@ -183,15 +186,14 @@ class Skills(Middleware[SkillsConfig]):
                     )
                 if name in skills:
                     logger.warning(
-                        'skill name is taken by an earlier skill, skipping',
+                        'skill name found in more than one path, the later path wins',
                         skill=name,
-                        path=str(skill_file),
-                        kept=skills[name]['path'],
+                        shadowed=skills[name]['path'],
+                        using=str(skill_file),
                     )
-                    continue
                 skills[name] = {
                     'path': str(skill_file),
-                    'root': str(root),
+                    'skill_dir': str(skill_dir),
                     'description': _single_line(fm_description),
                 }
         return skills
@@ -282,7 +284,7 @@ class Skills(Middleware[SkillsConfig]):
                 available = ', '.join(sorted(skills.keys()))
                 return f'Unknown skill "{skill_name}". Available skills: {available}'
             try:
-                return await asyncio.to_thread(_read_skill_file, Path(info['path']), Path(info['root']))
+                return await asyncio.to_thread(_read_skill_file, Path(info['path']), Path(info['skill_dir']))
             except (OSError, ValueError) as exc:
                 # Log the host path; keep it out of the model-visible result.
                 logger.warning('skill could not be read', skill=skill_name, path=info['path'], error=str(exc))

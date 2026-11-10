@@ -140,7 +140,9 @@ first = await ai.generate(
 When a non-allowed tool is called, execution is interrupted. Approve and re-run the
 tool by restarting it with `resumed_metadata` that includes `tool_approved`. Pass the
 history in `messages=` and leave out `prompt=`: a new prompt appends a user turn after
-the pending tool request, and the resume fails with `FAILED_PRECONDITION`.
+the pending tool request, and the call returns a failed response
+(`finish_reason='failed'`, `response.error.status == 'FAILED_PRECONDITION'`) instead
+of running the tool.
 
 ```python
 response = await ai.generate(

@@ -204,11 +204,18 @@ Function calling mode is controlled by `ai.generate(tool_choice=...)`, not confi
 `'auto'`, `'required'`, or `'none'`. In `'required'` mode, Gemini binds the request's
 function tools as `allowedFunctionNames`.
 
-Settings that can't be combined fail the call with `INVALID_ARGUMENT` before
-anything is sent to Gemini:
+Settings that can't be combined never reach Gemini:
 
-- `thinking_level` with `thinking_budget`, and `voice` with `speakers`. When
-  one comes from a model reference default, pass `None` for it on the call.
+- `thinking_level` with `thinking_budget`, and `voice` with `speakers`, raise
+  `INVALID_ARGUMENT` from `generate` (`GeminiConfig(...)` raises a Pydantic
+  `ValidationError` on construction). When one comes from a model reference
+  default, pass `None` for it on the call.
+
+The model checks the rest when it builds the request. These don't raise by
+default: the call returns `finish_reason='failed'` with
+`response.error.status == 'INVALID_ARGUMENT'`. Pass `raise_on_error=True` to
+raise instead.
+
 - `google_search_start_time` without `google_search_end_time`, and
   `file_search_top_k` or `file_search_metadata_filter` without
   `file_search_store_names`.

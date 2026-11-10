@@ -17,6 +17,12 @@ uv add 'genkit-vertexai[anthropic]'   # Claude
 uv add 'genkit-vertexai[openai]'      # Llama, Mistral and other OpenAI-compatible models
 ```
 
+In 1.0, `genkit-google-cloud` no longer installs Firestore. If you use `FirestoreSessionStore`, install the extra:
+
+```bash
+uv add 'genkit-google-cloud[firestore]'
+```
+
 ## Using a coding agent
 
 You can point a coding agent at this page:

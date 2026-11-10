@@ -112,9 +112,15 @@ print(out2.text)
 
 ### 4. Agent Loops & Persistent Sessions
 
+Agents are experimental, and `FirestoreSessionStore` needs the `firestore` extra:
+
+```bash
+uv add 'genkit-google-cloud[firestore]'
+```
+
 ```python
-from genkit import Genkit
-from genkit_google_cloud import FirestoreSessionStore
+from genkit.exp import Genkit
+from genkit_google_cloud.exp import FirestoreSessionStore
 from genkit_google_genai import GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])

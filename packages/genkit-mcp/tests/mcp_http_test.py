@@ -17,13 +17,14 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 from genkit_mcp import create_mcp_server
+from genkit_mcp._server import _StreamableHttpEndpoint
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.streamable_http import EventCallback, EventId, EventStore, StreamId
 from mcp.types import JSONRPCMessage, TextContent
 from pydantic import BaseModel
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
 from genkit import Genkit
@@ -236,15 +237,17 @@ async def test_a_refused_request_leaves_no_session_behind() -> None:
     """A page that cannot call tools must not be able to pile up sessions either."""
     server = create_mcp_server(app_with_tools(), 'bookshop')
     app = server.asgi_app(json_response=True)
+    route = app.routes[0]
+    assert isinstance(route, Route) and isinstance(route.endpoint, _StreamableHttpEndpoint)
     accept = {'accept': 'application/json, text/event-stream'}
 
     async with app.router.lifespan_context(app):
         async with http_client(app) as http:
             statuses = [
-                (await http.post('/mcp', headers={**accept, 'host': 'evil.example'}, json=INITIALIZE)).status_code,
-                (await http.post('/mcp', headers={**accept, 'origin': 'http://evil.example'}, json=INITIALIZE)).status_code,
+                (await http.post('/mcp', headers={**accept, **refused}, json=INITIALIZE)).status_code
+                for refused in ({'host': 'evil.example'}, {'origin': 'http://evil.example'})
             ]
-            sessions = dict(app.routes[0].endpoint.manager._server_instances)
+            sessions = dict(route.endpoint.manager._server_instances)
 
     assert statuses == [421, 403]
     assert sessions == {}

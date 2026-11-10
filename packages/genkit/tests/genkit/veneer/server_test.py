@@ -118,9 +118,19 @@ def test_runtime_manager_removes_empty_runtime_dirs(tmp_path: pathlib.Path) -> N
 
 def test_runtime_manager_keeps_dirs_with_other_files(tmp_path: pathlib.Path) -> None:
     runtime_dir = tmp_path / '.genkit' / 'runtimes'
-    runtime_dir.mkdir(parents=True)
+    (tmp_path / '.genkit').mkdir()
     (tmp_path / '.genkit' / 'traces.json').write_text('{}')
     with RuntimeManager(spec=ServerSpec(port=3100), runtime_dir=runtime_dir):
         pass
     assert not runtime_dir.exists()
     assert (tmp_path / '.genkit' / 'traces.json').exists()
+
+
+def test_runtime_manager_keeps_runtime_dir_the_cli_created(tmp_path: pathlib.Path) -> None:
+    """`genkit start` creates and watches `.genkit/runtimes`; removing it blinds the watcher."""
+    runtime_dir = tmp_path / '.genkit' / 'runtimes'
+    runtime_dir.mkdir(parents=True)
+    with RuntimeManager(spec=ServerSpec(port=3100), runtime_dir=runtime_dir) as rm:
+        path = rm.write_runtime_file()
+    assert not path.exists()
+    assert runtime_dir.is_dir()

@@ -262,9 +262,9 @@ app = server.asgi_app(
 )
 ```
 
-In the default stateful mode, each session stays open until its client sends `DELETE` or the process
-ends, and the MCP SDK reads a whole request body before it parses it. Neither has a limit here.
-`stateless=True` keeps no sessions. Limit body size and request rate at a reverse proxy.
+In the default stateful mode, the MCP SDK closes a session after 30 minutes with nothing in flight
+and holds at most 10,000 at once, answering 503 beyond that. It refuses a request body over 4 MiB
+with a 413 in either mode. Nothing limits request rate here, so do that at a reverse proxy.
 
 Starlette does not run a mounted app's lifespan, and the session manager inside needs one, so
 mounting into an existing app means chaining it:

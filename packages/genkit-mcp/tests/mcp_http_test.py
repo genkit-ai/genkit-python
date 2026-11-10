@@ -231,6 +231,25 @@ async def test_an_origin_outside_the_allowed_list_is_refused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_refused_request_leaves_no_session_behind() -> None:
+    """A page that cannot call tools must not be able to pile up sessions either."""
+    server = create_mcp_server(app_with_tools(), 'bookshop')
+    app = server.asgi_app(json_response=True)
+    accept = {'accept': 'application/json, text/event-stream'}
+
+    async with app.router.lifespan_context(app):
+        async with http_client(app) as http:
+            statuses = [
+                (await http.post('/mcp', headers={**accept, 'host': 'evil.example'}, json=INITIALIZE)).status_code,
+                (await http.post('/mcp', headers={**accept, 'origin': 'http://evil.example'}, json=INITIALIZE)).status_code,
+            ]
+            sessions = dict(app.routes[0].endpoint.manager._server_instances)
+
+    assert statuses == [421, 403]
+    assert sessions == {}
+
+
+@pytest.mark.asyncio
 async def test_a_local_origin_is_served() -> None:
     server = create_mcp_server(app_with_tools(), 'bookshop')
 

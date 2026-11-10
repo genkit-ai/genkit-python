@@ -163,9 +163,10 @@ class McpServer:
         """Build an ASGI app serving this server over streamable HTTP.
 
         The app owns a manager of its own and opens it in its lifespan, so
-        whatever runs the app has to run that lifespan. Starlette does not run a
-        mounted app's lifespan, so mounting this one means chaining its
-        ``router.lifespan_context`` into the host app's.
+        whatever runs the app has to run that lifespan, and can run it only
+        once; call ``asgi_app`` again for an app to start afresh. Starlette does
+        not run a mounted app's lifespan, so mounting this one means chaining
+        its ``router.lifespan_context`` into the host app's.
 
         The endpoint has no authentication: anyone who can reach it can call
         every tool. A request whose ``Host`` is not in ``allowed_hosts`` gets a
@@ -186,7 +187,7 @@ class McpServer:
             allowed_origins: ``Origin`` header values to accept from a
                 browser. ``scheme://name:*`` accepts any port. A request
                 with no ``Origin`` is accepted. Defaults to localhost on any
-                port.
+                port, over http or https.
 
         Returns:
             A Starlette app to serve, mount, or wrap in middleware.
@@ -415,10 +416,9 @@ def _move_stdio_off_the_wire() -> None:
 class _StreamableHttpEndpoint:
     """A streamable HTTP session manager as a plain ASGI app.
 
-    A class rather than a function because Starlette reads a function endpoint
-    as a request handler, which never sees the GET and DELETE streamable HTTP
-    needs. It sits on a ``Route``, since a ``Mount`` redirects its own path to
-    one with a trailing slash that no client asks for.
+    Starlette hands a callable instance every method as raw ASGI, so the
+    manager writes its own response to GET, POST and DELETE alike. On a
+    ``Route`` the exact path is served with no trailing-slash redirect.
     """
 
     def __init__(self, manager: StreamableHTTPSessionManager) -> None:

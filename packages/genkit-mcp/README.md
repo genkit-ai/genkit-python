@@ -288,6 +288,10 @@ app = FastAPI(lifespan=lifespan)
 app.mount('/api', mcp_app)  # the endpoint is then /api/mcp
 ```
 
+An app's lifespan runs only once, so each test that starts one needs its own `server.asgi_app()`.
+Starlette's `TestClient` sends `Host: testserver` unless told otherwise, which gets a 421; pass
+`base_url='http://localhost'`.
+
 ### Known gaps
 
 Scalar outputs and strings that look like JSON do not round-trip exactly. Clients join every text

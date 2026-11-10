@@ -54,6 +54,17 @@ _ENV_DEV = 'dev'
 _ENV_PROD = 'prod'
 
 
+def _service_account_key(project_id: str) -> dict[str, str]:
+    """A service-account key dict with every field google-auth requires; the key itself is fake."""
+    return {
+        'type': 'service_account',
+        'project_id': project_id,
+        'private_key': '-----BEGIN PRIVATE KEY-----\nsecret-key-material\n-----END PRIVATE KEY-----\n',
+        'client_email': f'telemetry@{project_id}.iam.gserviceaccount.com',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+    }
+
+
 @pytest.fixture(autouse=True)
 def _reset_instrumentation() -> Generator[None, None, None]:
     reset_instrumentation()
@@ -428,7 +439,7 @@ def _exporter_project(mock_ctor: MagicMock) -> str | None:
         ),
         pytest.param(
             {'FIREBASE_PROJECT_ID': 'firebase-proj'},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'creds-proj',
             id='firebase_ignored_credentials_win',
         ),
@@ -458,13 +469,13 @@ def _exporter_project(mock_ctor: MagicMock) -> str | None:
         ),
         pytest.param(
             {'GOOGLE_CLOUD_PROJECT': 'gcp-proj'},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'gcp-proj',
             id='google_cloud_project_beats_credentials',
         ),
         pytest.param(
             {},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'creds-proj',
             id='credentials_are_last_fallback',
         ),
@@ -493,6 +504,7 @@ def test_enable_sends_traces_metrics_and_logs_to_the_resolved_cloud_project(
         patch('genkit_google_cloud._telemetry._config.GenkitMetricExporter'),
         patch('genkit_google_cloud._telemetry._config.PeriodicExportingMetricReader'),
         patch('genkit_google_cloud._telemetry._config.metrics'),
+        patch('genkit_google_cloud._telemetry._config.ServiceAccountCredentials'),
     ):
         enable_google_cloud_telemetry(**kwargs)
     assert _exporter_project(traces) == expected
@@ -774,12 +786,7 @@ def test_up_down_counter_reaches_cloud_monitoring_as_running_total() -> None:
 
 def test_enable_telemetry_with_credentials_dict_creates_clients() -> None:
     """A credentials dict becomes a client on each Cloud exporter; raw credentials never reach them."""
-    sample_creds = {
-        'type': 'service_account',
-        'project_id': 'creds-project',
-        'private_key': 'fake-key',
-        'client_email': 'sa@creds-project.iam.gserviceaccount.com',
-    }
+    sample_creds = _service_account_key('creds-project')
     with (
         mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False),
         patch('genkit_google_cloud._telemetry._config.GenkitGCPExporter') as mock_trace_exp,
@@ -815,6 +822,46 @@ def test_enable_telemetry_with_credentials_dict_creates_clients() -> None:
             assert kwargs['project_id'] == 'creds-project'
             assert kwargs['client'] is client_cls.return_value
             assert 'credentials' not in kwargs
+
+
+@pytest.mark.parametrize(
+    ('credentials', 'expected_message'),
+    [
+        pytest.param(
+            {'type': 'service_account', 'project_id': 'orders-prod', 'private_key': 'secret-key-material'},
+            'credentials= is not a service account key; missing client_email, token_uri',
+            id='missing_fields',
+        ),
+        pytest.param({}, 'missing client_email, private_key, token_uri', id='empty_dict'),
+        pytest.param(
+            {**_service_account_key('orders-prod'), 'private_key': 'secret-key-material'},
+            'credentials= could not be loaded as a service account key',
+            id='private_key_not_pem',
+        ),
+    ],
+)
+def test_enable_rejects_unusable_credentials_without_echoing_them(
+    credentials: dict[str, str], expected_message: str
+) -> None:
+    """A bad credentials= raises INVALID_ARGUMENT naming fields, not values, and can be retried."""
+    with mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False):
+        with pytest.raises(GenkitError) as exc_info:
+            enable_google_cloud_telemetry(credentials=credentials)
+
+    err = exc_info.value
+    assert err.status == 'INVALID_ARGUMENT'
+    assert expected_message in str(err)
+    assert 'secret-key-material' not in str(err)
+    # No google-auth or cryptography error rides along in the exception chain.
+    assert err.__cause__ is None
+    assert err.__context__ is None or err.__suppress_context__
+
+    # Rejected before the once-per-process latch, so a fixed call goes through.
+    with (
+        mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_DEV}, clear=False),
+        patch('genkit_google_cloud._telemetry._config.ServiceAccountCredentials'),
+    ):
+        enable_google_cloud_telemetry(credentials=_service_account_key('orders-prod'))
 
 
 def test_enable_telemetry_without_credentials_passes_no_client() -> None:

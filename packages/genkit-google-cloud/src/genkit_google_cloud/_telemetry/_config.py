@@ -194,6 +194,35 @@ def resolve_project(
     return None
 
 
+# Keys google-auth needs to build service-account credentials from a dict.
+_SERVICE_ACCOUNT_REQUIRED_FIELDS = ('client_email', 'private_key', 'token_uri')
+
+
+def _load_service_account_credentials(info: dict[str, Any]) -> GoogleCredentials:
+    """Build service-account credentials from ``credentials=``, or raise INVALID_ARGUMENT.
+
+    Messages name fields, never values: the dict holds a private key.
+    """
+    missing = [field for field in _SERVICE_ACCOUNT_REQUIRED_FIELDS if not info.get(field)]
+    if missing:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'credentials= is not a service account key; missing {", ".join(missing)}',
+        )
+    try:
+        return ServiceAccountCredentials.from_service_account_info(info)
+    except Exception as e:
+        # google-auth and cryptography errors are dropped (from None) so no part of
+        # the key can reach a log line through the exception chain.
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=(
+                f'credentials= could not be loaded as a service account key ({type(e).__name__}); '
+                'check that private_key is the PEM key from the downloaded JSON key file'
+            ),
+        ) from None
+
+
 def _adc_project_id() -> str | None:
     """Project on Application Default Credentials, or None when ADC has none.
 
@@ -231,7 +260,8 @@ class GcpTelemetry:
 
         Args:
             project: GCP project ID.
-            credentials: Optional credentials dict.
+            credentials: Optional service-account key dict. Parsed here, so a
+                bad key raises ``INVALID_ARGUMENT`` before anything is installed.
             sampler: Trace sampler.
             force_dev_export: Check to force export in dev environment.
             disable_metrics: If True, metrics are not exported.
@@ -240,8 +270,7 @@ class GcpTelemetry:
             metric_export_timeout_ms: Export timeout in ms.
         """
         self.credentials = credentials
-        # Parsed from ``credentials`` in initialize(), only when exporting.
-        self._google_credentials: GoogleCredentials | None = None
+        self._google_credentials = _load_service_account_credentials(credentials) if credentials is not None else None
         self.sampler = sampler
         self.force_dev_export = force_dev_export
         self.disable_metrics = disable_metrics
@@ -273,16 +302,6 @@ class GcpTelemetry:
 
         self.metric_export_timeout_ms = metric_export_timeout_ms or self.metric_export_interval_ms
 
-    def _load_google_credentials(self) -> GoogleCredentials | None:
-        """Build service-account credentials from the ``credentials`` dict, or None to use ADC."""
-        if not self.credentials:
-            return None
-        try:
-            return ServiceAccountCredentials.from_service_account_info(self.credentials)
-        except Exception as e:
-            logger.warning('Failed to load service account credentials from dict', error=str(e))
-            return None
-
     def _build_exporter_kwargs(self, client_cls: Callable[..., object]) -> dict[str, Any]:
         """Build kwargs for an OTel Cloud exporter, which takes ``project_id`` and ``client``.
 
@@ -308,9 +327,6 @@ class GcpTelemetry:
         """
         is_dev = is_dev_environment()
         should_export = self.force_dev_export or not is_dev
-
-        if should_export:
-            self._google_credentials = self._load_google_credentials()
 
         if should_export and not self.project:
             # Only when exporting: an ADC lookup can probe the metadata server.

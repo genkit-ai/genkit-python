@@ -564,8 +564,7 @@ def _encode_json_value(value: object) -> str:
     """Encode an object as a JSON string, dumping Pydantic models to dicts first.
 
     Strings are encoded too (``'ORD-555'`` -> ``'"ORD-555"'``), so every JSON
-    attribute round-trips through ``json.loads``. Same shape as JS ``JSON.stringify``
-    for JSON-safe values.
+    attribute round-trips through ``json.loads``.
     """
 
     def _json_default(obj: object) -> object:

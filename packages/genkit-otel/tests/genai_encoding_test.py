@@ -51,7 +51,7 @@ def test_nested_pydantic_values_are_encoded() -> None:
 
 
 def test_plain_string_is_json_encoded() -> None:
-    """A str is JSON-encoded like every other value, so json.loads round-trips it (JS JSON.stringify)."""
+    """A str is JSON-encoded like every other value, so json.loads round-trips it."""
     assert _encode_json_value('table for two') == '"table for two"'
     assert json.loads(_encode_json_value('table for two')) == 'table for two'
 

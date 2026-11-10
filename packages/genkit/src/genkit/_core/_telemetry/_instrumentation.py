@@ -231,9 +231,9 @@ def flush_span_exports() -> None:
     """Wait for in-flight span exports only. Internal; the Dev UI calls this per run.
 
     The reflection server flushes before it hands a trace id back, so the run
-    shouldn't also wait on metric and log exports (JS ``flushTracing`` does the
-    same). A provider implementing ``SpanFlushableInstrumentation`` (``GenAiInstrumentation``)
-    flushes spans only; any other flushable provider gets ``flush()``.
+    shouldn't also wait on metric and log exports. A provider implementing
+    ``SpanFlushableInstrumentation`` (``GenAiInstrumentation``) flushes spans
+    only; any other flushable provider gets ``flush()``.
     """
     for inst in instrumentations:
         if isinstance(inst, SpanFlushableInstrumentation):

@@ -274,10 +274,12 @@ async def test_allowed_hosts_and_origins_replace_the_local_defaults() -> None:
         )
 
     served = await initialize(app(), host='tools.example.com', origin='https://app.example.com')
-    local = await initialize(app(), host='localhost:8000')
+    local_host = await initialize(app(), host='localhost:8000')
+    local_origin = await initialize(app(), host='tools.example.com', origin='http://localhost:5173')
 
     assert served.status_code == 200
-    assert local.status_code == 421
+    assert local_host.status_code == 421
+    assert local_origin.status_code == 403
 
 
 def test_a_single_string_for_allowed_hosts_is_refused() -> None:

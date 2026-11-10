@@ -55,7 +55,7 @@ print(len(embeddings[0].embedding))
 
 These snippets assume an async context (`await` inside an `async def`); pasting
 them at module top level raises `SyntaxError: 'await' outside function`. See the
-[runnable sample](https://github.com/genkit-ai/genkit/tree/main/py/samples/ollama-sample)
+[runnable sample](https://github.com/genkit-ai/genkit-python/tree/main/samples/ollama-sample)
 for a complete `async def main()` plus `ai.run_main(...)` entry point.
 
 ### Streaming
@@ -246,7 +246,7 @@ host.
 
 ## Sample
 
-See [py/samples/ollama-sample](https://github.com/genkit-ai/genkit/tree/main/py/samples/ollama-sample) for a runnable sample covering
+See [samples/ollama-sample](https://github.com/genkit-ai/genkit-python/tree/main/samples/ollama-sample) for a runnable sample covering
 chat, streaming, tool calling, and embeddings with a local Ollama server.
 
 ## Notes

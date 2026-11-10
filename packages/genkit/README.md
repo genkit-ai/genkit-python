@@ -1,6 +1,6 @@
 # genkit
 
-[![PyPI version](https://img.shields.io/pypi/v/genkit)](https://pypi.org/project/genkit/) [![Python versions](https://img.shields.io/pypi/pyversions/genkit)](https://pypi.org/project/genkit/) [![Downloads](https://img.shields.io/pypi/dm/genkit)](https://pypi.org/project/genkit/) [![License](https://img.shields.io/pypi/l/genkit)](https://github.com/genkit-ai/genkit/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/genkit)](https://pypi.org/project/genkit/) [![Python versions](https://img.shields.io/pypi/pyversions/genkit)](https://pypi.org/project/genkit/) [![Downloads](https://img.shields.io/pypi/dm/genkit)](https://pypi.org/project/genkit/) [![License](https://img.shields.io/pypi/l/genkit)](https://github.com/genkit-ai/genkit-python/blob/main/LICENSE)
 
 Genkit is a Python SDK from Google. One API for generate, tools, structured output, and agents, plus a local Developer UI.
 

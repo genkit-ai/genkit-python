@@ -348,7 +348,7 @@ print(operation.output.message.content[0].media.url)
 # => gs://my-bucket/videos/output.mp4
 ```
 
-Runnable version: [google-genai-media](https://github.com/genkit-ai/genkit/tree/main/py/samples/google-genai-media).
+Runnable version: [google-genai-media](https://github.com/genkit-ai/genkit-python/tree/main/samples/google-genai-media).
 
 ### Virtual Try-On (Vertex AI)
 
@@ -384,4 +384,4 @@ for part in response.message.content:
     print(part.media.url)
 ```
 
-Runnable snippets are in [`py/samples`](../../samples).
+Runnable snippets are in [`samples`](../../samples).

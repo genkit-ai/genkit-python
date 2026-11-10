@@ -337,7 +337,7 @@ def test_span_metadata_and_flush_helpers_are_public() -> None:
         assert name in telemetry.__all__
         assert getattr(telemetry, name) is getattr(core_instrumentation, name)
     # Genkit writes genkit:state itself, and dispose already runs at exit.
-    for name in ('set_span_state', 'SpanState', 'dispose_instrumentations', 'flush_span_exports'):
+    for name in ('set_span_state', 'SpanState', 'dispose_instrumentations'):
         assert name not in telemetry.__all__
         assert not hasattr(telemetry, name)
 
@@ -362,39 +362,6 @@ def test_flush_instrumentations_flushes_flushable() -> None:
 
     flush_instrumentations()
 
-    assert buffered.flushed == 1
-
-
-def test_flush_span_exports_prefers_span_hook_and_falls_back_to_flush() -> None:
-    """The Dev UI flush calls flush_spans when a provider implements SpanFlushableInstrumentation, else flush()."""
-
-    class SpanAware(FakeInstrumentation):
-        def __init__(self) -> None:
-            super().__init__('span-aware', [])
-            self.calls: list[str] = []
-
-        def flush(self) -> None:
-            self.calls.append('flush')
-
-        def flush_spans(self) -> None:
-            self.calls.append('spans')
-
-    class Buffered(FakeInstrumentation):
-        def __init__(self) -> None:
-            super().__init__('buffered', [])
-            self.flushed = 0
-
-        def flush(self) -> None:
-            self.flushed += 1
-
-    span_aware = SpanAware()
-    buffered = Buffered()
-    configure_instrumentation(span_aware)
-    configure_instrumentation(buffered)
-
-    core_instrumentation.flush_span_exports()
-
-    assert span_aware.calls == ['spans']
     assert buffered.flushed == 1
 
 

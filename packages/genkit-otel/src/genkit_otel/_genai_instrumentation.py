@@ -181,10 +181,6 @@ class GenAiInstrumentation(Instrumentation):
         for provider in (trace_api.get_tracer_provider(), metrics_api.get_meter_provider(), get_logger_provider()):
             _force_flush(provider)
 
-    def flush_spans(self) -> None:
-        """Force-flush the global OTel tracer provider only (skipping meter and logger providers)."""
-        _force_flush(trace_api.get_tracer_provider())
-
     async def run_in_new_span(
         self,
         metadata: SpanMetadata,

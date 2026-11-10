@@ -293,25 +293,38 @@ def test_poster_reuses_one_worker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dev_ui_run_flush_uses_the_span_only_hook() -> None:
-    """Before a run response, the reflection server drains spans only; a backend's full flush() stays for app code."""
+async def test_dev_ui_run_flush_flushes_dev_ui_collector_only() -> None:
+    """Before a run response, the reflection server drains DevUIInstrumentation only, not remote APM backends."""
 
-    class SpanAwareBackend:
+    class RecordingSink:
         def __init__(self) -> None:
-            self.calls: list[str] = []
+            self.flushes = 0
+
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+        def shutdown(self) -> None:
+            pass
+
+    class RemoteBackend:
+        def __init__(self) -> None:
+            self.flushes = 0
 
         async def run_in_new_span(self, metadata: Any, next: Any) -> Any:  # noqa: ANN401
             return await next()
 
         def flush(self) -> None:
-            self.calls.append('flush')
+            self.flushes += 1
 
-        def flush_spans(self) -> None:
-            self.calls.append('spans')
-
-    backend = SpanAwareBackend()
-    configure_instrumentation(backend)
+    dev_sink = RecordingSink()
+    remote = RemoteBackend()
+    configure_instrumentation(DevUIInstrumentation(dev_sink))  # type: ignore[arg-type]
+    configure_instrumentation(remote)
 
     await _handshake_server().flush_tracing()
 
-    assert backend.calls == ['spans']
+    assert dev_sink.flushes == 1
+    assert remote.flushes == 0

@@ -113,19 +113,11 @@ class DisposableInstrumentation(Protocol):
 class FlushableInstrumentation(Protocol):
     """Optional: a provider that buffers exports.
 
-    ``flush_instrumentations`` calls ``flush`` so a trace is on the wire
-    before the Developer UI asks for it, or before a serverless process
-    freezes.
+    ``flush_instrumentations`` calls ``flush`` so buffered telemetry is on the
+    wire before a serverless process freezes (or in tests).
     """
 
     def flush(self) -> None: ...
-
-
-@runtime_checkable
-class SpanFlushableInstrumentation(Protocol):
-    """Optional: a provider that can flush span exports without flushing metrics or logs."""
-
-    def flush_spans(self) -> None: ...
 
 
 instrumentations: list[Instrumentation] = []
@@ -224,21 +216,6 @@ def flush_instrumentations() -> None:
     """Wait for in-flight exports on every configured backend."""
     for inst in instrumentations:
         if isinstance(inst, FlushableInstrumentation):
-            inst.flush()
-
-
-def flush_span_exports() -> None:
-    """Wait for in-flight span exports only. Internal; the Dev UI calls this per run.
-
-    The reflection server flushes before it hands a trace id back, so the run
-    shouldn't also wait on metric and log exports. A provider implementing
-    ``SpanFlushableInstrumentation`` (``GenAiInstrumentation``) flushes spans
-    only; any other flushable provider gets ``flush()``.
-    """
-    for inst in instrumentations:
-        if isinstance(inst, SpanFlushableInstrumentation):
-            inst.flush_spans()
-        elif isinstance(inst, FlushableInstrumentation):
             inst.flush()
 
 

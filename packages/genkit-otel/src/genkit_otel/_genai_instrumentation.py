@@ -526,7 +526,8 @@ def _encode_json_value(value: object) -> str:
 
     def _json_default(obj: object) -> object:
         if isinstance(obj, BaseModel):
-            return obj.model_dump(mode='json')
+            # Same shape as core's to_json_attr: wire aliases, no null fields.
+            return obj.model_dump(mode='json', by_alias=True, exclude_none=True)
         return str(obj)
 
     return json.dumps(value, default=_json_default)

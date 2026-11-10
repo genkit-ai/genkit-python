@@ -60,6 +60,7 @@ from genkit._core._error import (
     TaskGroupError,
     attached_cause,
     interrupt_escape_error,
+    is_public_failure,
     mark_public_failure,
 )
 from genkit._core._logger import get_logger
@@ -1162,6 +1163,12 @@ async def generate_prompt_agent_turn(
 
     # Bad JSON is not a dead turn — generate already kept the model text.
     if response.error is not None and response.error.reason is not ErrorReason.INVALID_OUTPUT:
+        if is_public_failure(response.error):
+            raise PublicError(
+                response.error.status or 'INTERNAL',
+                response.error.message,
+                details=response.error.details,
+            )
         raise GenkitError(
             message=response.error.message,
             status=response.error.status,

@@ -434,3 +434,60 @@ async def test_failed_turn_keeps_error_text_in_process_and_in_the_store() -> Non
     # 3. Over HTTP, getSnapshot sends the generic message.
     served = client(agent).post('/api/chat/getSnapshot', json={'snapshotId': snapshot_id})
     assert served.json()['result']['error'] == {'status': 'INTERNAL', 'message': 'Internal Error'}
+
+
+@pytest.mark.parametrize(
+    ('tool_exc', 'expected'),
+    [
+        (
+            PublicError('PERMISSION_DENIED', 'table 12 is reserved'),
+            {
+                'status': 'PERMISSION_DENIED',
+                'message': 'table 12 is reserved',
+                'details': {'reason': ErrorReason.TOOL_FAILED.value},
+            },
+        ),
+        (
+            RuntimeError('allergen db password=hunter2'),
+            {'status': 'INTERNAL', 'message': 'Internal Error'},
+        ),
+    ],
+    ids=['public_tool_error', 'private_tool_error'],
+)
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+def test_prompt_agent_tool_error_preserves_public_error_over_http(
+    tool_exc: Exception,
+    expected: dict[str, Any],
+    stream: bool,
+) -> None:
+    """A prompt agent whose tool raises PublicError sends that sentence over HTTP; private tool crashes redact."""
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='reserve_table')
+    async def reserve_table(table: int) -> str:  # noqa: ARG001
+        raise tool_exc
+
+    pm.responses = [
+        ModelResponse(
+            message=Message(
+                role=Role.MODEL,
+                content=[Part.from_tool_request('reserve_table', 12, ref='call_1')],
+            ),
+            finish_reason=FinishReason.STOP,
+        )
+    ]
+    agent = ai.define_agent(
+        name='reservations',
+        model='scriptedModel',
+        tools=['reserve_table'],
+        store=InMemorySessionStore(),
+    )
+
+    response = client(agent).post(f'/api/chat?stream={str(stream).lower()}', json={'message': 'book table 12'})
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    assert result['error'] == expected
+    assert 'hunter2' not in response.text

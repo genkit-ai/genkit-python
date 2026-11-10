@@ -2419,9 +2419,21 @@ def test_to_error_details_classifies_status_like_go(
 
 
 def test_to_error_details_marks_only_a_public_error_safe_for_the_wire() -> None:
-    """A PublicError's Failure survives client_safe_failure; a plain GenkitError's text does not."""
+    """A PublicError's Failure survives client_safe_failure; plain errors and deserialized snapshots do not."""
     public = to_error_details(PublicError('PERMISSION_DENIED', 'table 12 is reserved'))
+    public_with_stack = to_error_details(
+        PublicError('INVALID_ARGUMENT', 'bad seat count', details={'field': 'seats', 'stack': 'Traceback...'})
+    )
     private = to_error_details(GenkitError(status='NOT_FOUND', message='no row for key=hunter2'))
+    reloaded = Failure.model_validate_json(public.model_dump_json())
 
+    assert public == Failure(status='PERMISSION_DENIED', message='table 12 is reserved')
+    assert public == reloaded
     assert client_safe_failure(public) is public
+    assert client_safe_failure(public_with_stack) == Failure(
+        status='INVALID_ARGUMENT',
+        message='bad seat count',
+        details={'field': 'seats'},
+    )
     assert client_safe_failure(private) == Failure(status='NOT_FOUND', message='Not Found')
+    assert client_safe_failure(reloaded) == Failure(status='PERMISSION_DENIED', message='Permission Denied')

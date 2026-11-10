@@ -80,6 +80,7 @@ from genkit._core._error import (
     PublicError,
     _StreamingCallbackError,
     attached_cause,
+    mark_public_failure,
 )
 from genkit._core._logger import get_logger, is_debug_enabled
 from genkit._core._middleware import (
@@ -1507,12 +1508,15 @@ def box_from_exc(
         details['reason'] = reason.value
     # Failure.details is a JSON object (Go's map[string]any); drop an empty one.
     failure_details = dict(cast(Mapping[str, Any], details)) if isinstance(details, Mapping) and details else None
+    failure = Failure(status=status, message=finish_message, details=failure_details)
+    if not caller_stopped and not pipe_failed and isinstance(exc, PublicError):
+        mark_public_failure(failure)
     out = box_dead_turn(
         response=response,
         messages=messages,
         finish_reason=FinishReason.ABORTED if caller_stopped else FinishReason.FAILED,
         finish_message=finish_message,
-        error=Failure(status=status, message=finish_message, details=failure_details),
+        error=failure,
         request=request,
     )
     if not caller_stopped:

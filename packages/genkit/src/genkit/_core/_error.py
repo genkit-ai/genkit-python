@@ -180,6 +180,13 @@ class Failure(_RuntimeErrorWire):
     def reason(self) -> ErrorReason | None:
         return error_reason(self.details)
 
+    def __eq__(self, other: object) -> bool:
+        # _public is wire-redaction provenance, not part of the failure value:
+        # res.error == Failure(...) and snapshot round-trip equality ignore it.
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return (self.status, self.message, self.details) == (other.status, other.message, other.details)
+
 
 def mark_public_failure(failure: Failure) -> Failure:
     """Mark ``failure`` as built from a PublicError, so a served agent sends its text."""
@@ -189,18 +196,32 @@ def mark_public_failure(failure: Failure) -> Failure:
     return failure
 
 
+def is_public_failure(failure: Failure) -> bool:
+    """Whether ``failure`` came from a ``PublicError`` in this process."""
+    return failure._public
+
+
 def client_safe_failure(failure: Failure) -> Failure:
     """``failure`` as the HTTP caller of a served agent may see it.
 
     Same rule as ``error_body`` for a served flow: a PublicError's message
-    and details go out as is. Anything else keeps its status, since callers
-    branch on it, but gets a generic message for that status and no
+    and cleaned details go out as is. Anything else keeps its status, since
+    callers branch on it, but gets a generic message for that status and no
     details, so exception text, provider responses and internal ids stay in
     the process, the store and the server log. Mirrors Go's
     ``clientSafeError``.
     """
     if failure._public:
-        return failure
+        details = _client_details(failure.details)
+        if details == failure.details:
+            return failure
+        return mark_public_failure(
+            Failure(
+                status=failure.status,
+                message=failure.message,
+                details=details if isinstance(details, dict) else None,
+            )
+        )
     status = failure.status
     message = 'Internal Error' if status is None or status == 'INTERNAL' else status.replace('_', ' ').title()
     return Failure(status=status, message=message)

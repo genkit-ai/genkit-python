@@ -115,7 +115,8 @@ class SessionRunner(Generic[StateT]):
         agent_name: str | None = None,
     ) -> None:
         self.session = session
-        self.agent_name = agent_name
+        # Names the agent in the server-side log when a turn error is redacted.
+        self._agent_name = agent_name
         self.turn_inputs = turn_inputs
         self.store = store
         self.get_parent_snapshot_id = get_parent_snapshot_id
@@ -229,7 +230,7 @@ class SessionRunner(Generic[StateT]):
                 else:
                     raise
                 self.last_turn_finish_reason = AgentFinishReason.FAILED
-                self.last_turn_error = to_error_details(turn_error, agent=self.agent_name)
+                self.last_turn_error = to_error_details(turn_error, agent=self._agent_name)
 
                 if self.on_end_turn is not None:
                     await self.on_end_turn(AgentFinishReason.FAILED)

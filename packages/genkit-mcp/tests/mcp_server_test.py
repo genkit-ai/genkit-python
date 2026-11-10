@@ -16,13 +16,14 @@ from contextlib import asynccontextmanager
 import pytest
 from genkit_mcp._server import McpServer, create_mcp_server
 from mcp import ClientSession
+from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import BaseModel
 from structlog.testing import capture_logs
 
-from genkit import Genkit, GenkitError, MultipartToolResponse, Part, Tool, ToolContext
-from genkit.plugin_api import Action
+from genkit import Genkit, MultipartToolResponse, Part, PublicError, Tool, ToolContext
+from genkit.plugin_api import Action, ActionKind, Plugin, provider_error
 
 
 class Shelf(BaseModel):
@@ -55,21 +56,26 @@ def text_of(result: CallToolResult) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_tool_defined_after_the_server_is_still_listed() -> None:
+async def test_a_tool_defined_after_a_listing_is_in_the_next_one_and_callable() -> None:
     """Listing reads the app per request, so late definitions are not missed."""
     ai = app()
     server = create_mcp_server(ai, 'bookshop')
 
-    @ai.tool()
-    async def late() -> str:
-        """Defined after the server was built."""
-        return 'here'
-
     async with connected(server) as session:
-        listed = await session.list_tools()
+        before = await session.list_tools()
 
-    assert [tool.name for tool in listed.tools] == ['late']
-    assert listed.tools[0].description == 'Defined after the server was built.'
+        @ai.tool()
+        async def late() -> str:
+            """Defined after the first listing."""
+            return 'here'
+
+        after = await session.list_tools()
+        result = await session.call_tool('late', {})
+
+    assert before.tools == []
+    assert [tool.name for tool in after.tools] == ['late']
+    assert after.tools[0].description == 'Defined after the first listing.'
+    assert text_of(result) == 'here'
 
 
 @pytest.mark.asyncio
@@ -146,9 +152,44 @@ async def test_an_object_tool_returns_structured_content_and_advertises_its_sche
         listed = await session.list_tools()
         result = await session.call_tool('shelf', {})
 
-    assert listed.tools[0].outputSchema is not None
-    assert listed.tools[0].outputSchema.get('type') == 'object'
+    assert listed.tools[0].outputSchema == Shelf.model_json_schema()
     assert result.structuredContent == {'title': 'Fiction', 'count': 2}
+
+
+@pytest.mark.asyncio
+async def test_a_tool_returning_a_tool_response_advertises_no_output_schema() -> None:
+    """Its output can be left out, and a client rejects a result missing what the schema promised."""
+    ai = app()
+
+    @ai.tool()
+    async def shelf_photo() -> MultipartToolResponse[Shelf]:
+        """Photograph a shelf."""
+        return MultipartToolResponse(content=[Part.from_media(url='data:image/png;base64,aW1n')])
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        listed = await session.list_tools()
+        result = await session.call_tool('shelf_photo', {})
+
+    assert listed.tools[0].outputSchema is None
+    assert result.isError is False
+    assert result.content == [ImageContent(type='image', mimeType='image/png', data='aW1n')]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_registered_as_a_plain_action_is_served() -> None:
+    """A tool action with no ``tool.v2`` companion returns its value, which becomes the output."""
+    ai = app()
+
+    async def shelf(_: dict[str, object]) -> Shelf:
+        return Shelf(title='Poetry', count=3)
+
+    ai._registry.register_action_from_instance(Action(kind=ActionKind.TOOL, name='shelf', fn=shelf))
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        result = await session.call_tool('shelf', {})
+
+    assert result.isError is False
+    assert result.structuredContent == {'title': 'Poetry', 'count': 3}
 
 
 @pytest.mark.asyncio
@@ -170,7 +211,7 @@ async def test_a_media_tool_returns_image_content() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_raising_tool_becomes_an_error_result_carrying_its_message() -> None:
+async def test_a_raising_tool_becomes_an_error_result_without_its_message() -> None:
     ai = app()
 
     @ai.tool()
@@ -186,24 +227,87 @@ async def test_a_raising_tool_becomes_an_error_result_carrying_its_message() -> 
 
 
 @pytest.mark.asyncio
-async def test_a_genkit_error_keeps_its_status_and_message_but_not_its_cause() -> None:
-    """A GenkitError's message is the app's choice, and its cause's text is not."""
+async def test_a_public_error_sends_its_status_and_message() -> None:
+    """A PublicError is the app's message for the caller."""
     ai = app()
 
     @ai.tool()
     async def book() -> str:
         """Fail on purpose."""
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message='date must be in the future',
-            cause=RuntimeError('GET https://api.example.com/v1?key=SECRET failed'),
-        )
+        raise PublicError(status='INVALID_ARGUMENT', message='date must be in the future')
 
     async with connected(create_mcp_server(ai, 'bookshop')) as session:
         result = await session.call_tool('book', {})
 
     assert result.isError is True
     assert result.content == [TextContent(type='text', text='INVALID_ARGUMENT: date must be in the future')]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_sends_only_its_status() -> None:
+    """A provider's error text can name a project or a resource path, so it stays on the server."""
+    ai = app()
+
+    @ai.tool()
+    async def lookup() -> str:
+        """Call a model that is not reachable."""
+        raise provider_error(RuntimeError('Permission denied on resource project acme-prod-1234'), http_status=403)
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        result = await session.call_tool('lookup', {})
+
+    assert result.isError is True
+    assert result.content == [TextContent(type='text', text="Tool 'lookup' failed: PERMISSION_DENIED")]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_is_an_error_result_without_a_traceback() -> None:
+    """MCP has no way to pause a call for the user, so an interrupt says so instead of looking like a crash."""
+    ai = app()
+    ai.define_interrupt('confirm_order', description='Ask the diner to confirm.')
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        with capture_logs() as logs:
+            result = await session.call_tool('confirm_order', {})
+
+    assert result.isError is True
+    assert text_of(result) == "Tool 'confirm_order' paused for input from the user, which this server cannot ask for"
+    assert [log['log_level'] for log in logs if log.get('tool') == 'confirm_order'] == ['warning']
+
+
+class _FailingPlugin(Plugin):
+    """Fails to start with text the client must not see."""
+
+    name = 'failing'
+
+    async def init(self) -> list[Action]:
+        raise RuntimeError('GET https://api.example.com/v1?key=SECRET failed')
+
+    async def resolve(self, action_type: ActionKind, name: str) -> Action | None:
+        return None
+
+    async def list_actions(self) -> list[Action]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_that_fails_to_start_keeps_its_error_text_on_the_server() -> None:
+    """Listing starts every plugin, and a failure there reaches the client only as a fixed sentence."""
+    ai = Genkit(plugins=[_FailingPlugin()])
+
+    @ai.tool()
+    async def known() -> str:
+        """Exist."""
+        return 'here'
+
+    async with create_connected_server_and_client_session(create_mcp_server(ai, 'bookshop')._server) as session:
+        with pytest.raises(McpError) as listing:
+            await session.list_tools()
+        result = await session.call_tool('known', {})
+
+    assert listing.value.error.message == 'The server could not list its tools'
+    assert result.isError is True
+    assert text_of(result) == 'The server could not list its tools'
 
 
 @pytest.mark.asyncio

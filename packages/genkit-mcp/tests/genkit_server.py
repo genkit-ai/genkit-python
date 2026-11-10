@@ -4,89 +4,31 @@
 # you may not use this file except in compliance with the License.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A Genkit app served over MCP stdio, driven by the round-trip tests."""
+"""A Genkit app served over MCP stdio, run as a child process by the stdio tests.
+
+``MCP_TEST_PRE_REDIRECT=1`` points ``sys.stdout`` at stderr before serving, as
+an app following the usual MCP advice does. ``MCP_TEST_NO_REDIRECT=1`` serves
+with ``redirect_stdout=False``.
+"""
 
 import asyncio
+import os
+import sys
 
-import structlog
 from genkit_mcp import create_mcp_server
-from pydantic import BaseModel
 
-from genkit import Genkit, GenkitError, MultipartToolResponse, Part
-from genkit._core._typing import Resource
+from genkit import Genkit, get_logger
 
-logger = structlog.get_logger(__name__)
-
-IMAGE_URL = 'data:image/png;base64,aW1n'
-AUDIO_URL = 'data:audio/wav;base64,c25k'
-PDF_URL = 'data:application/pdf;base64,cGRm'
-RESOURCE_URI = 'https://example.com/manual'
-
-SERVER_NAME = 'roundtrip'
+logger = get_logger(__name__)
 
 ai = Genkit()
-
-
-class Shelf(BaseModel):
-    """Output of the one tool whose schema MCP can advertise."""
-
-    title: str
-    count: int
 
 
 @ai.tool()
 async def plain_text() -> str:
     """Return a string."""
-    await logger.ainfo('serving plain text')
+    logger.info('serving plain text')
     return 'plain text'
-
-
-@ai.tool()
-async def mapping() -> object:
-    """Return an object."""
-    return {'a': 1, 'b': [1, 2]}
-
-
-@ai.tool()
-async def listing() -> object:
-    """Return an array."""
-    return [1, 'x']
-
-
-@ai.tool()
-async def media() -> MultipartToolResponse:
-    """Return one content part of every kind MCP has a block for."""
-    return MultipartToolResponse(
-        output='t',
-        content=[
-            Part.from_media(url=IMAGE_URL, content_type='image/png'),
-            Part.from_media(url=AUDIO_URL, content_type='audio/wav'),
-            Part.from_media(url=PDF_URL, content_type='application/pdf'),
-            Part(resource=Resource(uri=RESOURCE_URI)),
-        ],
-    )
-
-
-@ai.tool()
-async def annotated() -> MultipartToolResponse:
-    """Return output and metadata together."""
-    return MultipartToolResponse(output={'k': 1}, metadata={'m': 2})
-
-
-@ai.tool()
-async def explode() -> str:
-    """Fail."""
-    raise ValueError('boom')
-
-
-@ai.tool()
-async def reject() -> str:
-    """Fail with a message meant for the model, caused by one that is not."""
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message='date must be in the future',
-        cause=RuntimeError('GET https://api.example.com/v1?key=SECRET failed'),
-    )
 
 
 @ai.tool()
@@ -96,32 +38,32 @@ async def accented() -> str:
 
 
 @ai.tool()
-async def noted_object() -> MultipartToolResponse:
-    """Return an object with a text part beside it."""
-    return MultipartToolResponse(output={'k': 1}, content=[Part(text='note')])
+async def raw_writes() -> str:
+    """Write to stdout below sys.stdout: a child process, the descriptor, and the original stream."""
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("written by a child process")')
+    await child.wait()
+    os.write(1, b'written to descriptor 1\n')
+    assert sys.__stdout__ is not None
+    sys.__stdout__.write('written to the original stdout\n')
+    sys.__stdout__.flush()
+    return 'wrote'
 
 
 @ai.tool()
-async def noted_array() -> MultipartToolResponse:
-    """Return an array with a text part beside it."""
-    return MultipartToolResponse(output=[1, 2], content=[Part(text='note')])
+async def prints() -> str:
+    """Print the way app code does."""
+    sys.stdout.write('printed by a tool\n')
+    sys.stdout.flush()
+    return 'printed'
 
 
-@ai.tool()
-async def text_parts() -> MultipartToolResponse:
-    """Return text parts and no output."""
-    return MultipartToolResponse(content=[Part(text='first '), Part(text='second')])
+server = create_mcp_server(ai, 'stdio-test', redirect_stdout=os.environ.get('MCP_TEST_NO_REDIRECT') != '1')
 
-
-@ai.tool()
-async def shelf() -> Shelf:
-    """Return a typed object."""
-    return Shelf(title='Poetry', count=3)
-
-
-server = create_mcp_server(ai, SERVER_NAME)
-
-logger.info('genkit_server imported')
+sys.stdout.write('written before start\n')
 
 if __name__ == '__main__':
+    if os.environ.get('MCP_TEST_PRE_REDIRECT') == '1':
+        sys.stdout = sys.stderr
     asyncio.run(server.start())
+    sys.stdout.write('printed after the server stopped\n')
+    sys.stdout.flush()

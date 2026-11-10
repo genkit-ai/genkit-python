@@ -199,36 +199,43 @@ if __name__ == '__main__':
 The app's tools are read with `ai.list_tools()` on every `tools/list`, so a tool defined after the
 server was built is still served. A tool whose input is not an object, such as a single scalar or an
 optional model, is skipped: MCP arguments are always an object, and such a tool is not callable by
-name either, rather than being listed and then failing. A model that refers to itself is served. An output schema is advertised only when it describes an object, since anything else
-cannot be structured content. Tools a dynamic action provider supplies, from `define_mcp_client`
-for instance, are not defined on the app and are not served.
+name either, rather than being listed and then failing. A model that refers to itself is served.
+An output schema is advertised only for a tool that returns an object itself, such as `-> Shelf`.
+A client rejects a result that lacks the structured content a schema promised, and a tool returning
+`MultipartToolResponse[Shelf]` may leave its output out. Tools a dynamic action provider supplies,
+from `define_mcp_client` for instance, are not defined on the app and are not served.
 
-A tool that raises answers with an error result. A `GenkitError` (including `PublicError`) sends its
-status and message, without the text of its cause. Any other exception sends only `Tool '<name>'
-failed`, since its text can carry a URL or a credential. The full error is logged on the server
-either way, so raise a `GenkitError` for a failure the model should read and retry.
+A tool that raises answers with an error result. A `PublicError` sends its status and message. Any
+other `GenkitError` sends `Tool '<name>' failed: <status>`, and any other exception `Tool '<name>'
+failed`, since a provider's error text can name a project, a resource path or a URL. So raise a
+`PublicError` for a failure the model should read and retry. The full error is logged on the server
+either way. A tool that interrupts for the user's input answers with an error result saying so,
+since MCP cannot pause a call. A plugin that fails to start fails the listing, and the client is
+told only that the server could not list its tools.
 
 ### stdio
 
 `await server.start()` serves on this process's stdin and stdout until stdin closes. stdout is the
-wire, so `start()` captures the real one for the transport and then points `sys.stdout` at stderr
-for the rest of the process's life, because structlog's builtin default writes to stdout and one
-stray line corrupts a JSON-RPC frame. A logging configuration your app chose for itself is left
-alone, and a logger built before `start()` keeps the descriptor it captured. Pass
-`redirect_stdout=False` to opt out.
+wire, so `start()` gives the transport a copy of file descriptor 1, whatever `sys.stdout` is at the
+time, and then points both descriptor 1 and `sys.stdout` at stderr for the rest of the process's
+life. One stray line corrupts a JSON-RPC frame, and structlog's builtin default writes to stdout, so
+`print`, loggers, child processes and C extensions all write to stderr from then on. Text still
+buffered for stdout is flushed ahead of the first frame. Pass `redirect_stdout=False` to leave
+stdout as it is, for an app that keeps it clear itself.
 
 `await server.serve(read_stream, write_stream)` serves on any SDK stream pair instead, and touches
 nothing.
 
-## Known gaps
+### Known gaps
 
 Scalar outputs and strings that look like JSON do not round-trip exactly. Clients join every text
-block into the output, so a text content part is sent only beside no output or an object output, and
-is dropped with a warning otherwise. A media part whose URL is not absolute is dropped with a
-warning. A tool whose input is not an object is not served at all,
-and an output schema that is not an object is not advertised, so a client is told less about such a
-tool than Genkit knows. Nothing sends `notifications/tools/list_changed`; the list is re-read per
-request instead. Progress, cancellation, sampling and elicitation are not supported. A
-plugin-namespaced tool name carries a `/`, which the MCP SDK warns about. Whatever the app logs
-before `start()` runs is on stdout, which that call is too late to have redirected. stdio reads and
-writes UTF-8 whatever the locale, but is untested on Windows.
+block into the output, so a text or data content part is sent only beside no output or an object
+output, and is dropped with a warning otherwise. A Genkit client reading a result with structured
+content keeps that object and drops the text beside it. A media part whose URL is not absolute is
+dropped with a warning, and one sent as a resource link is dropped by a Genkit client. A tool whose
+input is not an object is not served at all, and an output schema is advertised only as described
+above, so a client is told less about such a tool than Genkit knows. Nothing sends
+`notifications/tools/list_changed`; the list is re-read per request instead. A client's
+`notifications/cancelled` cancels the tool call. Progress, sampling and elicitation are not
+supported. A plugin-namespaced tool name carries a `/`, which the MCP SDK warns about. stdio reads
+and writes UTF-8 whatever the locale, but is untested on Windows.

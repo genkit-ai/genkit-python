@@ -69,10 +69,10 @@ def multipart_to_call_result(response: MultipartToolResponse, tool_name: str) ->
     """Convert what a Genkit tool returned into an MCP call result.
 
     MCP has one text channel, and clients join every text block into the
-    output. A text part is therefore sent only when that cannot change the
-    output a client reads back: when there is no output, or when the output is
-    an object carried as ``structuredContent``. Otherwise it is dropped with a
-    warning.
+    output. A text or data part, which travels as JSON text, is therefore sent
+    only when that cannot change the output a client reads back: when there is
+    no output, or when the output is an object carried as
+    ``structuredContent``. Otherwise it is dropped with a warning.
 
     Args:
         response: The envelope a ``tool.v2`` action returned.
@@ -92,7 +92,8 @@ def multipart_to_call_result(response: MultipartToolResponse, tool_name: str) ->
     if output is not None:
         content.append(TextContent(type='text', text=_output_text(output)))
     for index, part in enumerate(response.content or []):
-        if part.text is not None and output is not None and structured is None:
+        is_text = part.text is not None or part.data is not None
+        if is_text and output is not None and structured is None:
             logger.warning('dropping a text part that would change the text output', tool=tool_name, index=index)
             continue
         block = _part_to_block(part, tool_name, index)
@@ -154,12 +155,16 @@ def _object_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
 def _output_schema(tool: Tool) -> dict[str, Any] | None:
     """Read the model-facing output schema, kept only when MCP can carry it.
 
-    The SDK rejects any unstructured result for a tool that declares an output
-    schema, and ``structuredContent`` is an object, so a non-object schema is
-    dropped rather than advertised.
+    A client rejects any result without ``structuredContent`` from a tool that
+    declares an output schema, and ``structuredContent`` is an object. So the
+    schema is advertised only when it is an object and the tool returns that
+    object itself. A tool returning a ``MultipartToolResponse`` may leave its
+    output out, so its schema is not advertised.
     """
     original = _as_object(tool.model_output_schema)
-    return original if original.get('type') == 'object' else None
+    if original.get('type') != 'object' or tool.output_schema != tool.model_output_schema:
+        return None
+    return original
 
 
 def _tool_meta(tool: Tool) -> dict[str, Any] | None:
@@ -195,6 +200,9 @@ def _part_to_block(part: Part, tool_name: str, index: int) -> ContentBlock | Non
     """Convert one Genkit content part into an MCP content block."""
     if part.text is not None:
         return TextContent(type='text', text=part.text)
+
+    if part.data is not None:
+        return TextContent(type='text', text=json.dumps(part.data))
 
     if part.media is not None:
         url = part.media.url

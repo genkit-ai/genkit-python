@@ -102,7 +102,9 @@ def test_a_non_data_media_url_becomes_a_resource_link() -> None:
 
 def test_a_resource_part_becomes_a_resource_link() -> None:
     result = multipart_to_call_result(
-        MultipartToolResponse(output=None, content=[Part.model_validate({'resource': {'uri': 'https://example.test/docs'}})]),
+        MultipartToolResponse(
+            output=None, content=[Part.model_validate({'resource': {'uri': 'https://example.test/docs'}})]
+        ),
         'tool',
     )
 
@@ -164,6 +166,20 @@ def test_a_part_mcp_cannot_carry_is_dropped_with_a_warning() -> None:
     assert [entry['log_level'] for entry in logs] == ['warning']
 
 
+def test_a_data_part_travels_as_json_text() -> None:
+    result = multipart_to_call_result(MultipartToolResponse(output=None, content=[Part(data={'a': [1, 2]})]), 'tool')
+
+    assert result.content == [TextContent(type='text', text='{"a": [1, 2]}')]
+
+
+def test_a_data_part_beside_a_non_object_output_is_dropped_with_a_warning() -> None:
+    with capture_logs() as logs:
+        result = multipart_to_call_result(MultipartToolResponse(output='ok', content=[Part(data={'a': 1})]), 'tool')
+
+    assert result.content == [TextContent(type='text', text='ok')]
+    assert [entry['log_level'] for entry in logs] == ['warning']
+
+
 def test_metadata_travels_as_meta() -> None:
     result = multipart_to_call_result(MultipartToolResponse(output='x', metadata={'trace': 'a'}), 'tool')
 
@@ -207,6 +223,24 @@ async def test_a_no_arg_tool_advertises_an_object_schema() -> None:
     assert tool is not None
     assert tool.inputSchema == {'type': 'object', 'properties': {}}
     assert tool.description == 'Answer.'
+    assert tool.meta is None
+
+
+@pytest.mark.asyncio
+async def test_a_re_exported_client_tool_keeps_the_meta_of_its_origin() -> None:
+    ai = Genkit()
+
+    @ai.tool()
+    async def echo() -> str:
+        """Echo."""
+        return 'echo'
+
+    echo.metadata['mcp'] = {'prefix': 'everything', 'tool': 'echo', '_meta': {'ui': 'compact'}}
+
+    tool = tool_to_mcp(echo)
+
+    assert tool is not None
+    assert tool.meta == {'ui': 'compact'}
 
 
 @pytest.mark.asyncio

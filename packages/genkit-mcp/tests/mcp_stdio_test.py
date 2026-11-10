@@ -7,7 +7,6 @@
 """Tests for serving over this process's stdin and stdout, with no MCP client in the way."""
 
 import asyncio
-import io
 import json
 import os
 import sys
@@ -15,10 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import structlog
-from genkit_mcp import create_mcp_server
-
-from genkit import Genkit
 
 SERVER = Path(__file__).with_name('genkit_server.py')
 
@@ -26,15 +21,13 @@ SERVER = Path(__file__).with_name('genkit_server.py')
 # fails the suite rather than hanging it. There is no global pytest timeout.
 LIMIT = 60
 
-CALL_ID = 2
 
-
-def requests(tool: str) -> list[dict[str, Any]]:
-    """Open a session and call one tool, as a client would write them to stdin."""
+def requests(tools: list[str]) -> list[dict[str, Any]]:
+    """Open a session and call each tool, as a client would write them to stdin."""
     return [
         {
             'jsonrpc': '2.0',
-            'id': 1,
+            'id': 0,
             'method': 'initialize',
             'params': {
                 'protocolVersion': '2025-06-18',
@@ -43,12 +36,15 @@ def requests(tool: str) -> list[dict[str, Any]]:
             },
         },
         {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
-        {'jsonrpc': '2.0', 'id': CALL_ID, 'method': 'tools/call', 'params': {'name': tool, 'arguments': {}}},
+        *(
+            {'jsonrpc': '2.0', 'id': call_id, 'method': 'tools/call', 'params': {'name': tool, 'arguments': {}}}
+            for call_id, tool in enumerate(tools, start=1)
+        ),
     ]
 
 
-async def call_over_stdio(tool: str, **env: str) -> tuple[list[str], str]:
-    """Run the fixture app as a child, call one tool, and return its stdout lines and stderr."""
+async def call_over_stdio(tools: list[str], **env: str) -> tuple[list[str], str]:
+    """Run the fixture app as a child, call each tool, and return its stdout lines and stderr."""
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(SERVER),
@@ -59,110 +55,73 @@ async def call_over_stdio(tool: str, **env: str) -> tuple[list[str], str]:
     )
     assert process.stdin is not None
     assert process.stdout is not None
-
-    for request in requests(tool):
-        process.stdin.write((json.dumps(request) + '\n').encode())
-    await asyncio.wait_for(process.stdin.drain(), timeout=LIMIT)
-
-    lines = await asyncio.wait_for(_read_until_call_answered(process.stdout), timeout=LIMIT)
-    process.stdin.close()
-    rest, stderr = await asyncio.wait_for(process.communicate(), timeout=LIMIT)
+    assert process.stderr is not None
+    try:
+        for request in requests(tools):
+            process.stdin.write((json.dumps(request) + '\n').encode())
+        await asyncio.wait_for(process.stdin.drain(), timeout=LIMIT)
+        lines = await asyncio.wait_for(_read_until_answered(process.stdout, len(tools)), timeout=LIMIT)
+        process.stdin.close()
+        rest, stderr = await asyncio.wait_for(process.communicate(), timeout=LIMIT)
+    except (AssertionError, asyncio.TimeoutError) as error:
+        process.kill()
+        _, stderr = await process.communicate()
+        raise AssertionError(f'{error!r}\nserver stderr:\n{stderr.decode()}') from error
     return lines + rest.decode().splitlines(), stderr.decode()
 
 
 @pytest.mark.asyncio
 async def test_stdout_carries_only_json_rpc_once_the_server_is_serving() -> None:
-    """Logging while serving goes to stderr, so a debug-level app does not corrupt a frame.
+    """Logging, a child process, descriptor 1 and the original stdout all land on stderr while serving.
 
-    What the app logs before ``start()`` runs is another matter: stdout is not
-    the wire yet and nothing has been redirected, so those lines are on stdout.
+    What the app writes before ``start()`` runs is another matter: stdout is not
+    the wire yet, so it is flushed there ahead of the first frame.
     """
-    lines, stderr = await call_over_stdio('plain_text')
+    lines, stderr = await call_over_stdio(['plain_text', 'raw_writes'])
 
-    wire = lines[_first_json_line(lines) :]
-    assert [line for line in wire if _decode(line) is None] == []
-    assert 'genkit_server imported' in '\n'.join(lines[: _first_json_line(lines)])
-    assert 'serving plain text' not in '\n'.join(lines)
-    assert 'serving plain text' in stderr
+    first = _first_json_line(lines)
+    assert 'written before start' in lines[:first]
+    assert [line for line in lines[first:] if _decode(line) is None] == []
+    assert _results(lines) == {1: 'plain text', 2: 'wrote'}
+    for text in (
+        'serving plain text',
+        'written by a child process',
+        'written to descriptor 1',
+        'written to the original stdout',
+    ):
+        assert text in stderr
 
 
 @pytest.mark.asyncio
 async def test_text_outside_ascii_survives_a_server_whose_locale_cannot_encode_it() -> None:
     lines, _ = await call_over_stdio(
-        'accented', LC_ALL='C', LANG='C', PYTHONUTF8='0', PYTHONCOERCECLOCALE='0', PYTHONIOENCODING='ascii'
+        ['accented'], LC_ALL='C', LANG='C', PYTHONUTF8='0', PYTHONCOERCECLOCALE='0', PYTHONIOENCODING='ascii'
     )
 
-    answer = next(message for line in lines if (message := _decode(line)) and message.get('id') == CALL_ID)
-    assert answer['result']['content'] == [{'type': 'text', 'text': 'café 東京'}]
+    assert _results(lines) == {1: 'café 東京'}
 
 
 @pytest.mark.asyncio
-async def test_redirect_stdout_false_leaves_this_process_stdout_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Opting out means an app that already keeps stdout clear keeps its own arrangement."""
-    server = create_mcp_server(Genkit(), 'quiet', redirect_stdout=False)
-    wire = _stream()
-    monkeypatch.setattr(sys, 'stdin', _stream())
-    monkeypatch.setattr(sys, 'stdout', wire)
+async def test_an_app_that_already_moved_sys_stdout_is_still_answered_on_stdout() -> None:
+    """The wire is descriptor 1, not whatever ``sys.stdout`` happens to be when ``start()`` runs."""
+    lines, _ = await call_over_stdio(['plain_text'], MCP_TEST_PRE_REDIRECT='1')
 
-    await asyncio.wait_for(server.start(), timeout=LIMIT)
-
-    assert sys.stdout is wire
+    assert _results(lines) == {1: 'plain text'}
 
 
 @pytest.mark.asyncio
-async def test_a_logger_built_before_the_swap_still_follows_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole stdout arrangement rests on this: structlog's default logger defers to sys.stdout.
+async def test_redirect_stdout_false_leaves_this_process_stdout_alone() -> None:
+    """Opting out keeps stdout where it was, and still usable once the server stops."""
+    lines, stderr = await call_over_stdio(['prints'], MCP_TEST_NO_REDIRECT='1')
 
-    Its PrintLogger passes file=None to print rather than capturing a stream,
-    so a logger cached before start() runs still lands on the redirected
-    stream instead of writing JSON-RPC's channel.
-    """
-    cached = structlog.get_logger('cached-before-the-swap')
-    server = create_mcp_server(Genkit(), 'noisy')
-    wire_bytes = _KeptOpen()
-    wire = io.TextIOWrapper(wire_bytes, encoding='utf-8')
-    stderr = io.StringIO()
-    monkeypatch.setattr(sys, 'stdin', _stream())
-    monkeypatch.setattr(sys, 'stdout', wire)
-    monkeypatch.setattr(sys, 'stderr', stderr)
-
-    await asyncio.wait_for(server.start(), timeout=LIMIT)
-    cached.info('after the swap')
-
-    assert 'after the swap' in stderr.getvalue()
-    assert b'after the swap' not in wire_bytes.getvalue()
+    assert _results(lines) == {1: 'printed'}
+    assert 'printed by a tool' in lines
+    assert lines[-1] == 'printed after the server stopped'
+    assert 'printed by a tool' not in stderr
 
 
-@pytest.mark.asyncio
-async def test_text_buffered_before_start_reaches_stdout_ahead_of_the_wire(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unflushed text left in the old stdout would otherwise land between frames whenever it flushed."""
-    server = create_mcp_server(Genkit(), 'buffered')
-    wire_bytes = _KeptOpen()
-    old_stdout = io.TextIOWrapper(wire_bytes, encoding='utf-8')
-    old_stdout.write('pending')
-    monkeypatch.setattr(sys, 'stdin', _stream())
-    monkeypatch.setattr(sys, 'stdout', old_stdout)
-    monkeypatch.setattr(sys, 'stderr', io.StringIO())
-
-    await asyncio.wait_for(server.start(), timeout=LIMIT)
-
-    assert wire_bytes.getvalue() == b'pending'
-
-
-class _KeptOpen(io.BytesIO):
-    """Bytes that stay readable after the server's own wrapper closes them."""
-
-    def close(self) -> None:
-        pass
-
-
-def _stream() -> io.TextIOWrapper:
-    """A text stream backed by bytes, as a real stdin or stdout is."""
-    return io.TextIOWrapper(_KeptOpen(), encoding='utf-8')
-
-
-async def _read_until_call_answered(stdout: asyncio.StreamReader) -> list[str]:
-    """Collect stdout lines up to and including the answer to the tool call."""
+async def _read_until_answered(stdout: asyncio.StreamReader, calls: int) -> list[str]:
+    """Collect stdout lines up to and including the answer to the last tool call."""
     lines: list[str] = []
     while True:
         raw = await stdout.readline()
@@ -171,8 +130,17 @@ async def _read_until_call_answered(stdout: asyncio.StreamReader) -> list[str]:
         line = raw.decode().rstrip('\n')
         lines.append(line)
         message = _decode(line)
-        if message is not None and message.get('id') == CALL_ID:
+        if message is not None and message.get('id') == calls:
             return lines
+
+
+def _results(lines: list[str]) -> dict[int, str]:
+    """Read the text each tool call answered with, by call id."""
+    return {
+        message['id']: message['result']['content'][0]['text']
+        for line in lines
+        if (message := _decode(line)) and message.get('id', 0) > 0
+    }
 
 
 def _decode(line: str) -> dict[str, Any] | None:

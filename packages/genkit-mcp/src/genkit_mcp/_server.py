@@ -10,18 +10,19 @@
 
 """A Genkit app served to MCP clients as an MCP server."""
 
+import os
 import sys
-from io import TextIOWrapper
-from typing import Any
+from typing import Any, TextIO
 from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, Tool as McpTool
+from mcp.shared.exceptions import McpError
+from mcp.types import INTERNAL_ERROR, CallToolResult, ErrorData, Tool as McpTool
 from pydantic import TypeAdapter
 
-from genkit import Genkit, GenkitError, MultipartToolResponse, Tool, get_logger
+from genkit import Genkit, GenkitError, Interrupt, MultipartToolResponse, PublicError, Tool, get_logger
 from genkit_mcp._export import error_result, multipart_to_call_result, tool_to_mcp
 
 logger = get_logger(__name__)
@@ -29,7 +30,9 @@ logger = get_logger(__name__)
 _JSON = TypeAdapter(object)
 
 DEFAULT_VERSION = '1.0.0'
-"""What JS and Go both advertise when the app names no version."""
+"""The version a server advertises when the app names none."""
+
+_LISTING_FAILED = 'The server could not list its tools'
 
 
 class McpServer:
@@ -101,20 +104,18 @@ class McpServer:
     async def start(self) -> None:
         """Serve on this process's stdin and stdout until stdin closes.
 
-        stdout is the wire, so it is captured before anything can write to it
-        and the process's own stdout is then pointed at stderr for the rest of
-        its life. A logger built before this call keeps the descriptor it
-        captured.
+        stdout is the wire. The transport writes to a copy of descriptor 1
+        taken before anything else can, whatever ``sys.stdout`` is at the time.
+        Descriptor 1 and ``sys.stdout`` then point at stderr for the rest of
+        the process's life, so ``print``, loggers and child processes cannot
+        write between frames.
         """
-        sys.stdout.flush()
-        streams = stdio_server(
-            stdin=anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding='utf-8')),
-            stdout=anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding='utf-8')),
-        )
+        stdin, stdout = _wire_files()
         if self._redirect_stdout:
             _redirect_stdout_to_stderr()
-        async with streams as (read_stream, write_stream):
-            await self.serve(read_stream, write_stream)
+        with stdin, stdout:
+            async with stdio_server(stdin=anyio.wrap_file(stdin), stdout=anyio.wrap_file(stdout)) as streams:
+                await self.serve(*streams)
 
     async def _list_tools(self) -> list[McpTool]:
         """Describe every tool this server offers, read fresh from the app."""
@@ -126,8 +127,13 @@ class McpServer:
         Listing and calling read the same pairs, so a tool MCP cannot describe
         is not reachable by name either.
         """
+        try:
+            tools = await self._ai.list_tools()
+        except Exception as error:
+            logger.exception("could not list the app's tools for MCP")
+            raise McpError(ErrorData(code=INTERNAL_ERROR, message=_LISTING_FAILED)) from error
         served: list[tuple[Tool, McpTool]] = []
-        for tool in await self._ai.list_tools():
+        for tool in tools:
             if tool not in self._described:
                 self._described[tool] = tool_to_mcp(tool)
             described = self._described[tool]
@@ -141,13 +147,19 @@ class McpServer:
         A raised error becomes an ``isError`` result and is logged here, where
         its traceback is still useful.
         """
-        tool = await self._find_tool(name)
+        try:
+            tool = await self._find_tool(name)
+        except McpError as error:
+            return error_result(error.error.message)
         if tool is None:
             return error_result(f'Tool {name!r} is not registered')
 
         context = self._request_context()
         try:
             return multipart_to_call_result(await _run(tool, arguments, context), name)
+        except Interrupt:
+            logger.warning('an MCP tool call paused for input, which MCP cannot ask for', tool=name)
+            return error_result(f'Tool {name!r} paused for input from the user, which this server cannot ask for')
         except Exception as error:
             logger.exception('an MCP tool call failed', tool=name)
             return error_result(_client_message(name, error))
@@ -218,20 +230,34 @@ async def _run(tool: Tool, arguments: dict[str, Any], context: dict[str, Any] | 
 def _client_message(tool_name: str, error: Exception) -> str:
     """Say why a tool failed without passing on text the app never chose to show.
 
-    A ``GenkitError`` keeps its status and message but not its cause's text,
-    which can carry a request URL or a credential.
+    A ``PublicError`` is the app's message for the caller, so its status and
+    message are sent. Any other ``GenkitError`` sends only its status, since a
+    provider's error text can name a project, a resource path or a URL.
     """
-    if isinstance(error, GenkitError):
+    if isinstance(error, PublicError):
         return f'{error.status}: {error.message}'
+    if isinstance(error, GenkitError):
+        return f'Tool {tool_name!r} failed: {error.status}'
     return f'Tool {tool_name!r} failed'
 
 
-def _redirect_stdout_to_stderr() -> None:
-    """Point this process's stdout at stderr, so nothing can corrupt the wire.
+def _wire_files() -> tuple[TextIO, TextIO]:
+    """Open copies of descriptors 0 and 1 for the transport, as UTF-8 whatever the locale.
 
-    Rebinding ``sys.stdout`` is enough to move a logger that was built before
-    this call: structlog's default ``PrintLogger`` passes ``file=None`` to
-    ``print``, which reads ``sys.stdout`` at call time. A logger bound to an
-    explicit stream is the app's own choice and is left where it points.
+    Text still buffered for stdout is flushed first, so it cannot land between frames.
     """
+    for stream in (sys.stdout, sys.__stdout__):
+        if stream is not None:
+            stream.flush()
+    return open(os.dup(0), encoding='utf-8'), open(os.dup(1), 'w', encoding='utf-8')
+
+
+def _redirect_stdout_to_stderr() -> None:
+    """Point this process's stdout at stderr, so nothing else can write to the wire.
+
+    Moving descriptor 1 covers child processes, C code and any stream still
+    bound to the original stdout. Rebinding ``sys.stdout`` covers ``print``
+    and structlog's default logger, which reads ``sys.stdout`` on every call.
+    """
+    os.dup2(2, 1)
     sys.stdout = sys.stderr

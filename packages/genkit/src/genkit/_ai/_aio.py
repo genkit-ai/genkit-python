@@ -709,14 +709,15 @@ class Genkit:
         return Tool.from_action(action)
 
     async def list_tools(self) -> list[Tool]:
-        """Return every tool registered on this app, in no particular order.
+        """Return every tool registered on this app, sorted by name.
 
-        Each is the same handle ``lookup_tool`` returns. Every plugin is started
+        Each is the same handle ``lookup_tool`` returns. Every plugin is initialized
         first, so tools a plugin registers in ``init()`` are included, and a plugin
-        whose ``init()`` fails makes this raise. Tools a plugin only advertises and
-        builds on first lookup are included once something has looked them up.
-        Tools a dynamic action provider serves are not defined on the app and are
-        left out; select those as ``<provider>:tool/*``.
+        whose ``init()`` fails makes this raise. Tools a plugin only lists in
+        ``list_actions()`` are registered, and so included, once something has
+        looked them up. Tools a dynamic action provider serves are not registered
+        on the app and are left out; pass ``'<provider>:tool/*'`` in ``tools=[...]``
+        to use those.
 
         Example:
             ```python
@@ -731,7 +732,7 @@ class Genkit:
         """
         await self._registry.initialize_all_plugins()
         actions = await self._registry.resolve_actions_by_kind(ActionKind.TOOL)
-        return [Tool.from_action(action) for action in actions.values()]
+        return [Tool.from_action(actions[name]) for name in sorted(actions)]
 
     def lookup_value(self, *, kind: str, name: str) -> object | None:
         """Return the value defined under ``kind`` and ``name``, or None."""

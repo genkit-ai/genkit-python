@@ -200,9 +200,24 @@ async def test_list_tools_returns_every_defined_tool_as_a_callable_tool() -> Non
     tools = {tool.name: tool for tool in await ai.list_tools()}
 
     assert sorted(tools) == ['menu_price', 'opening_hours']
-    assert all(isinstance(tool, Tool) for tool in tools.values())
-    assert tools['menu_price'].definition() == menu_price.definition()
+    assert tools['menu_price'] is menu_price
     assert await tools['menu_price']('ramen') == 14.5
+
+
+@pytest.mark.asyncio
+async def test_list_tools_is_sorted_by_name() -> None:
+    """Tools come back by name, not in the order they were defined."""
+    ai = Genkit()
+
+    @ai.tool()
+    async def opening_hours() -> str:
+        return '9-5'
+
+    @ai.tool()
+    async def menu_price(dish: str) -> float:
+        return 14.5
+
+    assert [tool.name for tool in await ai.list_tools()] == ['menu_price', 'opening_hours']
 
 
 @pytest.mark.asyncio
@@ -215,13 +230,18 @@ async def test_list_tools_on_an_app_without_tools_is_empty() -> None:
 async def test_list_tools_reads_the_app_again_on_every_call() -> None:
     """A tool defined after one listing is in the next one."""
     ai = Genkit()
-    assert await ai.list_tools() == []
 
     @ai.tool()
     async def menu_price(dish: str) -> float:
         return 14.5
 
     assert [tool.name for tool in await ai.list_tools()] == ['menu_price']
+
+    @ai.tool()
+    async def opening_hours() -> str:
+        return '9-5'
+
+    assert [tool.name for tool in await ai.list_tools()] == ['menu_price', 'opening_hours']
 
 
 @pytest.mark.asyncio
@@ -270,7 +290,7 @@ async def test_list_tools_raises_when_a_plugin_fails_to_start() -> None:
 
 
 class AdvertisingToolPlugin(Plugin):
-    """Advertises `shelf/count` and builds it only when resolved."""
+    """Lists `shelf/count` in `list_actions()`; the registry gets it only when resolved."""
 
     name = 'shelf'
 
@@ -295,7 +315,7 @@ def _shelf_count() -> Tool:
 
 @pytest.mark.asyncio
 async def test_list_tools_includes_an_advertised_plugin_tool_only_once_looked_up() -> None:
-    """Listing does not build tools a plugin only advertises; a lookup registers them."""
+    """Listing does not resolve tools a plugin only advertises; a lookup registers them."""
     ai = Genkit(plugins=[AdvertisingToolPlugin()])
 
     assert await ai.list_tools() == []
@@ -305,7 +325,7 @@ async def test_list_tools_includes_an_advertised_plugin_tool_only_once_looked_up
 
 @pytest.mark.asyncio
 async def test_list_tools_leaves_out_dynamic_action_provider_tools() -> None:
-    """A provider's tools are not defined on the app, so listing never reaches the provider."""
+    """A provider's tools are not registered on the app, so listing never reaches the provider, even after a lookup."""
     ai = Genkit()
     listed = 0
 
@@ -322,6 +342,11 @@ async def test_list_tools_leaves_out_dynamic_action_provider_tools() -> None:
 
     assert await ai.list_tools() == []
     assert listed == 0
+
+    found = await ai.lookup_tool('remote:tool/remote_search')
+    assert found is not None
+    assert await found('ramen') == 'ramen'
+    assert await ai.list_tools() == []
 
 
 def test_define_value_then_lookup_value_returns_it() -> None:

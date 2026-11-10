@@ -1818,16 +1818,28 @@ async def generate_turn(
         return after_tools
     # Tools already ran. This is the conversation if a later pipe fails.
     call.set_messages(after_tools.messages)
-    return await hop(
-        body=run_wrap_generate(
+    next_options = after_tools.options
+    next_message_index = after_tools.message_index
+
+    # Each follow-up turn gets its own generate span under this one, so the
+    # trace reads model, tools, then the next turn, and a failure deep in the
+    # loop is pinned to the turn it happened on.
+    async def next_turn(_span: SpanContext) -> ModelResponse:
+        result = await run_wrap_generate(
             registry=registry,
-            options=after_tools.options,
+            options=next_options,
             mw_pipeline=mw_pipeline,
             current_turn=current_turn + 1,
-            message_index=after_tools.message_index,
+            message_index=next_message_index,
             call=call,
             resolved=resolved,
-        ),
+        )
+        if result.error is not None:
+            set_span_state('error')
+        return result
+
+    return await hop(
+        body=run_in_new_span('generate', next_turn, action_type='util', input=next_options),
         caller_stopped=call.caller_stopped,
     )
 

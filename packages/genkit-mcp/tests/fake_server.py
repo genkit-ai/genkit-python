@@ -6,11 +6,20 @@
 
 """A small subprocess MCP server used by connection lifecycle tests."""
 
+# ruff: noqa: E402
+
 import asyncio
 import json
 import os
 import sys
 import threading
+
+# mcp.server imports jsonschema, which loads rfc3987_syntax when it is installed
+# (dotpromptz pulls it in). That module compiles a Lark grammar at import, which
+# is most of this server's startup and stretches every handshake on a busy
+# machine. None in sys.modules makes the import fail, and jsonschema skips the
+# IRI format checks this server never runs.
+sys.modules['rfc3987_syntax'] = None  # type: ignore[assignment]
 
 import anyio
 from mcp.server import Server
@@ -67,6 +76,14 @@ rendezvous_met = asyncio.Event()
 stall_started = asyncio.Event()
 
 
+def write_marker(path: str, text: str) -> None:
+    """Write a file the tests poll for in one step, so a reader never finds it created but still empty."""
+    staging = f'{path}.partial'
+    with open(staging, 'w', encoding='utf-8') as marker:
+        marker.write(text)
+    os.replace(staging, path)
+
+
 @app.list_tools()
 async def list_tools(req: ListToolsRequest) -> ListToolsResult:
     # The SDK passes None when it refreshes its own tool cache, and that refresh
@@ -88,7 +105,7 @@ async def list_tools(req: ListToolsRequest) -> ListToolsResult:
 
     stall_list_marker = os.environ.get('MCP_FAKE_STALL_LIST')
     if stall_list_marker:
-        await anyio.Path(stall_list_marker).write_text('stalled', encoding='utf-8')
+        write_marker(stall_list_marker, 'stalled')
         await asyncio.Event().wait()
 
     if os.environ.get('MCP_FAKE_STUCK_CURSOR'):
@@ -109,7 +126,7 @@ async def list_tools(req: ListToolsRequest) -> ListToolsResult:
 async def call_tool(name: str, arguments: dict[str, object]) -> list[TextContent] | CallToolResult:
     call_marker = os.environ.get('MCP_FAKE_CALL_MARKER')
     if call_marker:
-        await anyio.Path(call_marker).write_text(name, encoding='utf-8')
+        write_marker(call_marker, name)
     if name == 'wait':
         # Must stay under the SDK's PROCESS_TERMINATION_TIMEOUT of 2.0 seconds.
         await asyncio.sleep(0.25)
@@ -185,8 +202,7 @@ def close_stdin_after_handshake(marker: str) -> None:
         elif message.get('method') == 'notifications/initialized':
             break
     os.close(0)
-    with open(marker, 'w', encoding='utf-8') as closed:
-        closed.write('closed')
+    write_marker(marker, 'closed')
     threading.Event().wait()
 
 
@@ -197,7 +213,7 @@ async def main() -> None:
         os.write(1, b'\xff\xfe not utf-8\n')
     pid_file = os.environ.get('MCP_FAKE_PID_FILE')
     if pid_file:
-        await anyio.Path(pid_file).write_text(str(os.getpid()), encoding='utf-8')
+        write_marker(pid_file, str(os.getpid()))
     close_stdin_marker = os.environ.get('MCP_FAKE_CLOSE_STDIN')
     if close_stdin_marker:
         close_stdin_after_handshake(close_stdin_marker)
@@ -210,7 +226,7 @@ async def main() -> None:
     if eof_marker:
         # Stands in for state a server flushes once stdin closes.
         await anyio.sleep(0.3)
-        await anyio.Path(eof_marker).write_text('flushed', encoding='utf-8')
+        write_marker(eof_marker, 'flushed')
 
 
 if __name__ == '__main__':

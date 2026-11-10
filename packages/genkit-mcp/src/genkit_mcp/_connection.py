@@ -470,6 +470,7 @@ class McpConnection:
                 ``_CLOSE_GRACE_SECONDS``.
             stop: Cancelled by ``close`` to end the session's work.
         """
+        handshake_failure: McpError | None = None
         try:
             parameters = StdioServerParameters(
                 command=self._config.command,
@@ -490,7 +491,13 @@ class McpConnection:
                     ) as session:
                         # The SDK's stdio shutdown is not shielded, so no scope around it may be cancelled.
                         with stop:
-                            await session.initialize()
+                            try:
+                                await session.initialize()
+                            except McpError as error:
+                                # A reply that lands after the timeout breaks the read stream the session
+                                # closed, and the SDK reports that BrokenResourceError in place of this.
+                                handshake_failure = error
+                                raise
                             async with self._state_lock:
                                 if self._state is _ConnectionState.CONNECTING:
                                     self._state = _ConnectionState.OPEN
@@ -500,7 +507,7 @@ class McpConnection:
             if not isinstance(error, Exception):
                 self._settle(None)
                 raise
-            cause = _transport_cause(error)
+            cause = handshake_failure if handshake_failure is not None else _transport_cause(error)
             # A rendered traceback would print frame locals, and those hold the server's env.
             named = {'client': self._name} if self._host is None else {'server': self._name, 'host': self._host}
             logger.warning(

@@ -718,9 +718,7 @@ class TestFromInteractionContent:
         result = from_interaction_content(
             ContentAdapter.validate_python({'type': 'audio', 'data': 'AAEC', 'channels': 1, 'sample_rate': 24000})
         )
-        assert part_dict(result) == {
-            'media': {'url': f'data:{content_type};base64,AAEC', 'contentType': content_type}
-        }
+        assert part_dict(result) == {'media': {'url': f'data:{content_type};base64,AAEC', 'contentType': content_type}}
 
     def test_audio_without_a_mime_type_uses_the_sample_rate_and_channels_sent(self) -> None:
         result = from_interaction_content(

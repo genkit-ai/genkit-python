@@ -283,9 +283,7 @@ async def test_traces_create_interaction_with_experimental_debug_traces(http_cli
         patch.object(interactions_client, '_http_client', return_value=http_client),
         patch.object(interactions_client, 'run_in_new_span', recorder),
     ):
-        result = await create_interaction(
-            'secret-key12', request_body, ClientOptions(experimental_debug_traces=True)
-        )
+        result = await create_interaction('secret-key12', request_body, ClientOptions(experimental_debug_traces=True))
 
     assert result.id == 'ix-1'
     assert len(recorder.calls) == 1

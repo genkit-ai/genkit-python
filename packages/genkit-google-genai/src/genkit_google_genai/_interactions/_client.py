@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from urllib.parse import quote
 
 import httpx
-from genkit_google_genai._interactions._errors import interaction_error_status, unwrap_error_body
+from genkit_google_genai._interactions._errors import api_error_fields, interaction_error_status, unwrap_error_body
 from genkit_google_genai._interactions._options import ClientOptions
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, transport_error
 from google.genai.interactions import Interaction
@@ -275,12 +275,10 @@ async def send(
         # array (e.g. a bad API key).
         payload: object = unwrap_error_body(response.json())
         error_detail = payload
-        if isinstance(payload, Mapping):
-            api_error = payload.get('error')
-            if isinstance(api_error, Mapping):
-                if api_error.get('message') is not None:
-                    error_message = str(api_error['message'])
-                code_status = interaction_error_status(api_error.get('code'))
+        api_message, api_code = api_error_fields(payload)
+        if api_message is not None:
+            error_message = api_message
+        code_status = interaction_error_status(api_code)
     except json.JSONDecodeError:
         pass
 

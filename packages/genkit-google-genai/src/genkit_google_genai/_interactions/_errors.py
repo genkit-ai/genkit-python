@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from genkit.plugin_api import StatusName
 
 # Content-policy blocks (safety, recitation, ...). A failed interaction with
@@ -90,6 +92,39 @@ def interaction_error_status(code: object) -> StatusName | None:
 def is_interaction_content_block_code(code: object) -> bool:
     """True for a content-policy error code (safety, recitation, blocklist, ...)."""
     return isinstance(code, str) and code.strip().lower() in INTERACTION_CONTENT_BLOCK_CODES
+
+
+# The error body of a failed API call, read through these models so the type
+# checkers know the field types. Only the fields the plugin reads; others are
+# allowed. TODO(own-types PR): move these into the plugin's own Interactions
+# types.
+class ApiError(BaseModel):
+    """The ``error`` object of an API error body."""
+
+    model_config = ConfigDict(extra='allow')
+
+    message: object = None
+    code: object = None
+
+
+class ApiErrorBody(BaseModel):
+    """An API error body: ``{"error": {"code": ..., "message": ...}}``."""
+
+    model_config = ConfigDict(extra='allow')
+
+    error: ApiError | None = None
+
+
+def api_error_fields(body: object) -> tuple[str | None, object]:
+    """The message and code of an API error body, or ``(None, None)`` when it isn't one."""
+    try:
+        parsed = ApiErrorBody.model_validate(body)
+    except ValidationError:
+        return None, None
+    if parsed.error is None:
+        return None, None
+    message = parsed.error.message
+    return (str(message) if message is not None else None), parsed.error.code
 
 
 def unwrap_error_body(body: object) -> object:

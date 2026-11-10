@@ -28,6 +28,7 @@ from genkit._core._telemetry._instrumentation import (
     FlushableInstrumentation,
     Instrumentation,
     SpanContext,
+    SpanFlushableInstrumentation as SpanFlushableInstrumentation,
     SpanMetadata,
     SpanNext,
     configure_instrumentation,

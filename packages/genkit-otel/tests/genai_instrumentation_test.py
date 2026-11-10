@@ -1144,8 +1144,10 @@ def test_flush_skips_proxy_providers_and_swallows_flush_errors(monkeypatch: pyte
 
 
 def test_dev_ui_span_flush_skips_meter_and_logger_providers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_flush_spans (the Dev UI's per-run hook) drains the tracer provider only, never metrics or logs."""
+    """flush_spans (the Dev UI's per-run hook) drains the tracer provider only, never metrics or logs."""
     from genkit_otel import _genai_instrumentation
+
+    from genkit.telemetry import SpanFlushableInstrumentation
 
     tracer_provider = _RecordingProvider()
     meter_provider = _RecordingProvider()
@@ -1154,6 +1156,30 @@ def test_dev_ui_span_flush_skips_meter_and_logger_providers(monkeypatch: pytest.
     monkeypatch.setattr(_genai_instrumentation.metrics_api, 'get_meter_provider', lambda: meter_provider)
     monkeypatch.setattr(_genai_instrumentation, 'get_logger_provider', lambda: logger_provider)
 
-    GenAiInstrumentation()._flush_spans()
+    instr = GenAiInstrumentation()
+    assert isinstance(instr, SpanFlushableInstrumentation)
+    instr.flush_spans()
 
     assert (tracer_provider.flushes, meter_provider.flushes, logger_provider.flushes) == (1, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_set_custom_metadata_attributes_encodes_non_json_values(harness) -> None:
+    """set_custom_metadata_attributes encodes datetime and bytes via _safe_encode_json instead of failing."""
+    from datetime import datetime, timezone
+
+    from genkit.telemetry import set_custom_metadata_attributes
+
+    instr = harness.instrumentation()
+
+    async def body(span=None):
+        if span is not None:
+            span.set_metadata({'at': datetime(2026, 11, 10, tzinfo=timezone.utc), 'raw': b'\xff'})
+        set_custom_metadata_attributes({'tenant': 'acme'})
+        return 'ok'
+
+    await instr.run_in_new_span(SpanMetadata(name='myFlow', action_type='flow'), body)
+    span = harness.span_named('myFlow')
+    assert span is not None
+    assert harness.attr(span, 'genkit:metadata:at') == '"2026-11-10T00:00:00Z"'
+    assert harness.attr(span, 'genkit:metadata:raw') == '"_w=="'

@@ -366,7 +366,7 @@ def test_flush_instrumentations_flushes_flushable() -> None:
 
 
 def test_flush_span_exports_prefers_span_hook_and_falls_back_to_flush() -> None:
-    """The Dev UI flush calls _flush_spans when a provider has it, else flush()."""
+    """The Dev UI flush calls flush_spans when a provider implements SpanFlushableInstrumentation, else flush()."""
 
     class SpanAware(FakeInstrumentation):
         def __init__(self) -> None:
@@ -376,7 +376,7 @@ def test_flush_span_exports_prefers_span_hook_and_falls_back_to_flush() -> None:
         def flush(self) -> None:
             self.calls.append('flush')
 
-        def _flush_spans(self) -> None:
+        def flush_spans(self) -> None:
             self.calls.append('spans')
 
     class Buffered(FakeInstrumentation):

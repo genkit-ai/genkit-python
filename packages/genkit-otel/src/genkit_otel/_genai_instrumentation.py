@@ -181,9 +181,8 @@ class GenAiInstrumentation(Instrumentation):
         for provider in (trace_api.get_tracer_provider(), metrics_api.get_meter_provider(), get_logger_provider()):
             _force_flush(provider)
 
-    def _flush_spans(self) -> None:
-        # Genkit's Dev UI calls this before every run response (core's
-        # flush_span_exports), so it skips the meter and logger providers.
+    def flush_spans(self) -> None:
+        """Force-flush the global OTel tracer provider only (skipping meter and logger providers)."""
         _force_flush(trace_api.get_tracer_provider())
 
     async def run_in_new_span(
@@ -456,10 +455,7 @@ class GenAiSpanContext(SpanContext):
 
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         for key, value in metadata.items():
-            try:
-                value_string = value if isinstance(value, str) else json.dumps(value)
-            except (TypeError, ValueError) as exc:
-                value_string = f'Error encoding metadata: {exc}'
+            value_string = value if isinstance(value, str) else _safe_encode_json(value)
             # Keep ad-hoc metadata out of the reserved gen_ai.* namespace.
             self._span.set_attribute(f'genkit:metadata:{key}', value_string)
 
@@ -573,10 +569,8 @@ def _encode_json_value(value: object) -> str:
     """
 
     def _json_default(obj: object) -> object:
-        if isinstance(obj, BaseModel):
-            return obj.model_dump(mode='json', by_alias=True, exclude_none=True)
-        # datetime -> ISO 8601, UUID/Decimal -> str, dataclass -> dict.
-        return to_jsonable_python(obj, fallback=str)
+        # datetime -> ISO 8601, UUID/Decimal -> str, dataclass -> dict, bytes -> URL-safe base64.
+        return to_jsonable_python(obj, by_alias=True, exclude_none=True, bytes_mode='base64', fallback=str)
 
     return json.dumps(value, default=_json_default)
 

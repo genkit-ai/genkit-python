@@ -306,7 +306,7 @@ async def test_dev_ui_run_flush_uses_the_span_only_hook() -> None:
         def flush(self) -> None:
             self.calls.append('flush')
 
-        def _flush_spans(self) -> None:
+        def flush_spans(self) -> None:
             self.calls.append('spans')
 
     backend = SpanAwareBackend()

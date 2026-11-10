@@ -63,13 +63,15 @@ global OTel tracer, meter, and logger providers. If a flush fails, it logs a
 warning and doesn't raise:
 
 ```python
+import asyncio
+
 from genkit.telemetry import flush_instrumentations
 
 # 1. Handle the request
 response = await ai.generate(prompt='Suggest a dish for a peanut allergy.')
 
 # 2. Drain buffered spans, metrics, and log events before returning
-flush_instrumentations()
+await asyncio.to_thread(flush_instrumentations)
 ```
 
 If you passed `tracer`, `meter`, or `otel_logger` explicitly, flush the

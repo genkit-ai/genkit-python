@@ -54,3 +54,8 @@ def test_plain_string_is_json_encoded() -> None:
     """A str is JSON-encoded like every other value, so json.loads round-trips it (JS JSON.stringify)."""
     assert _encode_json_value('table for two') == '"table for two"'
     assert json.loads(_encode_json_value('table for two')) == 'table for two'
+
+
+def test_non_utf8_bytes_are_base64_encoded() -> None:
+    """Raw bytes that are not valid UTF-8 encode as URL-safe base64 instead of raising."""
+    assert json.loads(_encode_json_value({'raw': b'\xff\xfe'})) == {'raw': '__4='}

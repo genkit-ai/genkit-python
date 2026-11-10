@@ -121,6 +121,13 @@ class FlushableInstrumentation(Protocol):
     def flush(self) -> None: ...
 
 
+@runtime_checkable
+class SpanFlushableInstrumentation(Protocol):
+    """Optional: a provider that can flush span exports without flushing metrics or logs."""
+
+    def flush_spans(self) -> None: ...
+
+
 instrumentations: list[Instrumentation] = []
 
 # Active SpanContext so set_custom_metadata_attributes can reach it.
@@ -225,13 +232,12 @@ def flush_span_exports() -> None:
 
     The reflection server flushes before it hands a trace id back, so the run
     shouldn't also wait on metric and log exports (JS ``flushTracing`` does the
-    same). A provider with a private ``_flush_spans`` hook (``GenAiInstrumentation``)
+    same). A provider implementing ``SpanFlushableInstrumentation`` (``GenAiInstrumentation``)
     flushes spans only; any other flushable provider gets ``flush()``.
     """
     for inst in instrumentations:
-        flush_spans = getattr(inst, '_flush_spans', None)
-        if callable(flush_spans):
-            flush_spans()
+        if isinstance(inst, SpanFlushableInstrumentation):
+            inst.flush_spans()
         elif isinstance(inst, FlushableInstrumentation):
             inst.flush()
 

@@ -67,14 +67,18 @@ class GenkitMetricExporter(MetricExporter):
         self._exporter = exporter
         self._error_handler = error_handler
 
-        # Cloud Monitoring converts DELTA to CUMULATIVE; we send DELTA.
+        # Cloud Monitoring converts DELTA to CUMULATIVE; we send DELTA for counters
+        # and histograms. Up/down counters are written as GAUGE points, which carry
+        # the current value, so they stay CUMULATIVE: as DELTA, a queue that goes
+        # 5 -> 6 would chart as 5 then 1.
         delta = AggregationTemporality.DELTA
+        cumulative = AggregationTemporality.CUMULATIVE
         preferred_temporality = {
             Counter: delta,
-            UpDownCounter: delta,
+            UpDownCounter: cumulative,
             Histogram: delta,
             ObservableCounter: delta,
-            ObservableUpDownCounter: delta,
+            ObservableUpDownCounter: cumulative,
             ObservableGauge: delta,
         }
         super().__init__(

@@ -437,6 +437,10 @@ class Middleware(Generic[TConfig]):
 
     ``self.config`` is set once at construction. The attribute is read-only;
     treat the config object as read-only too (Pydantic models are not frozen).
+
+    Each ``generate()`` call runs a shallow copy of the instance, so mutable
+    state created in ``__init__`` is shared across calls. Per-call state
+    belongs in the hook (or a ``__copy__``), not ``__init__``.
     """
 
     name: ClassVar[str] = ''

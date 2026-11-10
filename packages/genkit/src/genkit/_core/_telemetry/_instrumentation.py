@@ -139,12 +139,18 @@ def describe_value(value: object) -> str:
     return f'{cls.__module__}.{cls.__qualname__}'
 
 
+def _json_attr_default(obj: object) -> object:
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(mode='json', by_alias=True, exclude_none=True)
+    return str(obj)
+
+
 def to_json_attr(value: object) -> str:
     """Serialize an arbitrary object for an input/output span attribute."""
     if isinstance(value, BaseModel):
         return value.model_dump_json(by_alias=True, exclude_none=True)
     try:
-        return json.dumps(value)
+        return json.dumps(value, default=_json_attr_default)
     except (TypeError, ValueError):
         return str(value)
 

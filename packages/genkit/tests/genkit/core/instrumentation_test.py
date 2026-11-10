@@ -391,3 +391,32 @@ class RecordedSpanBackend:
         next: Callable[[SpanContext], Awaitable[object]],
     ) -> object:
         return await next(RecordedSpan('backend'))
+
+
+def test_to_json_attr_serializes_nested_pydantic_models() -> None:
+    """Containers holding BaseModel instances serialize as valid JSON with aliases and without nulls."""
+    import json
+
+    from pydantic import BaseModel, ConfigDict, Field
+
+    from genkit._core._telemetry._instrumentation import to_json_attr
+
+    class Reservation(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+
+        party_size: int = Field(alias='partySize')
+        notes: str | None = None
+
+    encoded = to_json_attr({
+        'bookings': [
+            Reservation.model_validate({'partySize': 2}),
+            Reservation.model_validate({'partySize': 4, 'notes': 'patio'}),
+        ]
+    })
+
+    assert json.loads(encoded) == {
+        'bookings': [
+            {'partySize': 2},
+            {'partySize': 4, 'notes': 'patio'},
+        ]
+    }

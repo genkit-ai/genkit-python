@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tool call content attributes encode Pydantic values like core's to_json_attr."""
+"""Tool call content attributes encode Pydantic values with wire aliases and no null fields."""
 
 import json
 

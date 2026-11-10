@@ -526,8 +526,8 @@ async def test_capture_action_io_records_raw_io_on_all_span_types(harness) -> No
     )
     tool = harness.span_named('execute_tool weather')
     assert tool is not None
-    assert 'Paris' in harness.attr(tool, GenkitAttr.INPUT)
-    assert 'sunny' in harness.attr(tool, GenkitAttr.OUTPUT)
+    assert harness.attr(tool, GenkitAttr.INPUT) == '"Paris"'
+    assert harness.attr(tool, GenkitAttr.OUTPUT) == '"sunny"'
     assert harness.attr(tool, GenAiAttr.INPUT_MESSAGES) is None
     assert harness.attr(tool, GenAiAttr.OUTPUT_MESSAGES) is None
 
@@ -537,8 +537,8 @@ async def test_capture_action_io_records_raw_io_on_all_span_types(harness) -> No
     await instr.run_in_new_span(SpanMetadata(name='myFlow', action_type='flow', input='in'), flow_out)
     flow = harness.span_named('myFlow')
     assert flow is not None
-    assert 'in' in harness.attr(flow, GenkitAttr.INPUT)
-    assert 'out' in harness.attr(flow, GenkitAttr.OUTPUT)
+    assert harness.attr(flow, GenkitAttr.INPUT) == '"in"'
+    assert harness.attr(flow, GenkitAttr.OUTPUT) == '"out"'
     assert harness.attr(flow, GenAiAttr.INPUT_MESSAGES) is None
 
 

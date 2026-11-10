@@ -187,7 +187,7 @@ class McpServer:
             allowed_origins: ``Origin`` header values to accept from a
                 browser. ``scheme://name:*`` accepts any port. A request
                 with no ``Origin`` is accepted. Defaults to localhost on any
-                port, over http or https.
+                port, over http or https. The app sends no CORS headers.
 
         Returns:
             A Starlette app to serve, mount, or wrap in middleware.
@@ -418,7 +418,8 @@ class _StreamableHttpEndpoint:
 
     Starlette hands a callable instance every method as raw ASGI, so the
     manager writes its own response to GET, POST and DELETE alike. On a
-    ``Route`` the exact path is served with no trailing-slash redirect.
+    ``Route`` the path itself is served, not redirected to one ending in a
+    slash.
     """
 
     def __init__(self, manager: StreamableHTTPSessionManager) -> None:

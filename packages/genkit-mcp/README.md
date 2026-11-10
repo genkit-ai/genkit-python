@@ -253,13 +253,28 @@ requests is one way to do that.
 A request whose `Host` header is not allowed gets a 421, and one from a browser whose `Origin` is not
 allowed gets a 403. By default only localhost, `127.0.0.1` and `[::1]` on any port, over http or
 https, are allowed, so a web page cannot reach a local server by rebinding its own name to
-`127.0.0.1`. Behind a proxy or on
-a public name, list what clients will send:
+`127.0.0.1`. Behind a proxy or on a public name, list the `Host` the server receives, which is the
+proxy's upstream address unless the proxy passes the client's on, and the `Origin` browsers send:
 
 ```python
 app = server.asgi_app(
     allowed_hosts=['tools.example.com'],
     allowed_origins=['https://app.example.com'],
+)
+```
+
+`allowed_origins` only decides which origins get past the 403. The app sends no CORS headers, so a
+page on another origin also needs them added:
+
+```python
+from starlette.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['https://app.example.com'],
+    allow_methods=['GET', 'POST', 'DELETE'],
+    allow_headers=['content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'],
+    expose_headers=['mcp-session-id'],
 )
 ```
 
@@ -288,7 +303,8 @@ app = FastAPI(lifespan=lifespan)
 app.mount('/api', mcp_app)  # the endpoint is then /api/mcp
 ```
 
-An app's lifespan runs only once, so each test that starts one needs its own `server.asgi_app()`.
+The app `asgi_app()` returns can start its lifespan only once, so each test that starts one needs
+its own.
 Starlette's `TestClient` sends `Host: testserver` unless told otherwise, which gets a 421; pass
 `base_url='http://localhost'`.
 

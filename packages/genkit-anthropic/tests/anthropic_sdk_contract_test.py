@@ -32,6 +32,7 @@ from anthropic import DefaultAsyncHttpxClient
 from anthropic.resources.beta.messages import AsyncMessages as AsyncBetaMessages
 from anthropic.resources.messages import AsyncMessages
 from genkit_anthropic import AnthropicConfig
+from packaging.requirements import Requirement
 
 
 @pytest.mark.parametrize('create', [AsyncMessages.create, AsyncBetaMessages.create], ids=['messages', 'beta'])

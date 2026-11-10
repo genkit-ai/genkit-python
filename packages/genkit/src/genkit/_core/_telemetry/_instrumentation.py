@@ -114,7 +114,8 @@ class FlushableInstrumentation(Protocol):
     """Optional: a provider that buffers exports.
 
     ``flush_instrumentations`` calls ``flush`` so a trace is on the wire
-    before the Developer UI asks for it.
+    before the Developer UI asks for it, or before a serverless process
+    freezes.
     """
 
     def flush(self) -> None: ...

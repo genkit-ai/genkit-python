@@ -45,14 +45,7 @@ _LISTING_FAILED = 'The server could not list its tools'
 LOCAL_HOSTS = ('localhost', 'localhost:*', '127.0.0.1', '127.0.0.1:*', '[::1]', '[::1]:*')
 """``Host`` values the HTTP endpoint accepts unless told otherwise."""
 
-LOCAL_ORIGINS = (
-    'http://localhost',
-    'http://localhost:*',
-    'http://127.0.0.1',
-    'http://127.0.0.1:*',
-    'http://[::1]',
-    'http://[::1]:*',
-)
+LOCAL_ORIGINS = tuple(f'{scheme}://{host}' for scheme in ('http', 'https') for host in LOCAL_HOSTS)
 """``Origin`` values the HTTP endpoint accepts unless told otherwise."""
 
 

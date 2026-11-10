@@ -250,10 +250,13 @@ async def test_a_refused_request_leaves_no_session_behind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_local_origin_is_served() -> None:
+@pytest.mark.parametrize(
+    'origin', ['http://localhost', 'http://localhost:5173', 'https://localhost:3000', 'https://127.0.0.1']
+)
+async def test_a_local_origin_is_served(origin: str) -> None:
     server = create_mcp_server(app_with_tools(), 'bookshop')
 
-    response = await initialize(server.asgi_app(json_response=True), origin='http://localhost:5173')
+    response = await initialize(server.asgi_app(json_response=True), origin=origin)
 
     assert response.status_code == 200
 

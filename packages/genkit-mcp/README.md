@@ -251,8 +251,9 @@ it before you bind it to a public interface. Mounting it in an app that already 
 requests is one way to do that.
 
 A request whose `Host` header is not allowed gets a 421, and one from a browser whose `Origin` is not
-allowed gets a 403. By default only localhost, `127.0.0.1` and `[::1]` on any port are allowed, so a
-web page cannot reach a local server by rebinding its own name to `127.0.0.1`. Behind a proxy or on
+allowed gets a 403. By default only localhost, `127.0.0.1` and `[::1]` on any port, over http or
+https, are allowed, so a web page cannot reach a local server by rebinding its own name to
+`127.0.0.1`. Behind a proxy or on
 a public name, list what clients will send:
 
 ```python

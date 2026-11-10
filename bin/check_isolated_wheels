@@ -19,16 +19,12 @@
 #
 # The workspace venv holds every package's dependencies (genkit-django pulls in
 # asgiref, for example), which hides a package that forgets to declare one.
-# Run after build_dists. Usage: py/bin/check_isolated_wheels [dist_dir]
+# Run after build_dists. Usage: bin/check_isolated_wheels [dist_dir]
 
 set -euo pipefail
 
 TOP_DIR=$(git rev-parse --show-toplevel)
-DEFAULT_DIST="${TOP_DIR}/dist"
-if [[ ! -d "${DEFAULT_DIST}" && -d "${TOP_DIR}/py/dist" ]]; then
-  DEFAULT_DIST="${TOP_DIR}/py/dist"
-fi
-DIST_DIR=$(cd "${1:-${DEFAULT_DIST}}" && pwd)
+DIST_DIR=$(cd "${1:-${TOP_DIR}/dist}" && pwd)
 PYTHON_VERSION=${PYTHON_VERSION:-3.12}
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT

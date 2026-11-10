@@ -122,8 +122,10 @@ EMBEDDER_DIMENSIONS: dict[str, int] = {
 }
 
 
-# Curated set of Google AI embedders advertised statically without a discovery round-trip.
-GOOGLEAI_KNOWN_EMBEDDERS: tuple[str, ...] = ('text-embedding-004',)
+# Curated set of Google AI embedders registered at init without a discovery
+# round-trip. text-embedding-004 is left out: the Gemini API shut it down on
+# 2026-01-14. Any other id still resolves on demand.
+GOOGLEAI_KNOWN_EMBEDDERS: tuple[str, ...] = ('gemini-embedding-001', 'gemini-embedding-2')
 
 
 # Curated set of Vertex AI embedders that are verified to be callable.

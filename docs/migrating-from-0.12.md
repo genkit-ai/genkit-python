@@ -508,36 +508,6 @@ async def book_trip(trip: Trip) -> Booking:
             await release(hold)
 ```
 
-## Opt-in exception raising for failed generate calls (1.0)
-
-In 1.0, `ai.generate`, `ai.generate_stream`, and prompt calls accept `raise_on_error: bool = False`. By default, calls return a boxed `ModelResponse` with `finish_reason == FAILED` and `response.error` set. This keeps backward compatibility with 0.12/0.13 and maintains runtime symmetry with agent loops, which box errors by default for long-running workflows.
-
-To raise exceptions directly instead of inspecting `response.error`, pass `raise_on_error=True` (equivalent to JS `throwOnError: true`):
-
-```python
-# 1. Default: boxed response (consistent with agents and 0.13)
-res = await ai.generate(prompt='Suggest a dish.')
-if res.error is not None:
-    return fallback_menu()
-# => Smoked Salmon Tartine
-
-# 2. Opt-in: direct exception raising
-try:
-    res = await ai.generate(prompt='Suggest a dish.', raise_on_error=True)
-except GenkitError:
-    return fallback_menu()
-```
-
-When `raise_on_error=True`:
-
-- **Provider errors**: a bad or rotated API key, a retired model ID, 429, 503, timeouts raise `GenkitError`.
-- **Tool and middleware exceptions**: a `PublicError` stays a `PublicError`, preserving HTTP status in served flows.
-- **`max_turns` exhaustion**: `GenkitError` with status `ABORTED`, reason `MAX_TURNS_EXCEEDED`.
-- **Output that fails `output_schema`**: `GenkitError` with status `INTERNAL`, reason `INVALID_OUTPUT`.
-- **Resume errors**: invalid `resume_respond` / `resume_restart` raises `FAILED_PRECONDITION`.
-
-For streams with `raise_on_error=True`, `async for chunk in result.stream` raises after chunks already yielded, and so does `await result.response`. Closing a stream manually (`aclose()`, `async with`) still resolves `.response` to `ABORTED`.
-
 ## Returned errors
 
 `response.error` (and `.error` on operations and agent results) is now typed `Failure`, a public type you can import. It has the same fields as before: `status`, `message`, `details` and `reason`. The reason enum is renamed from `RuntimeErrorReason` to `ErrorReason`.
@@ -904,8 +874,6 @@ res = await ai.generate(prompt=p, output_schema=City)
 if res.output is None:
     ...   # the reply was incomplete; see res.error
 ```
-
-With `raise_on_error=True`, an incomplete reply raises `GenkitError` with reason `INVALID_OUTPUT` instead.
 
 ## Flow input and output validation
 

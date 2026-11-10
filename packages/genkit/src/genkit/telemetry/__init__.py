@@ -30,15 +30,12 @@ from genkit._core._telemetry._instrumentation import (
     SpanContext,
     SpanMetadata,
     SpanNext,
-    SpanState,
     configure_instrumentation,
-    dispose_instrumentations,
     flush_instrumentations,
     is_instrumented_by,
     reset_instrumentation,
     run_in_new_span,
     set_custom_metadata_attributes,
-    set_span_state,
 )
 
 __all__ = [
@@ -49,15 +46,11 @@ __all__ = [
     'SpanContext',
     'SpanMetadata',
     'SpanNext',
-    'SpanState',
     'configure_instrumentation',
     'run_in_new_span',
-    # Active-span metadata
-    'set_custom_metadata_attributes',
-    'set_span_state',
-    # Lifecycle
-    'dispose_instrumentations',
+    # App helpers
     'flush_instrumentations',
+    'set_custom_metadata_attributes',
     # Testing & test-inspection helpers
     'is_instrumented_by',
     'reset_instrumentation',

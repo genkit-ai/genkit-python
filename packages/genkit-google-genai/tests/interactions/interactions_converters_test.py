@@ -36,11 +36,12 @@ from genkit_google_genai._interactions._converters import (
     to_interaction_tool,
     to_thought_step,
     usage_from_interaction,
+    with_basic_usage_stats,
 )
 from google.genai.interactions import Content, Interaction, Step, ThoughtStep, Usage
 from pydantic import BaseModel, TypeAdapter
 
-from genkit import GenkitError, Message, Part
+from genkit import GenkitError, Media, Message, Part
 from genkit.model import ToolDefinition, ToolRequest, ToolResponse
 
 ContentAdapter: TypeAdapter[Content] = TypeAdapter(Content)
@@ -224,10 +225,95 @@ class TestToInteractionContent:
         result = to_interaction_content(Part.from_media('gs://bucket/doc.pdf', content_type='application/pdf'))
         assert result == {'type': 'document', 'uri': 'gs://bucket/doc.pdf', 'mime_type': 'application/pdf'}
 
-    def test_unsupported_media_raises(self) -> None:
-        with pytest.raises(GenkitError, match='Unsupported media type') as raised:
-            to_interaction_content(Part.from_media('https://example.com/x', content_type='text/plain'))
+    def test_csv_is_a_document(self) -> None:
+        result = to_interaction_content(Part.from_media('data:text/csv;base64,DATA', content_type='text/csv'))
+        assert result == {'type': 'document', 'data': 'DATA', 'mime_type': 'text/csv'}
+
+    def test_word_and_excel_are_documents(self) -> None:
+        # User report (JS 1.43): these threw "Unsupported media type", although
+        # the server accepts them.
+        docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        assert to_interaction_content(Part.from_media(f'data:{docx};base64,DATA', content_type=docx)) == {
+            'type': 'document',
+            'data': 'DATA',
+            'mime_type': docx,
+        }
+        assert to_interaction_content(Part.from_media('gs://bucket/sheet.xlsx', content_type=xlsx)) == {
+            'type': 'document',
+            'uri': 'gs://bucket/sheet.xlsx',
+            'mime_type': xlsx,
+        }
+
+    def test_other_content_types_are_left_for_the_server_to_accept_or_reject(self) -> None:
+        result = to_interaction_content(Part.from_media('gs://bucket/notes.txt', content_type='text/plain'))
+        assert result == {'type': 'document', 'uri': 'gs://bucket/notes.txt', 'mime_type': 'text/plain'}
+
+    def test_youtube_url_without_content_type_is_video_without_mime_type(self) -> None:
+        url = 'https://www.youtube.com/watch?v=abc123'
+        assert to_interaction_content(Part(media=Media(url=url))) == {'type': 'video', 'uri': url}
+        assert to_interaction_content(Part(media=Media(url='https://youtu.be/abc123'))) == {
+            'type': 'video',
+            'uri': 'https://youtu.be/abc123',
+        }
+
+    def test_other_uri_without_known_content_type_is_document_without_mime_type(self) -> None:
+        url = 'https://generativelanguage.googleapis.com/v1beta/files/abc123'
+        assert to_interaction_content(Part(media=Media(url=url))) == {'type': 'document', 'uri': url}
+
+    def test_content_type_from_a_known_file_extension(self) -> None:
+        assert to_interaction_content(Part(media=Media(url='gs://bucket/doc.pdf'))) == {
+            'type': 'document',
+            'uri': 'gs://bucket/doc.pdf',
+            'mime_type': 'application/pdf',
+        }
+
+    def test_content_type_from_a_data_url(self) -> None:
+        assert to_interaction_content(Part(media=Media(url='data:image/png;base64,DATA'))) == {
+            'type': 'image',
+            'data': 'DATA',
+            'mime_type': 'image/png',
+        }
+
+    def test_data_url_without_content_type_raises(self) -> None:
+        with pytest.raises(GenkitError, match='Media part missing contentType') as raised:
+            to_interaction_content(Part(media=Media(url='data:;base64,DATA')))
         assert raised.value.status == 'INVALID_ARGUMENT'
+
+    def test_sends_metadata_processing_on_a_youtube_video(self) -> None:
+        part = Part(media=Media(url='https://www.youtube.com/watch?v=abc123'), metadata={'processing': 'agentic'})
+        assert to_interaction_content(part) == {
+            'type': 'video',
+            'uri': 'https://www.youtube.com/watch?v=abc123',
+            'processing': 'agentic',
+        }
+
+    def test_sends_metadata_processing_on_inline_and_uri_videos(self) -> None:
+        inline = Part(
+            media=Media(url='data:video/mp4;base64,AAAA', content_type='video/mp4'),
+            metadata={'processing': 'static'},
+        )
+        assert to_interaction_content(inline) == {
+            'type': 'video',
+            'mime_type': 'video/mp4',
+            'data': 'AAAA',
+            'processing': 'static',
+        }
+        files_api = 'https://generativelanguage.googleapis.com/v1beta/files/abc123'
+        uri = Part(media=Media(url=files_api, content_type='video/mp4'), metadata={'processing': 'agentic'})
+        assert to_interaction_content(uri) == {
+            'type': 'video',
+            'mime_type': 'video/mp4',
+            'uri': files_api,
+            'processing': 'agentic',
+        }
+
+    def test_ignores_metadata_processing_on_media_that_is_not_video(self) -> None:
+        part = Part(
+            media=Media(url='data:image/png;base64,AAAA', content_type='image/png'),
+            metadata={'processing': 'agentic'},
+        )
+        assert to_interaction_content(part) == {'type': 'image', 'mime_type': 'image/png', 'data': 'AAAA'}
 
 
 class TestToInteractionSteps:
@@ -273,7 +359,7 @@ class TestToInteractionSteps:
             to_interaction_steps(messages)
         assert raised.value.status == 'INVALID_ARGUMENT'
 
-    def test_code_execution_call_always_sends_python(self) -> None:
+    def test_code_execution_call_sends_the_language_lower_case(self) -> None:
         messages = [
             Message(
                 role='model',
@@ -284,6 +370,7 @@ class TestToInteractionSteps:
                 ],
             )
         ]
+        # The Interactions API only accepts lower-case values.
         assert to_interaction_steps(messages) == [
             {
                 'type': 'code_execution_call',
@@ -291,6 +378,71 @@ class TestToInteractionSteps:
                 'arguments': {'code': 'print(1)', 'language': 'python'},
             }
         ]
+
+    def test_continues_code_execution_history_saved_from_generate_content(self) -> None:
+        # The part shapes the generateContent path produces: no callId, and
+        # language 'PYTHON', which the Interactions API rejects (400 "Supported
+        # values: 'python', 'bash'", seen live). Real generateContent
+        # signatures are accepted on the steps (seen live), so they're kept.
+        messages = [
+            Message(role='user', content=[Part.from_text('Run some code.')]),
+            Message(
+                role='model',
+                content=[
+                    Part.from_custom(
+                        {'executableCode': {'code': 'print(5117)', 'language': 'PYTHON'}},
+                        metadata={'thoughtSignature': 'sig1'},
+                    ),
+                    Part.from_custom({'codeExecutionResult': {'outcome': 'OUTCOME_OK', 'output': '5117\n'}}),
+                    Part.from_custom({'executableCode': {'code': 'print(1)'}}),
+                    Part.from_custom({'codeExecutionResult': {'outcome': 'OUTCOME_OK', 'output': '1\n'}}),
+                    Part.from_text('The answer is 5117.'),
+                ],
+            ),
+        ]
+        assert to_interaction_steps(messages) == [
+            {'type': 'user_input', 'content': [{'type': 'text', 'text': 'Run some code.'}]},
+            {
+                'type': 'code_execution_call',
+                'id': 'genkit-code-execution-id-0',
+                'arguments': {'code': 'print(5117)', 'language': 'python'},
+                'signature': 'sig1',
+            },
+            {'type': 'code_execution_result', 'call_id': 'genkit-code-execution-id-0', 'result': '5117\n'},
+            {
+                'type': 'code_execution_call',
+                'id': 'genkit-code-execution-id-1',
+                'arguments': {'code': 'print(1)', 'language': 'python'},
+            },
+            {'type': 'code_execution_result', 'call_id': 'genkit-code-execution-id-1', 'result': '1\n'},
+            {'type': 'model_output', 'content': [{'type': 'text', 'text': 'The answer is 5117.'}]},
+        ]
+
+    def test_keeps_existing_code_execution_ids_and_bash_and_gives_a_lone_result_an_orphan_id(self) -> None:
+        messages = [
+            Message(
+                role='model',
+                content=[
+                    Part.from_custom(
+                        {'executableCode': {'code': 'ls', 'language': 'bash'}}, metadata={'callId': 'call_1'}
+                    ),
+                    Part.from_custom({'codeExecutionResult': {'output': 'a.txt\n'}}, metadata={'callId': 'call_1'}),
+                    Part.from_custom({'codeExecutionResult': {'output': 'stray\n'}}),
+                ],
+            )
+        ]
+        steps = to_interaction_steps(messages)
+        assert steps == [
+            {'type': 'code_execution_call', 'id': 'call_1', 'arguments': {'code': 'ls', 'language': 'bash'}},
+            {'type': 'code_execution_result', 'call_id': 'call_1', 'result': 'a.txt\n'},
+            {'type': 'code_execution_result', 'call_id': 'genkit-code-execution-orphan-id-0', 'result': 'stray\n'},
+        ]
+
+    def test_code_execution_ids_do_not_change_the_callers_messages(self) -> None:
+        part = Part.from_custom({'executableCode': {'code': 'print(1)'}})
+        messages = [Message(role='model', content=[part])]
+        to_interaction_steps(messages)
+        assert messages[0].content[0].metadata is None
 
     def test_google_search_call(self) -> None:
         messages = [
@@ -558,6 +710,46 @@ class TestFromInteractionContent:
             'media': {'url': 'gs://bucket/image.png', 'contentType': 'image/png'},
             'metadata': {'resolution': 'high'},
         }
+
+    def test_labels_audio_data_without_a_mime_type_as_l16(self) -> None:
+        # Streamed single-voice TTS deltas (no mime_type) assembled into the
+        # final response's content.
+        content_type = 'audio/l16; rate=24000; channels=1'
+        result = from_interaction_content(
+            ContentAdapter.validate_python({'type': 'audio', 'data': 'AAEC', 'channels': 1, 'sample_rate': 24000})
+        )
+        assert part_dict(result) == {
+            'media': {'url': f'data:{content_type};base64,AAEC', 'contentType': content_type}
+        }
+
+    def test_audio_without_a_mime_type_uses_the_sample_rate_and_channels_sent(self) -> None:
+        result = from_interaction_content(
+            ContentAdapter.validate_python({'type': 'audio', 'data': 'AAEC', 'channels': 2, 'sample_rate': 16000})
+        )
+        assert result.media is not None
+        assert result.media.content_type == 'audio/l16; rate=16000; channels=2'
+
+    def test_audio_without_a_mime_type_defaults_to_24khz_mono(self) -> None:
+        result = from_interaction_content(ContentAdapter.validate_python({'type': 'audio', 'data': 'AAEC'}))
+        assert result.media is not None
+        assert result.media.content_type == 'audio/l16; rate=24000; channels=1'
+
+    def test_audio_mime_type_sent_by_the_server_wins(self) -> None:
+        result = from_interaction_content(
+            ContentAdapter.validate_python({
+                'type': 'audio',
+                'data': 'AAEC',
+                'mime_type': 'audio/wav',
+                'sample_rate': 16000,
+            })
+        )
+        assert part_dict(result) == {'media': {'url': 'data:audio/wav;base64,AAEC', 'contentType': 'audio/wav'}}
+
+    def test_audio_uri_without_a_mime_type_is_not_labelled(self) -> None:
+        result = from_interaction_content(
+            ContentAdapter.validate_python({'type': 'audio', 'uri': 'gs://bucket/clip.mp3'})
+        )
+        assert part_dict(result) == {'media': {'url': 'gs://bucket/clip.mp3'}}
 
     def test_thought(self) -> None:
         step = ThoughtStep.model_validate({
@@ -893,6 +1085,20 @@ class TestFromInteractionStatusMapping:
         assert result.error is not None
         assert result.error.message == 'Invalid prompt format'
 
+    def test_failed_content_block_is_a_blocked_output(self) -> None:
+        result = from_interaction(
+            Interaction.model_validate({
+                'id': '123',
+                'status': 'failed',
+                'errors': [{'code': 'recitation', 'message': 'Recitation detected.'}],
+            })
+        )
+        assert result.done is True
+        assert result.error is None
+        assert result.output is not None
+        assert result.output.finish_reason == 'blocked'
+        assert result.output.finish_message == 'Recitation detected.'
+
     def test_requires_action_exits_poll_loop(self) -> None:
         interaction = Interaction.model_validate({
             'id': '123',
@@ -1032,6 +1238,100 @@ class TestFromInteractionSync:
         assert raised.value.status == 'UNKNOWN'
         assert str(raised.value) == 'UNKNOWN: model crashed'
 
+    def test_returns_finish_reason_blocked_for_a_post_execution_safety_block(self) -> None:
+        result = from_interaction_sync(
+            Interaction.model_validate({
+                'id': 'int-1',
+                'status': 'failed',
+                'errors': [{'code': 'safety', 'message': 'Response blocked due to safety violations.'}],
+            })
+        )
+        assert result.finish_reason == 'blocked'
+        assert result.finish_message == 'Response blocked due to safety violations.'
+        assert result.message is not None
+        assert result.message.content == []
+        assert result.message.metadata is not None
+        assert result.message.metadata.get('interactionId') == 'int-1'
+
+    @pytest.mark.parametrize(
+        'code',
+        [
+            'safety',
+            'recitation',
+            'language',
+            'prohibited_content',
+            'spii',
+            'blocklist',
+            'image_safety',
+            'image_prohibited_content',
+            'image_recitation',
+            'image_other',
+            'content_blocked',
+            'jailbreak',
+            'model_armor',
+        ],
+    )
+    def test_returns_finish_reason_blocked_for_every_content_block_code(self, code: str) -> None:
+        result = from_interaction_sync(
+            Interaction.model_validate({'status': 'failed', 'errors': [{'code': code, 'message': 'blocked'}]})
+        )
+        assert result.finish_reason == 'blocked'
+
+    def test_carries_usage_on_a_blocked_response(self) -> None:
+        result = from_interaction_sync(
+            Interaction.model_validate({
+                'status': 'failed',
+                'errors': [{'code': 'safety', 'message': 'blocked'}],
+                'usage': {
+                    'total_input_tokens': 10,
+                    'total_output_tokens': 0,
+                    'total_tokens': 10,
+                    'input_tokens_by_modality': [
+                        {'modality': 'text', 'tokens': 8},
+                        {'modality': 'image', 'tokens': 2},
+                    ],
+                },
+            })
+        )
+        assert result.finish_reason == 'blocked'
+        assert result.usage is not None
+        assert result.usage.model_dump(exclude_none=True) == {
+            'inputTokens': 10,
+            'outputTokens': 0,
+            'totalTokens': 10,
+            'custom': {'inputTextTokens': 8, 'inputImageTokens': 2},
+        }
+
+    def test_raises_a_retryable_aborted_error_for_malformed_function_call(self) -> None:
+        advice = 'Model generated invalid JSON syntax and the output could not be parsed. Please retry the request.'
+        with pytest.raises(GenkitError) as raised:
+            from_interaction_sync(
+                Interaction.model_validate({
+                    'status': 'failed',
+                    'errors': [{'code': 'malformed_function_call', 'message': advice}],
+                })
+            )
+        assert raised.value.status == 'ABORTED'
+        assert advice in str(raised.value)
+
+    @pytest.mark.parametrize(
+        ('code', 'status'),
+        [
+            ('unexpected_tool_call', 'ABORTED'),
+            ('no_image', 'ABORTED'),
+            ('service_unavailable', 'UNAVAILABLE'),
+            ('quota_exceeded', 'RESOURCE_EXHAUSTED'),
+            ('model_not_found', 'NOT_FOUND'),
+            ('agent_max_token_limit', 'INVALID_ARGUMENT'),
+        ],
+    )
+    def test_raises_the_status_for_an_interactions_error_code(self, code: str, status: str) -> None:
+        with pytest.raises(GenkitError) as raised:
+            from_interaction_sync(
+                Interaction.model_validate({'status': 'failed', 'errors': [{'code': code, 'message': 'x'}]})
+            )
+        assert raised.value.status == status
+
     def test_queued_is_failed_precondition(self) -> None:
         with pytest.raises(GenkitError, match='still running') as raised:
             from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'queued'}))
@@ -1144,7 +1444,7 @@ class TestSplitSystemInstruction:
 
 
 class TestUsageFromInteraction:
-    def test_maps_totals_and_video_modality(self) -> None:
+    def test_maps_totals_and_puts_modality_tokens_in_custom(self) -> None:
         usage = Usage.model_validate({
             'total_input_tokens': 10,
             'total_output_tokens': 4,
@@ -1160,5 +1460,117 @@ class TestUsageFromInteraction:
         assert mapped.total_tokens == 14
         assert mapped.cached_content_tokens == 2
         assert mapped.thoughts_tokens == 1
-        assert mapped.input_videos == 3
-        assert mapped.output_videos == 1
+        # Per-modality counts are tokens, not Genkit's media-part counts.
+        assert mapped.custom == {'inputVideoTokens': 3, 'outputVideoTokens': 1}
+        assert mapped.input_videos is None
+        assert mapped.output_videos is None
+
+    def test_text_and_image_tokens_are_not_characters_or_images(self) -> None:
+        mapped = usage_from_interaction(
+            Usage.model_validate({
+                'total_input_tokens': 10,
+                'total_output_tokens': 0,
+                'total_tokens': 10,
+                'input_tokens_by_modality': [
+                    {'modality': 'text', 'tokens': 8},
+                    {'modality': 'image', 'tokens': 2},
+                ],
+            })
+        )
+        assert mapped.custom == {'inputTextTokens': 8, 'inputImageTokens': 2}
+        assert mapped.input_characters is None
+        assert mapped.input_images is None
+
+    def test_reports_tool_use_tokens_in_custom(self) -> None:
+        mapped = usage_from_interaction(
+            Usage.model_validate({
+                'total_input_tokens': 416,
+                'total_output_tokens': 393,
+                'total_tool_use_tokens': 2054,
+                'total_thought_tokens': 2117,
+                'total_tokens': 4980,
+            })
+        )
+        assert mapped.custom == {'toolUseTokens': 2054}
+
+    def test_reports_grounding_tool_counts_in_custom(self) -> None:
+        # `grounding_tool_count` as seen live (googleAI, Google Search).
+        mapped = usage_from_interaction(
+            Usage.model_validate({
+                'total_tokens': 1011,
+                'total_tool_use_tokens': 0,
+                'grounding_tool_count': [
+                    {'type': 'google_search', 'count': 2},
+                    {'type': 'google_maps', 'count': 1},
+                ],
+            })
+        )
+        assert mapped.custom == {'googleSearchCount': 2, 'googleMapsCount': 1}
+
+    def test_leaves_custom_unset_without_breakdowns(self) -> None:
+        mapped = usage_from_interaction(Usage.model_validate({'total_input_tokens': 4, 'total_tokens': 4}))
+        assert mapped.custom is None
+
+
+class TestWithBasicUsageStats:
+    request = [
+        Message(
+            role='user',
+            content=[
+                Part.from_text('Describe this'),
+                Part(media=Media(url='data:image/png;base64,AAAA', content_type='image/png')),
+            ],
+        )
+    ]
+
+    def test_adds_character_and_media_counts_next_to_the_token_counts(self) -> None:
+        response = from_interaction_sync(
+            Interaction.model_validate({
+                'id': 'int-1',
+                'status': 'completed',
+                'steps': [
+                    {
+                        'type': 'model_output',
+                        'content': [
+                            {'type': 'text', 'text': 'A cat.'},
+                            {'type': 'audio', 'mime_type': 'audio/wav', 'data': 'AAAA'},
+                        ],
+                    }
+                ],
+                'usage': {
+                    'total_input_tokens': 270,
+                    'total_output_tokens': 30,
+                    'total_tokens': 300,
+                    'input_tokens_by_modality': [
+                        {'modality': 'text', 'tokens': 12},
+                        {'modality': 'image', 'tokens': 258},
+                    ],
+                },
+            })
+        )
+        result = with_basic_usage_stats(response, self.request)
+        assert result.usage is not None
+        # Same keys and values as the JS test (Genkit models dump camelCase).
+        assert result.usage.model_dump(exclude_none=True) == {
+            'inputCharacters': len('Describe this'),
+            'inputImages': 1,
+            'inputVideos': 0,
+            'inputAudioFiles': 0,
+            'outputCharacters': len('A cat.'),
+            'outputImages': 0,
+            'outputVideos': 0,
+            'outputAudioFiles': 1,
+            'inputTokens': 270,
+            'outputTokens': 30,
+            'totalTokens': 300,
+            'custom': {'inputTextTokens': 12, 'inputImageTokens': 258},
+        }
+
+    def test_counts_the_request_even_when_the_api_sent_no_usage(self) -> None:
+        response = from_interaction_sync(Interaction.model_validate({'id': 'int-1', 'status': 'completed'}))
+        result = with_basic_usage_stats(response, self.request)
+        assert result.usage is not None
+        assert result.usage.input_characters == len('Describe this')
+        assert result.usage.input_images == 1
+        assert result.usage.output_characters == 0
+        assert result.usage.input_tokens is None

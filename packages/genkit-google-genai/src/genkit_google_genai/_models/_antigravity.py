@@ -26,6 +26,7 @@ from genkit_google_genai._interactions._converters import (
     ensure_tool_ids,
     from_interaction_sync,
     to_interaction_tool,
+    with_basic_usage_stats,
 )
 from genkit_google_genai._interactions._options import ClientOptions
 from genkit_google_genai._models._interactions_registry import antigravity_model_info
@@ -268,7 +269,7 @@ def create_antigravity_action(
             create_kwargs['tools'] = tools
 
         created = await create_interaction(api_key, deep_merge(create_kwargs, extra), merged_options)
-        return from_interaction_sync(created)
+        return with_basic_usage_stats(from_interaction_sync(created), request.messages)
 
     return Model(
         name,

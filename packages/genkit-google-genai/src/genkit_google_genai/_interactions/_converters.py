@@ -20,10 +20,18 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any, Literal, cast
+from urllib.parse import urlparse
 
+from genkit_google_genai._interactions._errors import interaction_error_status, is_interaction_content_block_code
+
+# Private SDK module: the SDK exports this type only here. It goes away with
+# the SDK types when the plugin gets its own Interactions types.
+from google.genai._gaos.types import UnrecognizedStr
 from google.genai.interactions import (
     AudioContent,
+    AudioContentParam,
     CodeExecutionCallStep,
     CodeExecutionCallStepParam,
     CodeExecutionResultStep,
@@ -31,6 +39,7 @@ from google.genai.interactions import (
     Content,
     ContentParam,
     DocumentContent,
+    DocumentContentParam,
     FunctionCallStep,
     FunctionCallStepParam,
     FunctionParam,
@@ -42,7 +51,9 @@ from google.genai.interactions import (
     GoogleSearchResultStep,
     GoogleSearchResultStepParam,
     ImageContent,
+    ImageContentParam,
     Interaction,
+    ModalityTokens,
     ModelOutputStep,
     ModelOutputStepParam,
     Step,
@@ -56,6 +67,7 @@ from google.genai.interactions import (
     UserInputStep,
     UserInputStepParam,
     VideoContent,
+    VideoContentParam,
 )
 from pydantic import BaseModel
 
@@ -87,7 +99,7 @@ SERVER_FUNCTION_RESULT = 'serverFunctionResult'
 THOUGHT_CUSTOM = 'thought'
 # Wire function_result.content is only text/image blocks, not a JSON array.
 CONTENT_BLOCK_TYPES = frozenset({'text', 'image'})
-# Code execution only ever runs Python, and the wire rejects any other value.
+# The language when a code execution step names none.
 CODE_LANGUAGE: Literal['python'] = 'python'
 
 FAILED_MESSAGE = 'Interaction failed'
@@ -114,13 +126,16 @@ GRPC_STATUS_NAMES: tuple[StatusName, ...] = (
 # Chat generate can pause for a tool; a background job cannot.
 BACKGROUND_INTERRUPT_UNSUPPORTED = 'Background models do not support interrupts'
 
-# Interactions splits media into typed content blocks, chosen by mime prefix.
-MEDIA_CONTENT_TYPES: tuple[tuple[str, str], ...] = (
-    ('image/', 'image'),
-    ('audio/', 'audio'),
-    ('video/', 'video'),
-    ('application/pdf', 'document'),
-)
+# Content types guessed from a URL's file extension when a media part has
+# none (same list as the JS plugin).
+KNOWN_MIME_TYPES: dict[str, str] = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'mp4': 'video/mp4',
+    'pdf': 'application/pdf',
+}
+YOUTUBE_HOSTS = frozenset({'youtube.com', 'youtu.be'})
 
 # Turns a Genkit role into the side of the transcript it belongs on. Tool
 # results are part of the user's side; system prompts aren't turns at all.
@@ -159,8 +174,10 @@ def interaction_error_message(interaction: Interaction) -> str | None:
 def error_from_provider_code(code: object, cause: BaseException) -> GenkitError | None:
     """Turn an error code the Interactions API reported into a GenkitError.
 
-    Top-level errors carry a string code (a canonical name like
-    ``RESOURCE_EXHAUSTED``, or a number); step errors carry a gRPC int.
+    Top-level errors carry a string code: an Interactions code like
+    ``service_unavailable`` or ``malformed_function_call`` (see
+    ``INTERACTION_ERROR_CODE_TO_STATUS``), a canonical name like
+    ``RESOURCE_EXHAUSTED``, or a number; step errors carry a gRPC int.
     Numbers 1-16 are gRPC codes and 400-599 are HTTP codes. Anything else,
     and any code that only maps to OK or UNKNOWN, returns None so the caller
     can look at the next error.
@@ -174,6 +191,8 @@ def error_from_provider_code(code: object, cause: BaseException) -> GenkitError 
             error = provider_error(cause, status=GRPC_STATUS_NAMES[number])
         else:
             return None
+    elif (status := interaction_error_status(text)) is not None:
+        error = provider_error(cause, status=status)
     elif text.upper() in GRPC_STATUS_NAMES:
         error = provider_error(cause, status=cast(StatusName, text.upper()))
     else:
@@ -181,6 +200,31 @@ def error_from_provider_code(code: object, cause: BaseException) -> GenkitError 
     if error.status in ('OK', 'UNKNOWN'):
         return None
     return error
+
+
+def first_error(interaction: Interaction) -> tuple[object, str | None]:
+    """The code and message of the interaction's first top-level error, if any."""
+    for err in interaction.errors or []:
+        return err.code, err.message
+    return None, None
+
+
+def blocked_response(interaction: Interaction) -> ModelResponse | None:
+    """The response for an interaction that failed on a content-policy block, or None.
+
+    Safety, recitation and the other content-policy codes return a response
+    with finish_reason 'blocked' and no content, like a blocked
+    generateContent response, instead of raising.
+    """
+    code, message = first_error(interaction)
+    if not is_interaction_content_block_code(code):
+        return None
+    return model_response(
+        interaction,
+        content=[],
+        finish_reason=FinishReason.BLOCKED,
+        finish_message=message or interaction_error_message(interaction) or FAILED_MESSAGE,
+    )
 
 
 def interaction_error(interaction: Interaction, cause: BaseException) -> GenkitError:
@@ -280,20 +324,76 @@ def to_interaction_content(part: Part) -> ContentParam | None:
     return None
 
 
+def extract_mime_type(url: str) -> str:
+    """The content type a URL names: a data URL's header, or a known file extension; else ''."""
+    if not url.startswith('data:'):
+        extension = url.rsplit('.', 1)[-1]
+        return KNOWN_MIME_TYPES.get(extension, '')
+    header, separator, _ = url[len('data:') :].partition(',')
+    if not separator:
+        return ''
+    return header.removesuffix(';base64').strip()
+
+
+def is_youtube_url(url: str) -> bool:
+    """True for a youtube.com or youtu.be link."""
+    host = urlparse(url).hostname or ''
+    return host.removeprefix('www.').removeprefix('m.') in YOUTUBE_HOSTS
+
+
+def video_block(part: Part, *, mime_type: str | None = None) -> VideoContentParam:
+    """A video block, with ``metadata['processing']`` (`static` / `agentic`) when the part sets it."""
+    video: VideoContentParam = {'type': 'video'}
+    if mime_type:
+        video['mime_type'] = UnrecognizedStr(mime_type)
+    processing = (part.metadata or {}).get('processing')
+    if isinstance(processing, str):
+        video['processing'] = UnrecognizedStr(processing)
+    return video
+
+
 def to_interaction_media(part: Part) -> ContentParam:
-    """Convert a media part to an Interactions image/audio/video/document block."""
+    """Convert a media part to an Interactions image/audio/video/document block.
+
+    Image, audio and video types get their own block; every other type is
+    sent as a ``document`` (PDF, CSV, Word, Excel, ...): the server decides
+    which types it accepts and returns a clear error for the rest; its list
+    has grown beyond the PDF and CSV in the published spec.
+    """
     if part.media is None:
         raise GenkitError(status='INVALID_ARGUMENT', message='Media part missing media')
-    content_type = part.media.content_type
-    if not content_type:
-        raise GenkitError(status='INVALID_ARGUMENT', message='Media part missing contentType')
-    block_type = next((name for prefix, name in MEDIA_CONTENT_TYPES if content_type.startswith(prefix)), None)
-    if block_type is None:
-        raise GenkitError(status='INVALID_ARGUMENT', message=f'Unsupported media type: {content_type}')
-
-    block: dict[str, Any] = {'type': block_type, 'mime_type': content_type}
-    # Inline data URLs travel as base64; anything else is a reference the API fetches.
     url = part.media.url
+    content_type = part.media.content_type or extract_mime_type(url)
+
+    if not content_type:
+        if url.startswith('data:'):
+            raise GenkitError(status='INVALID_ARGUMENT', message='Media part missing contentType')
+        # A URI whose type can't be worked out (e.g. a YouTube link or a Files
+        # API URI). The server works out the type itself, so it's sent without
+        # a mime_type, as the generateContent path does. YouTube links are
+        # video; anything else is sent as a document (checked live: the
+        # server still treats a YouTube link sent as a document as video).
+        if is_youtube_url(url):
+            youtube = video_block(part)
+            youtube['uri'] = url
+            return youtube
+        unknown: DocumentContentParam = {'type': 'document', 'uri': url}
+        return unknown
+
+    # The SDK types each mime_type as a few known values or its own
+    # `UnrecognizedStr`; any other type (e.g. Word) goes through that.
+    mime_type = UnrecognizedStr(content_type)
+    block: ImageContentParam | AudioContentParam | VideoContentParam | DocumentContentParam
+    if content_type.startswith('image/'):
+        block = {'type': 'image', 'mime_type': mime_type}
+    elif content_type.startswith('audio/'):
+        block = {'type': 'audio', 'mime_type': mime_type}
+    elif content_type.startswith('video/'):
+        block = video_block(part, mime_type=content_type)
+    else:
+        block = {'type': 'document', 'mime_type': mime_type}
+
+    # Inline data URLs travel as base64; anything else is a reference the API fetches.
     if url.startswith('data:'):
         if ',' not in url:
             raise GenkitError(
@@ -303,7 +403,7 @@ def to_interaction_media(part: Part) -> ContentParam:
         block['data'] = url.split(',', 1)[1]
     else:
         block['uri'] = url
-    return cast(ContentParam, block)
+    return block
 
 
 def to_interaction_role(role: str) -> InteractionRole:
@@ -500,10 +600,18 @@ def to_server_tool_step(custom: dict[str, Any], metadata: dict[str, Any]) -> Ste
         return search_result
     if EXECUTABLE_CODE in custom:
         code = custom[EXECUTABLE_CODE]
+        stored_language = code.get('language')
+        # The Interactions API takes 'python' or 'bash'; generateContent parts
+        # say 'PYTHON', which it rejects (400, seen live). Cast: the SDK types
+        # `language` as 'python' only; our own Interactions types remove it.
+        language = cast(
+            Literal['python'],
+            (stored_language.lower() if isinstance(stored_language, str) else '') or CODE_LANGUAGE,
+        )
         code_call: CodeExecutionCallStepParam = {
             'type': 'code_execution_call',
             'id': metadata.get(CALL_ID, ''),
-            'arguments': {'code': code.get('code'), 'language': CODE_LANGUAGE},
+            'arguments': {'code': code.get('code'), 'language': language},
         }
         return code_call
     if CODE_EXECUTION_RESULT in custom:
@@ -553,6 +661,42 @@ def to_content_step(role: InteractionRole, content: list[ContentParam]) -> StepP
     return user_step
 
 
+def ensure_code_execution_ids(messages: list[Message]) -> list[Message]:
+    """Give code execution calls and results without a call ID matching IDs.
+
+    History saved from generateContent has no ``callId`` on its
+    ``executableCode`` / ``codeExecutionResult`` parts, and the Interactions
+    API rejects an empty id. A call without one gets
+    ``genkit-code-execution-id-N`` and the next result without one gets the
+    same ID; a result with no call waiting gets
+    ``genkit-code-execution-orphan-id-N`` (like ``ensure_tool_ids`` does for
+    tool requests). Parts that have an ID keep it. Returns copies.
+    """
+    pending: list[str] = []
+    next_id = 0
+    result: list[Message] = []
+    for message in messages:
+        content: list[Part] = []
+        for part in message.content:
+            custom = part.custom or {}
+            is_call = EXECUTABLE_CODE in custom
+            if (part.metadata or {}).get(CALL_ID) or not (is_call or CODE_EXECUTION_RESULT in custom):
+                content.append(part)
+                continue
+            if is_call:
+                call_id = f'genkit-code-execution-id-{next_id}'
+                next_id += 1
+                pending.append(call_id)
+            elif pending:
+                call_id = pending.pop(0)
+            else:
+                call_id = f'genkit-code-execution-orphan-id-{next_id}'
+                next_id += 1
+            content.append(with_metadata(part, CALL_ID, call_id))
+        result.append(message.model_copy(update={'content': content}))
+    return result
+
+
 def to_interaction_steps(messages: list[Message]) -> list[StepParam]:
     """Convert Genkit messages to Interactions API steps.
 
@@ -563,7 +707,7 @@ def to_interaction_steps(messages: list[Message]) -> list[StepParam]:
     to the end of the turn.
     """
     steps: list[StepParam] = []
-    for message in messages:
+    for message in ensure_code_execution_ids(messages):
         role = to_interaction_role(message.role)
         inline: list[ContentParam] = []
 
@@ -695,12 +839,29 @@ def from_function_result_step(step: FunctionResultStep) -> Part:
     })
 
 
+def interaction_media_mime_type(content: ImageContent | AudioContent | DocumentContent | VideoContent) -> str | None:
+    """The content type of an Interactions media block.
+
+    Audio that comes with ``data`` but no ``mime_type`` is raw 16-bit PCM: the
+    server streams single-voice TTS that way (``{type: 'audio', data,
+    sample_rate, channels}``, seen live Nov 2026), while it labels the same
+    audio ``audio/l16; rate=24000; channels=1`` in other cases (e.g. two
+    speakers). The label is built from the ``sample_rate`` and ``channels`` it
+    sends (24000 and 1 when missing), so the audio can be played and joined.
+    A given ``mime_type`` always wins.
+    """
+    if content.mime_type or not isinstance(content, AudioContent) or not content.data:
+        return content.mime_type
+    return f'audio/l16; rate={content.sample_rate or 24000}; channels={content.channels or 1}'
+
+
 def from_media_content(content: ImageContent | AudioContent | DocumentContent | VideoContent) -> Part:
     """Convert wire media content to a Genkit media part."""
+    mime_type = interaction_media_mime_type(content)
     url = content.uri
-    if content.data and content.mime_type:
-        url = f'data:{content.mime_type};base64,{content.data}'
-    return Part(media=Media(url=url or '', content_type=content.mime_type))
+    if content.data and mime_type:
+        url = f'data:{mime_type};base64,{content.data}'
+    return Part(media=Media(url=url or '', content_type=mime_type))
 
 
 def from_text_content(content: TextContent) -> Part:
@@ -791,8 +952,19 @@ def interaction_message_metadata(interaction: Interaction) -> dict[str, Any] | N
     return metadata or None
 
 
+def snake_to_camel(name: str) -> str:
+    """``google_search`` -> ``googleSearch``."""
+    return re.sub(r'_([a-z0-9])', lambda match: match.group(1).upper(), name)
+
+
 def usage_from_interaction(usage: Usage) -> GenerationUsage:
-    """Map Interactions Usage onto Genkit GenerationUsage."""
+    """Map Interactions Usage onto Genkit GenerationUsage.
+
+    The per-modality breakdowns are token counts, so they go in ``custom``
+    as e.g. ``inputTextTokens`` / ``outputImageTokens``: Genkit's
+    ``input_characters``, ``input_images``, ... count characters and media
+    parts (``with_basic_usage_stats`` adds those where the request is known).
+    """
     response_usage = GenerationUsage(
         input_tokens=usage.total_input_tokens,
         output_tokens=usage.total_output_tokens,
@@ -800,31 +972,51 @@ def usage_from_interaction(usage: Usage) -> GenerationUsage:
         cached_content_tokens=usage.total_cached_tokens,
         thoughts_tokens=usage.total_thought_tokens,
     )
-    for modality_token in usage.input_tokens_by_modality or []:
-        match modality_token.modality:
-            case 'text':
-                response_usage.input_characters = modality_token.tokens
-            case 'image':
-                response_usage.input_images = modality_token.tokens
-            case 'audio':
-                response_usage.input_audio_files = modality_token.tokens
-            case 'video':
-                response_usage.input_videos = modality_token.tokens
-            case _:
-                pass
-    for modality_token in usage.output_tokens_by_modality or []:
-        match modality_token.modality:
-            case 'text':
-                response_usage.output_characters = modality_token.tokens
-            case 'image':
-                response_usage.output_images = modality_token.tokens
-            case 'audio':
-                response_usage.output_audio_files = modality_token.tokens
-            case 'video':
-                response_usage.output_videos = modality_token.tokens
-            case _:
-                pass
+    # Genkit has no standard fields for these.
+    custom: dict[str, float] = {}
+
+    def add_modality_tokens(direction: str, breakdown: list[ModalityTokens] | None) -> None:
+        for item in breakdown or []:
+            if item.modality and isinstance(item.tokens, int):
+                key = f'{direction}{item.modality[:1].upper()}{item.modality[1:]}Tokens'
+                custom[key] = custom.get(key, 0) + item.tokens
+
+    add_modality_tokens('input', usage.input_tokens_by_modality)
+    add_modality_tokens('output', usage.output_tokens_by_modality)
+    # Tokens loaded by tools, e.g. video frames read during agentic video
+    # understanding.
+    if usage.total_tool_use_tokens:
+        custom['toolUseTokens'] = usage.total_tool_use_tokens
+    # How many times each grounding tool was used, e.g. `googleSearchCount`.
+    for tool_count in usage.grounding_tool_count or []:
+        if tool_count.type and isinstance(tool_count.count, int):
+            key = f'{snake_to_camel(tool_count.type)}Count'
+            custom[key] = custom.get(key, 0) + tool_count.count
+    if custom:
+        response_usage.custom = custom
     return response_usage
+
+
+def with_basic_usage_stats(response: ModelResponse, request_messages: list[Message]) -> ModelResponse:
+    """Add character and media-part counts to an Interactions response's usage.
+
+    ``input_characters``, ``input_images``, ... are counted from the request
+    messages and the response message, the same way as on generateContent
+    models (``GenerationUsage.from_messages``). Telemetry reads these fields.
+    The token counts from the API are kept and win over the basic counts.
+
+    Call it on the final response, with the request's messages. Background
+    models (Deep Research) don't have the request when checked, so they don't
+    get these counts.
+    """
+    output = response.message or Message(role='model', content=[])
+    usage = GenerationUsage.from_messages(request_messages, output)
+    if response.usage is not None:
+        for field, value in response.usage:
+            if value is not None:
+                setattr(usage, field, value)
+    response.usage = usage
+    return response
 
 
 def parts_from_steps(steps: list[Step], *, status: str | None = None) -> list[Part]:
@@ -905,10 +1097,14 @@ def from_interaction_sync(interaction: Interaction) -> ModelResponse:
     generate that ran out of tokens does not look like a clean stop.
     In-flight statuses raise FAILED_PRECONDITION — this helper is not a poll
     loop. A failed interaction raises a GenkitError with the status its
-    error code maps to, or UNKNOWN when there's no usable code.
+    error code maps to, or UNKNOWN when there's no usable code, except a
+    content-policy block, which returns a response with finish_reason
+    'blocked'.
     """
     status = interaction.status
     if status == 'failed':
+        if (blocked := blocked_response(interaction)) is not None:
+            return blocked
         failure = ValueError(interaction_error_message(interaction) or FAILED_MESSAGE)
         raise interaction_error(interaction, failure) from failure
     if status == 'cancelled':
@@ -957,7 +1153,10 @@ def from_interaction(interaction: Interaction) -> Operation:
     elif status == 'failed':
         # Always exit the poll loop on failure; leaving done unset hangs forever.
         op.done = True
-        op.error = Failure(message=interaction_error_message(interaction) or FAILED_MESSAGE)
+        if (blocked := blocked_response(interaction)) is not None:
+            op.output = blocked
+        else:
+            op.error = Failure(message=interaction_error_message(interaction) or FAILED_MESSAGE)
     elif status == 'requires_action':
         # Chat generate can pause for a tool. A background job cannot — there
         # is no interrupt/resume on generate_operation — so end the poll

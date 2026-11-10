@@ -22,7 +22,7 @@ pyright, pyrefly and ty must accept the documented call style with no
 suppressions. ``bind`` and structlog's async ``a*`` twins are outside the
 contract, so calling them must be a type error in all three. Each checker
 fails on an unneeded ignore here (pyright through the pragma above, pyrefly
-and ty through py/pyproject.toml), so adding either to the protocol breaks CI.
+and ty through pyproject.toml), so adding either to the protocol breaks CI.
 """
 
 import logging

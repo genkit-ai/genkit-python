@@ -22,7 +22,7 @@ uv add 'genkit-vertexai[openai]'      # Llama, Mistral and other OpenAI-compatib
 You can point a coding agent at this page:
 
 ```text
-Migrate this project from Genkit Python 0.12 to 0.13 by following https://github.com/genkit-ai/genkit/blob/main/py/docs/migrating-from-0.12.md.
+Migrate this project from Genkit Python 0.12 to 0.13 by following https://github.com/genkit-ai/genkit-python/blob/main/docs/migrating-from-0.12.md.
 Apply every section whose old code appears in this codebase, then run the type checker and tests and list anything you couldn't migrate.
 ```
 

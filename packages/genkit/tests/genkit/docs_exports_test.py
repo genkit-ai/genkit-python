@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Every export rendered by py/docs/index.md has a docstring griffe can see.
+"""Every export rendered by docs/index.md has a docstring griffe can see.
 
 mkdocstrings skips members without a docstring (``show_if_no_docstring`` is
 off by default), so an undocumented export silently drops out of the API

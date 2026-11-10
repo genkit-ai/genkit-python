@@ -7,6 +7,7 @@
 
 import re
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import pytest
 
@@ -347,6 +348,61 @@ async def test_list_tools_leaves_out_dynamic_action_provider_tools() -> None:
     assert found is not None
     assert await found('ramen') == 'ramen'
     assert await ai.list_tools() == []
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_lists_each_prompt_and_variant_by_registered_name() -> None:
+    """A variant is its own prompt, listed as `name.variant`, with the description it was defined with."""
+    ai = Genkit()
+    ai.define_prompt(name='greet', description='Say hello.', prompt='Hello {{name}}')
+    ai.define_prompt(name='greet', variant='formal', prompt='Good day {{name}}')
+
+    prompts = {action.name: action for action in await ai.list_prompts()}
+
+    assert sorted(prompts) == ['greet', 'greet.formal']
+    assert prompts['greet'].description == 'Say hello.'
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_on_an_app_without_prompts_is_empty() -> None:
+    """An app that defines no prompts lists none."""
+    assert await Genkit().list_prompts() == []
+
+
+@pytest.mark.asyncio
+async def test_a_listed_prompt_renders_the_request_without_calling_the_model() -> None:
+    """Running a listed prompt gives the messages the model would get, and the model never runs."""
+    ai = Genkit(model='test/never')
+    calls = 0
+
+    async def never(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return _answer('unreachable')
+
+    ai.define_model(name='test/never', fn=never)
+    ai.define_prompt(name='greet', system='Be brief.', prompt='Hello {{name}}')
+
+    [action] = await ai.list_prompts()
+    request = (await action.run({'name': 'Ada'})).response
+
+    assert [(message.role, message.text) for message in request.messages] == [
+        (Role.SYSTEM, 'Be brief.'),
+        (Role.USER, 'Hello Ada'),
+    ]
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_includes_file_prompts_with_their_input_schema(tmp_path: Path) -> None:
+    """A `.prompt` file is listed under its file name, its frontmatter schema already loaded."""
+    (tmp_path / 'greet.prompt').write_text('---\ninput:\n  schema:\n    name: string\n---\nHello {{name}}\n')
+    ai = Genkit(prompt_dir=tmp_path)
+
+    [action] = await ai.list_prompts()
+
+    assert action.name == 'greet'
+    assert (action.input_schema or {}).get('properties') == {'name': {'type': 'string'}}
 
 
 def test_define_value_then_lookup_value_returns_it() -> None:

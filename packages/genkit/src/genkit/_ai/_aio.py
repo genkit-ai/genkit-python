@@ -734,6 +734,28 @@ class Genkit:
         actions = await self._registry.resolve_actions_by_kind(ActionKind.TOOL)
         return [Tool.from_action(actions[name]) for name in sorted(actions)]
 
+    async def list_prompts(self) -> list[Action[Any, ModelRequest]]:
+        """Return the action of every prompt registered on this app, in no particular order.
+
+        Running one renders the prompt into the request a model would get,
+        without calling the model, though the app still needs a model to render
+        against. Each is listed under its registered name, so a variant reads
+        ``'greet.formal'``, and ``ai.prompt(action.name)`` gives the handle that
+        generates. Every plugin is started first, and a plugin whose ``init()``
+        fails makes this raise.
+
+        Example:
+            ```python
+            ai.define_prompt(name='greet', prompt='Hello {{name}}')
+
+            [action.name for action in await ai.list_prompts()]
+            # => ['greet']
+            ```
+        """
+        await self._registry.initialize_all_plugins()
+        actions = await self._registry.resolve_actions_by_kind(ActionKind.PROMPT)
+        return [cast(Action[Any, ModelRequest], action) for action in actions.values()]
+
     def lookup_value(self, *, kind: str, name: str) -> object | None:
         """Return the value defined under ``kind`` and ``name``, or None."""
         return self._registry.lookup_value(kind, name)

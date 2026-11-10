@@ -133,8 +133,10 @@ class ArrayFormat(Formatter):
 {json.dumps(resolved_schema, indent=2)}
 ```
 """
-        return FormatHandler(
+        handler = FormatHandler(
             chunk_parser=chunk_parser,
             message_parser=message_parser,
             instructions=instructions,
         )
+        handler._streams_items = True
+        return handler

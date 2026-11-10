@@ -72,6 +72,7 @@ class FormatHandler(Generic[OutputT, ChunkT]):
             instructions: Text appended to the prompt, or None for no instructions.
         """
         self.instructions: str | None = instructions
+        self._streams_items: bool = False
         self.__message_parser = message_parser
         self.__chunk_parser = chunk_parser
 

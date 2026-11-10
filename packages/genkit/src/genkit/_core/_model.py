@@ -53,8 +53,8 @@ from genkit._core._error import BoxedFailure, ErrorReason, Failure, GenkitError
 from genkit._core._extract_json import extract_json, extract_partial_json, is_complete_json
 from genkit._core._logger import get_logger
 from genkit._core._operation import Operation
-from genkit._core._partial import hydrate_partial
-from genkit._core._schema import output_adapter, parse_schema
+from genkit._core._partial import hydrate_chunk_items, hydrate_partial, is_model, unwrap_annotated
+from genkit._core._schema import InvalidOutputSchemaError, output_adapter, parse_schema
 from genkit._core._typing import (
     AgentFinishReason,
     Artifact as ArtifactData,
@@ -1655,10 +1655,10 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
         if self._schema_type is None or parsed is None:
             return True
         # A custom format's parser can return a scalar (e.g. an enum string)
-        # that a model class can't take.
+        # that an object model class can't take.
         return (
             self._message_parser is not None
-            and _is_model_class(self._schema_type)
+            and is_model(unwrap_annotated(annotation=self._schema_type))
             and not isinstance(parsed, (dict, list))
         )
 
@@ -1731,7 +1731,7 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
 
         try:
             return cast(OutputT, output_adapter(self._schema_type).validate_python(parsed))
-        except ValidationError:
+        except (ValidationError, InvalidOutputSchemaError):
             return None
 
     @property
@@ -1862,6 +1862,8 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
             parsed = self._chunk_parser(self) if self._chunk_parser else extract_partial_json(text)
             if self._schema_type is None:
                 return cast('OutputT | None', parsed)
+            if _streams_items(self._chunk_parser):
+                return cast('OutputT | None', hydrate_chunk_items(schema=self._schema_type, data=parsed))
             return cast(
                 'OutputT | None',
                 hydrate_partial(schema=self._schema_type, data=parsed, closed=is_complete_json(text)),
@@ -1870,6 +1872,15 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
             # one odd chunk shouldn't end a stream whose final reply may still parse.
             logger.debug('chunk.output could not be parsed; returning None', exc_info=True)
             return None
+
+
+def _streams_items(chunk_parser: Callable[..., object] | None) -> bool:
+    if chunk_parser is None:
+        return False
+    return bool(
+        getattr(chunk_parser, '_streams_items', False)
+        or getattr(getattr(chunk_parser, '__self__', None), '_streams_items', False)
+    )
 
 
 def as_model_response_chunk(value: object) -> ModelResponseChunk:

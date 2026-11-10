@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from jsonschema.validators import validator_for
-from pydantic import TypeAdapter
+from pydantic import PydanticUserError, TypeAdapter
 
 from genkit._core._error import ErrorReason, GenkitError
 
@@ -47,8 +47,11 @@ def to_json_schema(schema: type | dict[str, Any] | str | None) -> dict[str, Any]
         return {'type': 'null'}
     if isinstance(schema, dict):
         return schema
-    type_adapter = TypeAdapter(schema)
-    return type_adapter.json_schema()
+    try:
+        type_adapter = TypeAdapter(schema)
+        return type_adapter.json_schema()
+    except (PydanticUserError, TypeError) as error:
+        raise InvalidOutputSchemaError(cause=error) from error
 
 
 def custom_options_schema(schema: type | dict[str, Any]) -> dict[str, Any]:
@@ -107,8 +110,13 @@ def output_adapter(schema_type: Any) -> TypeAdapter[Any]:  # noqa: ANN401
     """
     try:
         return _cached_output_adapter(schema_type)
+    except PydanticUserError as error:
+        raise InvalidOutputSchemaError(cause=error) from error
     except TypeError:
-        return TypeAdapter(schema_type)
+        try:
+            return TypeAdapter(schema_type)
+        except (PydanticUserError, TypeError) as error:
+            raise InvalidOutputSchemaError(cause=error) from error
 
 
 def check_output_schema(json_schema: dict[str, Any]) -> None:

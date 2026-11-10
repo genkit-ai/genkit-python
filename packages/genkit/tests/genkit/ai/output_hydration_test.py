@@ -63,6 +63,25 @@ class TriageStr(str, enum.Enum):  # noqa: UP042  # enum.StrEnum is 3.11+
     ESCALATE = 'ESCALATE'
 
 
+class Pickup(BaseModel):
+    pickup_time: str
+
+
+class Delivery(BaseModel):
+    address: str
+
+
+@dataclasses.dataclass
+class Contact:
+    vendor: Vendor
+    emails: list[str]
+
+
+class PurchaseOrder(BaseModel):
+    lines: list[VendorDict]
+    contact: Contact | None = None
+
+
 def _ai_with_reply(text: str, chunks: list[str] | None = None) -> Genkit:
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
@@ -93,6 +112,14 @@ CASES: list[tuple[str, Any, str, Any]] = [
         datetime.datetime,
         '"2026-10-15T14:30:00Z"',
         datetime.datetime(2026, 10, 15, 14, 30, tzinfo=datetime.timezone.utc),
+    ),
+    ('optional_model', InvoiceItem | None, '{"sku": "CH-1", "quantity": 2}', InvoiceItem(sku='CH-1', quantity=2)),
+    ('union_of_models', Pickup | Delivery, '{"address": "1 Main St"}', Delivery(address='1 Main St')),
+    (
+        'nested_dataclass',
+        Contact,
+        f'{{"vendor": {VENDOR_JSON}, "emails": ["ap@acme.test"]}}',
+        Contact(vendor=Vendor(vendor_name='Acme', risk_score=12), emails=['ap@acme.test']),
     ),
 ]
 
@@ -144,6 +171,26 @@ async def test_array_format_with_list_schema_hydrates_chunks_and_response() -> N
 
     assert outputs == [[InvoiceItem(sku='CH-1', quantity=2)], [InvoiceItem(sku='DK-2', quantity=5)]]
     assert response.output == [InvoiceItem(sku='CH-1', quantity=2), InvoiceItem(sku='DK-2', quantity=5)]
+
+
+@pytest.mark.asyncio
+async def test_stream_model_with_nested_dataclass_and_typed_dict() -> None:
+    reply = f'{{"lines": [{VENDOR_JSON}], "contact": {{"vendor": {VENDOR_JSON}, "emails": []}}}}'
+    ai = _ai_with_reply(reply, chunks=[reply[:30], reply[30:]])
+    stream = ai.generate_stream(prompt='hi', output_schema=PurchaseOrder)
+    outputs = [chunk.output async for chunk in stream.stream]
+
+    # Open: the model is partial; the open TypedDict line stays a raw dict.
+    assert isinstance(outputs[0], PurchaseOrder)
+    assert outputs[0].lines == [{'vendor_name': 'Ac'}]
+    assert outputs[0].contact is None
+    # Closed: the nested dataclass is hydrated, same as the final response.
+    expected = PurchaseOrder(
+        lines=[{'vendor_name': 'Acme', 'risk_score': 12}],
+        contact=Contact(vendor=Vendor(vendor_name='Acme', risk_score=12), emails=[]),
+    )
+    assert outputs[1] == expected
+    assert (await stream.response).output == expected
 
 
 @pytest.mark.asyncio

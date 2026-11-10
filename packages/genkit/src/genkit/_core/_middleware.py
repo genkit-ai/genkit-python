@@ -339,12 +339,12 @@ class MiddlewareContext:
         If the callback you install raises, generate treats it like a raising
         caller callback, not a model failure:
 
-        * the turn fails with ``reason == ErrorReason.STREAM_CALLBACK_FAILED``;
+        * the turn ends with ``finish_reason == FAILED`` and
+          ``error.reason == ErrorReason.STREAM_CALLBACK_FAILED``;
         * the model is not called again: Retry and Fallback don't see it;
-        * the caller's ``async for`` over ``stream.stream`` raises that
-          error after the chunks sent before the failure. With
-          ``raise_on_error=False`` it ends normally and the response has
-          ``finish_reason == FAILED`` with that reason on ``error``.
+        * the caller's ``async for`` over ``stream.stream`` ends without
+          raising, after the chunks sent before the failure. With
+          ``raise_on_error=True`` it raises that error instead.
 
         Example:
             ```python
@@ -368,14 +368,14 @@ class MiddlewareContext:
                 prompt='Read back my order.',
                 use=[Retry(max_retries=2), Redact()],
             )
-            try:
-                async for chunk in stream.stream:
-                    print(chunk.text)
-                # => Your order:
-            except GenkitError as err:
-                # 3. The turn failed on the callback, not the provider
-                print(err.reason)
-                # => STREAM_CALLBACK_FAILED
+            async for chunk in stream.stream:
+                print(chunk.text)
+            # => Your order:
+
+            # 3. The turn failed on the callback, not the provider
+            response = await stream.response
+            print(response.finish_reason, response.error.reason)
+            # => failed STREAM_CALLBACK_FAILED
             ```
         """
         previous = self._on_chunk

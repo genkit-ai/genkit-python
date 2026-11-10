@@ -843,11 +843,11 @@ async def generate_action(
     calling ``ai.generate`` or a prompt). Tools would inherit it anyway, but
     middleware only sees what's passed here.
 
-    With ``raise_on_error`` (the default, JS ``throwOnError``), a turn that
-    ends with ``response.error`` set raises that failure instead of returning
-    it. A stream the caller closed (``caller_stopped``) still returns its
-    boxed ``ABORTED`` response. ``raise_on_error=False`` returns the boxed
-    response for every failure; the agent runtime uses it.
+    By default a turn that ends with ``response.error`` set returns that
+    boxed response; the agent runtime relies on this. With
+    ``raise_on_error=True`` (JS ``throwOnError: true``) it raises that
+    failure instead. A stream the caller closed (``caller_stopped``) still
+    returns its boxed ``ABORTED`` response either way.
     """
     if context is None:
         context = get_current_context()

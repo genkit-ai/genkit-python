@@ -439,7 +439,7 @@ class Prompt(Generic[InputT, OutputT]):
         Keywords take the same names as ``ai.generate``. An omitted (or ``None``)
         keyword keeps the prompt's value; ``tools=[]``, ``use=[]`` and ``docs=[]``
         clear the prompt's list for this call. ``config`` merges per key.
-        A failed turn raises unless ``raise_on_error=False``, as in ``ai.generate``.
+        A failed turn raises only with ``raise_on_error=True``, as in ``ai.generate``.
         """
         opts = PromptGenerateOptions(
             model=model,

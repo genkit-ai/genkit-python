@@ -1594,13 +1594,13 @@ class Genkit:
         ``Part.from_media(...)`` yourself. ``{{role}}`` in a generate string
         already raised; it now goes to the model as written too.
 
-        A failed turn raises the original error: a provider error, a tool or
-        middleware exception (a ``PublicError`` stays a ``PublicError``),
-        ``max_turns`` exhaustion (``ABORTED``), or output that fails
-        ``output_schema`` (``INTERNAL``, reason ``INVALID_OUTPUT``). Pass
-        ``raise_on_error=False`` (JS ``throwOnError: false``) to get the
-        boxed response instead, with ``finish_reason`` ``FAILED`` or
-        ``ABORTED`` and ``error`` set.
+        A failed turn returns a response with ``finish_reason`` ``FAILED`` or
+        ``ABORTED`` and ``error`` set. Pass ``raise_on_error=True`` (JS
+        ``throwOnError: true``) to raise the original error instead: a
+        provider error, a tool or middleware exception (a ``PublicError``
+        stays a ``PublicError``), ``max_turns`` exhaustion (``ABORTED``), or
+        output that fails ``output_schema`` (``INTERNAL``, reason
+        ``INVALID_OUTPUT``).
         """
         return await self._generate(
             model=model,
@@ -1772,12 +1772,12 @@ class Genkit:
         when the reply isn't a ``Recipe``.
 
         If the model or a tool fails partway through, the ``async for``
-        raises that error after the chunks already sent, and so does
-        ``await result.response``. The chunks you already received are the
-        record of what was shown. With ``raise_on_error=False`` the stream
-        ends normally and the final response has ``finish_reason == FAILED``,
+        still ends normally. The final response has ``finish_reason == FAILED``,
         ``error`` set, ``text == ''``, ``message is None``, and ``messages``
-        ending at the last complete turn, so it's safe to send back.
+        ending at the last complete turn, so it's safe to send back. The
+        chunks you already received are the record of what was shown. With
+        ``raise_on_error=True`` the ``async for`` raises that error after the
+        chunks already sent, and so does ``await result.response``.
 
         Example:
             result = ai.generate_stream(prompt='Write a haiku about rain.')
@@ -2199,19 +2199,12 @@ class Genkit:
             context=context,
             use=use,
             docs=docs,
+            # This call is "give me the ticket." A start that already failed
+            # is not that ticket (while-not-done would poll it as a live job),
+            # so a failed turn raises here.
             raise_on_error=True,
         )
 
-        if response.error is not None:
-            # This call is "give me the ticket." A start that already
-            # failed is not that ticket — while-not-done would poll it
-            # as a live job.
-            raise GenkitError(
-                status=response.error.status or 'INTERNAL',
-                message=response.error.message,
-                details=response.error.details,
-                reason=response.error.reason,
-            )
         if not response.operation:
             raise missing_operation_error(name=model_action.name)
         return as_model_operation(response.operation, name=model_action.name, status='INTERNAL')

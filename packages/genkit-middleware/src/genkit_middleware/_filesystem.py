@@ -28,9 +28,9 @@ small. Tool errors come back as the tool's own response, with the host root
 path redacted, so the model can self-correct without a user turn landing
 between the tool response and the next model turn.
 
-Each ``generate()`` gets a fresh middleware instance with its own message
-queue; ``wrap_generate`` drains queued messages into the request before the
-next model call.
+Each ``generate()`` gets a per-call copy of the middleware with its own
+message queue; ``wrap_generate`` drains queued messages into the request
+before the next model call.
 """
 
 from __future__ import annotations
@@ -154,6 +154,15 @@ class Filesystem(Middleware[FilesystemConfig]):
             raise ValueError('Filesystem.root_dir must not be empty.')
         # One queue per generate() — the engine copies middleware per call.
         self._message_queue: list[Message] = []
+
+    def __copy__(self) -> Filesystem:
+        # The engine shallow-copies middleware per generate(); without a new
+        # list, concurrent calls on one instance would share queued file
+        # contents and inject one request's reads into another's turn.
+        clone = type(self).__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        clone._message_queue = []
+        return clone
 
     @property
     def _root_abs(self) -> str:

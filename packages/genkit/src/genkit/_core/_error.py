@@ -183,7 +183,9 @@ class Failure(_RuntimeErrorWire):
 
 def mark_public_failure(failure: Failure) -> Failure:
     """Mark ``failure`` as built from a PublicError, so a served agent sends its text."""
-    failure._public = True
+    # frozen=True only guards fields; Pydantic stores private attrs apart and
+    # lets them be set. Pyrefly reads it as a frozen field.
+    failure._public = True  # pyrefly: ignore[read-only]
     return failure
 
 

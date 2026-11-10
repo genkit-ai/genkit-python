@@ -18,28 +18,29 @@ name: Python Checks
 
 on:
   pull_request:
-    paths:
-      - "**"
-      - ".github/workflows/python.yml"
   push:
     branches:
       - main
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   lint-and-format:
     name: Lint and Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv and setup Python
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -48,18 +49,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          cd .
-          uv sync --group lint
+        run: uv sync --frozen --group lint
 
       - name: Check lockfile is up to date
-        run: uv lock --check --directory .
+        run: uv lock --check
 
       - name: Format check
-        run: uv run --directory . ruff format --check --preview .
+        run: uv run --no-sync ruff format --check --preview .
 
       - name: Lint with ruff
-        run: uv run --directory . ruff check --preview .
+        run: uv run --no-sync ruff check --preview .
 
       - name: Run consistency checks
         run: python3 ./scripts/check_consistency.py
@@ -67,6 +66,7 @@ jobs:
   type-check:
     name: Type Check (${{ matrix.checker }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -75,6 +75,8 @@ jobs:
         checker: [ty, pyrefly, pyright]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -88,32 +90,33 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          cd .
-          uv sync --group lint
+        run: uv sync --frozen --group lint
 
       - name: Generate schema typing
         run: ./bin/generate_schema_typing --ci
 
       - name: Type check with Ty
         if: matrix.checker == 'ty'
-        run: uv run --directory . ty check .
+        run: uv run --no-sync ty check .
 
       - name: Type check with Pyrefly
         if: matrix.checker == 'pyrefly'
-        run: uv run --directory . pyrefly check
+        run: uv run --no-sync pyrefly check
 
       - name: Type check with Pyright
         if: matrix.checker == 'pyright'
-        run: cd . && uv run pyright packages/*/src
+        run: uv run --no-sync pyright
 
   security-and-compliance:
     name: Security and Compliance
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv and setup Python
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -122,22 +125,19 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          cd .
-          uv sync --group lint
+        run: uv sync --frozen --group lint
 
       - name: Check source file license headers
         run: ./bin/check_license
 
       - name: Check Python dependency licenses
-        run: uv run --directory . liccheck -s pyproject.toml
+        run: uv run --no-sync liccheck -s pyproject.toml
 
       - name: Check for hardcoded secrets
         run: |
-          cd .
           if grep -rE "(sk-[a-zA-Z0-9]{20,}|AIza[a-zA-Z0-9_-]{35}|AKIA[0-9A-Z]{16})" \
-              packages/ plugins/ --include="*.py" | grep -vE "test|mock|fake|example|#"; then
-            echo "Error: Potential hardcoded secrets found"
+              packages/ samples/ --include="*.py" | grep -vE "test|mock|fake|example|#"; then
+            echo "::error::Potential hardcoded secrets found"
             exit 1
           fi
           echo "No hardcoded secrets detected"
@@ -145,6 +145,7 @@ jobs:
   tests:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
@@ -153,6 +154,8 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -166,9 +169,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          cd .
-          uv sync
+        env:
+          PY_VER: ${{ matrix.python-version }}
+        run: uv sync --frozen --python "$PY_VER"
 
       - name: Generate schema typing
         run: ./bin/generate_schema_typing --ci
@@ -179,6 +182,7 @@ jobs:
           mkdir -p "$SPEC_DIR"
           curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/agent.yaml -o "$SPEC_DIR/agent.yaml"
           curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/generate.yaml -o "$SPEC_DIR/generate.yaml"
+          curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/genkit-tools/genkit-schema.json -o "$SPEC_DIR/genkit-schema.json"
           echo "GENKIT_SPECS_DIR=$SPEC_DIR" >> "$GITHUB_ENV"
 
       - name: Run tests
@@ -187,21 +191,24 @@ jobs:
           COVERAGE_CORE: sysmon
         run: |
           if [[ "$PY_VER" == "3.12" ]]; then
-            uv run --no-sync --python "$PY_VER" --directory . \
+            uv run --no-sync --python "$PY_VER" \
               pytest --cov --cov-report=term-missing:skip-covered
           else
-            uv run --no-sync --python "$PY_VER" --directory . pytest
+            uv run --no-sync --python "$PY_VER" pytest
           fi
 
   build:
     name: Build Distributions
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-    if: ${{ always() && !failure() && !cancelled() }}
+    if: always() && !failure() && !cancelled()
     needs: [lint-and-format, type-check, security-and-compliance, tests]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -217,21 +224,27 @@ jobs:
 
       - name: Verify wheel contents
         run: |
-          cd .
+          ERRORS=0
           for wheel in dist/*.whl; do
             if [[ -f "$wheel" ]]; then
               wheel_name=$(basename "$wheel" | sed 's/-[0-9].*//')
-              if [[ "$wheel_name" == "genkit" ]] || [[ "$wheel_name" == genkit_plugin_* ]]; then
+              if [[ "$wheel_name" == "genkit" ]] || [[ "$wheel_name" == genkit_* ]]; then
                 echo "Checking $wheel_name..."
                 if ! unzip -l "$wheel" 2>/dev/null | grep -qE "py\.typed$"; then
-                  echo "Warning: $wheel_name missing py.typed"
+                  echo "::error::Wheel $wheel_name missing py.typed"
+                  ERRORS=$((ERRORS + 1))
                 fi
                 if ! unzip -l "$wheel" 2>/dev/null | grep -qE "(LICENSE|licenses/LICENSE)"; then
-                  echo "Warning: $wheel_name missing LICENSE"
+                  echo "::error::Wheel $wheel_name missing LICENSE"
+                  ERRORS=$((ERRORS + 1))
                 fi
               fi
             fi
           done
+          if [[ "$ERRORS" -gt 0 ]]; then
+            echo "::error::$ERRORS wheel verification errors found"
+            exit 1
+          fi
 
       - name: Upload distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

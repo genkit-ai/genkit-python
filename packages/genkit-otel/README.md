@@ -1,6 +1,6 @@
 # genkit-otel
 
-OpenTelemetry instrumentation and backend for [Genkit](https://github.com/genkit-ai/genkit).
+OpenTelemetry instrumentation and backend for [Genkit](https://github.com/genkit-ai/genkit-python).
 
 It provides `GenAiInstrumentation`: OpenTelemetry GenAI semantic-conventions instrumentation emitting `gen_ai.*` spans and metrics.
 

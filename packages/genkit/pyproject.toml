@@ -78,7 +78,6 @@ a2ui                  = ["genkit-a2ui>=0.13.0,<2"]
 amazon-bedrock        = ["genkit-amazon-bedrock>=0.13.0,<2"]
 anthropic             = ["genkit-anthropic>=0.13.0,<2"]
 django                = ["genkit-django>=0.13.0,<2"]
-evaluators            = ["genkit-evaluators>=0.13.0,<1"]
 fastapi               = ["genkit-fastapi>=0.13.0,<2"]
 flask                 = ["genkit-flask>=0.13.0,<2"]
 google-cloud          = ["genkit-google-cloud>=0.13.0,<2"]
@@ -92,11 +91,11 @@ vertex-ai             = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
 vertexai              = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
 
 [project.urls]
-"Bug Tracker"   = "https://github.com/genkit-ai/genkit/issues"
-Changelog       = "https://github.com/genkit-ai/genkit/releases"
+"Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"
+Changelog       = "https://github.com/genkit-ai/genkit-python/releases"
 "Documentation" = "https://genkit.dev/docs/get-started/?lang=python"
-"Homepage"      = "https://github.com/genkit-ai/genkit"
-"Repository"    = "https://github.com/genkit-ai/genkit/tree/main/py"
+"Homepage"      = "https://github.com/genkit-ai/genkit-python"
+"Repository"    = "https://github.com/genkit-ai/genkit-python"
 
 [build-system]
 build-backend = "hatchling.build"
@@ -109,7 +108,6 @@ DEP002 = [
   "genkit-amazon-bedrock",
   "genkit-anthropic",
   "genkit-django",
-  "genkit-evaluators",
   "genkit-fastapi",
   "genkit-flask",
   "genkit-google-cloud",
@@ -133,7 +131,6 @@ genkit-a2ui                         = { workspace = true }
 genkit-amazon-bedrock               = { workspace = true }
 genkit-anthropic                    = { workspace = true }
 genkit-django                       = { workspace = true }
-genkit-evaluators                   = { workspace = true }
 genkit-fastapi                      = { workspace = true }
 genkit-flask                        = { workspace = true }
 genkit-google-cloud                 = { workspace = true }

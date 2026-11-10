@@ -170,7 +170,7 @@ def _check_intra_repo_spec(
 
 
 def check_package(pkg_path: str, core_version: str) -> tuple[str, str, list[str]]:
-    """Validate a single publishable package directory under py/packages/*."""
+    """Validate a single publishable package directory under packages/*."""
     toml_path = os.path.join(pkg_path, 'pyproject.toml')
     data = load_pyproject(toml_path)
     project = cast(dict[str, object], data.get('project', {}))

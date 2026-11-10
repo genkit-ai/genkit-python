@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for workspace pytest hooks in py/conftest.py."""
+"""Tests for workspace pytest hooks in conftest.py."""
 
 import argparse
 import bdb

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Genkit built-in evaluators: regex, deep_equal, jsonata."""
+version: 2
+updates:
+  # Maintain dependencies for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
-from genkit_evaluators._plugin import register_genkit_evaluators
-
-__all__ = ['register_genkit_evaluators']
+  # Maintain dependencies for Python (uv workspace)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      py-dependencies:
+        patterns:
+          - "*"

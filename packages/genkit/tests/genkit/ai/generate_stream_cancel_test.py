@@ -383,14 +383,20 @@ async def test_generate_stream_timeout_under_async_with_cancels_model_and_respon
     ai, model = setup()
     stream = ai.generate_stream(model='slow', prompt='hi')
 
+    saw_chunk = asyncio.Event()
+
     async def read_slowly() -> None:
         async with stream:
             async for _ in stream:
+                saw_chunk.set()
                 await asyncio.sleep(1)
+
+    task = asyncio.create_task(read_slowly())
+    await saw_chunk.wait()
 
     # asyncio.TimeoutError, not TimeoutError: they're only the same class on 3.11+.
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(read_slowly(), timeout=0.02)
+        await asyncio.wait_for(task, timeout=0.02)
 
     response = await settle(stream.response)
 

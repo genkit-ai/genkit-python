@@ -18,23 +18,23 @@
 # Tag and publish a stable Python SDK release from its merged release PR.
 # The PR's description is published as the release notes.
 #
-#   py/bin/create_release <version> <pr-number> [--dry-run]
+#   bin/create_release <version> <pr-number> [--dry-run]
 #
-# Steps and checks: py/docs/release_playbook.md
+# Steps and checks: docs/release_playbook.md
 # Exit codes: 0 ok, 1 usage/environment, 2 a check failed (nothing changed).
 
 set -euo pipefail
 
-REPO="genkit-ai/genkit"
+REPO="genkit-ai/genkit-python"
 
 usage() {
     cat <<USAGE
-Usage: py/bin/create_release <version> <pr-number> [--dry-run]
+Usage: bin/create_release <version> <pr-number> [--dry-run]
 
 Tags and publishes a Genkit Python SDK release from its merged release PR.
 
-  <version>     X.Y.Z, as set by py/bin/bump_version
-  <pr-number>   Merged release PR titled "chore(py): release Python SDK v<version>".
+  <version>     X.Y.Z, as set by bin/bump_version
+  <pr-number>   Merged release PR titled "chore: release v<version>" or "chore(py): release Python SDK v<version>".
                 Its description becomes the release notes.
   --dry-run     Run the checks without tagging or publishing
 
@@ -59,14 +59,14 @@ for arg in "$@"; do
         *)
             if [ -z "$VERSION" ]; then VERSION="$arg"
             elif [ -z "$PR_NUMBER" ]; then PR_NUMBER="$arg"
-            else die "unexpected argument '$arg'" "Usage: py/bin/create_release <version> <pr-number> [--dry-run]"
+            else die "unexpected argument '$arg'" "Usage: bin/create_release <version> <pr-number> [--dry-run]"
             fi
             ;;
     esac
 done
 
 [ -n "$VERSION" ] && [ -n "$PR_NUMBER" ] ||
-    die "missing arguments" "Usage: py/bin/create_release <version> <pr-number> [--dry-run]"
+    die "missing arguments" "Usage: bin/create_release <version> <pr-number> [--dry-run]"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     die "version must be X.Y.Z, got '$VERSION'" "For release candidates, use the \"Release Python RC\" workflow."
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] ||
@@ -74,9 +74,9 @@ done
 
 command -v gh >/dev/null 2>&1 || die "GitHub CLI not found" "Install it from https://cli.github.com"
 gh auth status >/dev/null 2>&1 || die "GitHub CLI is not authenticated" "Run: gh auth login"
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TAG="py/v${VERSION}"
+TAG="v${VERSION}"
 TITLE="chore(py): release Python SDK v${VERSION}"
 
 PR_INFO=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,baseRefName,mergeCommit,url,title \
@@ -105,10 +105,10 @@ else
     pass "PR merged into main"
 fi
 
-if [ "$PR_TITLE" = "$TITLE" ]; then
+if [ "$PR_TITLE" = "$TITLE" ] || [ "$PR_TITLE" = "chore: release v${VERSION}" ] || [ "$PR_TITLE" = "chore: release Python SDK v${VERSION}" ]; then
     pass "Title matches"
 else
-    fail "Title is \"$PR_TITLE\"" "Expected \"$TITLE\". Pass the PR that bumped to $VERSION; rename only if this is it."
+    fail "Title is \"$PR_TITLE\"" "Expected \"$TITLE\" or \"chore: release v${VERSION}\". Pass the PR that bumped to $VERSION; rename only if this is it."
 fi
 
 if [ -n "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
@@ -124,7 +124,7 @@ if [ -n "$MERGE_SHA" ]; then
         FOUND=""
         TOTAL=0
         NWRONG=0
-        for toml in $(git ls-tree -r --name-only "$MERGE_SHA" -- py/packages | grep -E '^py/packages/[^/]+/pyproject\.toml$'); do
+        for toml in $(git ls-tree -r --name-only "$MERGE_SHA" -- packages | grep -E '^packages/[^/]+/pyproject\.toml$'); do
             v=$(git show "$MERGE_SHA:$toml" | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)
             TOTAL=$((TOTAL + 1))
             if [ "$v" != "$VERSION" ]; then

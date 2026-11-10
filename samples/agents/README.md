@@ -14,7 +14,7 @@ deploy, pass `FirestoreSessionStore()` from `genkit_google_cloud.exp` in the
 same slot.
 
 ```bash
-cd py/samples/agents
+cd samples/agents
 uv sync
 
 genkit start -- uv run basic/01_define_agent_with_store.py

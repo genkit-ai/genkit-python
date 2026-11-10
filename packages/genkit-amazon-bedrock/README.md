@@ -462,7 +462,7 @@ image bytes, so they are safe to leave on.
 
 ## Examples
 
-See [`py/samples/amazon-bedrock-sample`](../../samples/amazon-bedrock-sample)
+See [`samples/amazon-bedrock-sample`](../../samples/amazon-bedrock-sample)
 for a runnable `generate()` / `embed()` snippet.
 
 ## License

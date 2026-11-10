@@ -348,7 +348,7 @@ print(operation.output.message.content[0].media.url)
 # => gs://my-bucket/videos/output.mp4
 ```
 
-Runnable version: [google-genai-media](https://github.com/genkit-ai/genkit/tree/main/py/samples/google-genai-media).
+Runnable version: [google-genai-media](https://github.com/genkit-ai/genkit-python/tree/main/samples/google-genai-media).
 
 ### Virtual Try-On (Vertex AI)
 
@@ -384,33 +384,4 @@ for part in response.message.content:
     print(part.media.url)
 ```
 
-### Vertex AI Evaluators
-
-Built-in evaluators for assessing model output quality, accessed via `ai.evaluate()`. The VertexAI plugin registers them only when a project resolves (`VertexAI(project=...)` or `GOOGLE_CLOUD_PROJECT`); `VertexAI(api_key=...)` without a project lists none. They authenticate with Application Default Credentials, not `api_key` or `credentials`:
-
-```python
-from genkit import Genkit
-from genkit.evaluator import BaseDataPoint
-from genkit_google_genai import VertexAI
-
-ai = Genkit(plugins=[VertexAI(project='my-project')])
-
-# Prepare test dataset
-dataset = [
-    BaseDataPoint(
-        input='Write about AI.',
-        output='AI is transforming industries through intelligent automation.',
-    ),
-]
-
-# Evaluate fluency (scores 1-5)
-results = await ai.evaluate(
-    evaluator='vertexai/fluency',
-    dataset=dataset,
-)
-
-for result in results:
-    print(f'Score: {result.evaluation[0].score}')
-```
-
-Runnable snippets are in [`py/samples`](../../samples).
+Runnable snippets are in [`samples`](../../samples).

@@ -30,6 +30,7 @@ jobs:
   build-samples:
     name: Build (${{ matrix.sample }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     strategy:
@@ -42,7 +43,6 @@ jobs:
           - basic-flows
           - context
           - django-hello
-          - evaluators
           - flask-hello
           - gemini-code-execution
           - gemini-context-caching
@@ -59,6 +59,8 @@ jobs:
           - vertexai-image
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv and setup Python
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -77,12 +79,13 @@ jobs:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -m py_compile src/main.py
+          uv run python -m compileall -q .
           echo "Sample $SAMPLE_NAME syntax OK"
 
   ollama-samples:
     name: Ollama (${{ matrix.sample }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     strategy:
@@ -93,6 +96,8 @@ jobs:
             models: "gemma3:1b"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv and setup Python
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -116,5 +121,5 @@ jobs:
           SAMPLE_NAME: ${{ matrix.sample }}
         run: |
           cd "samples/$SAMPLE_NAME"
-          uv run python -m py_compile src/main.py
+          uv run python -m compileall -q .
           echo "Sample $SAMPLE_NAME syntax OK"

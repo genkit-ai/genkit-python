@@ -1266,7 +1266,13 @@ async def test_prompt_call_forwards_every_keyword_to_prepare(method: str, monkey
     sent = {key: object() for key in PromptGenerateOptions.__optional_keys__}
     seen: dict[str, object] = {}
 
-    async def capture(*, prompt: object, input: object = None, opts: PromptGenerateOptions | None = None) -> None:
+    async def capture(
+        *,
+        prompt: object,
+        input: object = None,
+        opts: PromptGenerateOptions | None = None,
+        validate_input: bool = True,
+    ) -> None:
         seen.update(opts or {})
         raise _StopAtPrepareError
 

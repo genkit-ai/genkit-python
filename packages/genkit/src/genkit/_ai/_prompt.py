@@ -644,13 +644,14 @@ async def render_prompt(
     prompt: Prompt[Any, Any],
     input: Any | None,  # noqa: ANN401
     opts: PromptGenerateOptions | None,
+    validate_input: bool = True,
 ) -> PreparedPrompt:
     """``prepare_prompt`` inside a ``render`` span, so the trace shows exactly what the template produced."""
     prepared: PreparedPrompt | None = None
 
     async def body(_span: SpanContext) -> GenerateActionOptions:
         nonlocal prepared
-        prepared = await prepare_prompt(prompt=prompt, input=input, opts=opts)
+        prepared = await prepare_prompt(prompt=prompt, input=input, opts=opts, validate_input=validate_input)
         return prepared.options
 
     # Same key as the prompt span and the registered action, variant included (matches JS).

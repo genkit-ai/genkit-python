@@ -64,8 +64,8 @@ from genkit._ai._prompt import (
     Prompt,
     PromptGenerateOptions,
     lookup_prompt,
-    prepare_prompt,
     register_prompt_actions,
+    render_prompt,
 )
 from genkit._core._action import Action, ActionKind, BidiAction, BidiFn, get_current_context
 from genkit._core._error import ErrorReason, GenkitError
@@ -434,7 +434,7 @@ def define_prompt_agent(
                 'context': ctx.context,
             }
             # A prompt agent has no input to pass, so a required field renders empty.
-            prepared = await prepare_prompt(prompt=executable, input={}, opts=call_opts, validate_input=False)
+            prepared = await render_prompt(prompt=executable, input={}, opts=call_opts, validate_input=False)
             rendered_messages = list(prepared.options.messages or [])
             options = prepared.options.model_copy(
                 update={'messages': apply_preamble_tags(rendered_messages)},

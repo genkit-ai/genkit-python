@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 
-from genkit import Genkit, Message, ModelResponse, ModelResponseChunk, Part, Role
+from genkit import FinishReason, Genkit, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role
 from genkit._core._reflection import create_reflection_asgi_app
 from genkit._core._telemetry._attrs import Attr
 from genkit._core._telemetry._http import ActiveSpan
@@ -33,7 +33,7 @@ async def _fake_model(request: ModelRequest, ctx: ModelContext) -> ModelResponse
             for piece in ['echo: ', user_text]:
                 ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, index=0, content=[Part.from_text(piece)]))
         content = [Part.from_text(f'echo: {user_text}')]
-    return ModelResponse(message=Message(role=Role.MODEL, content=content), finish_reason='stop')
+    return ModelResponse(message=Message(role=Role.MODEL, content=content), finish_reason=FinishReason.STOP)
 
 
 def _app(prompt_dir: Path | None = None) -> Genkit:
@@ -48,7 +48,7 @@ def _tree(spans: Sequence[ActiveSpan]) -> list[tuple[str, str | None, object]]:
     return [
         (
             s.name,
-            by_id[s.parent_span_id].name if s.parent_span_id in by_id else None,
+            by_id[s.parent_span_id].name if s.parent_span_id is not None and s.parent_span_id in by_id else None,
             s.attributes.get(Attr.TYPE),
         )
         for s in spans
@@ -234,3 +234,56 @@ async def test_prompt_variant_names_the_prompt_and_render_spans_with_the_variant
     assert ('greeting_prompt.formal', None, 'dotprompt') in _tree(spans)
     render_span = next(s for s in spans if s.name == 'render')
     assert render_span.attributes['genkit:metadata:promptName'] == 'greeting_prompt.formal'
+
+
+@pytest.mark.asyncio
+async def test_unnamed_prompt_puts_render_and_generate_under_the_caller(exporter) -> None:
+    """An unnamed prompt has nothing to label a prompt span with, so render and generate sit under the caller."""
+    ai = _app()
+    hello = ai.define_prompt(model=MODEL, prompt='Say hi to {{name}}')
+
+    @ai.flow(name='prompt_flow')
+    async def prompt_flow(name: str) -> str:
+        return (await hello(input={'name': name})).text
+
+    assert await prompt_flow('Ada') == 'echo: Say hi to Ada'
+
+    assert _tree(exporter.get_finished_spans()) == [
+        ('prompt_flow', None, 'action'),
+        ('render', 'prompt_flow', 'promptTemplate'),
+        ('generate', 'prompt_flow', 'util'),
+        (MODEL, 'generate', 'action'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_whose_render_fails_marks_prompt_and_render_failed(exporter) -> None:
+    """When input validation fails inside render, both the prompt span and render span are marked error."""
+    ai = _app()
+    greeting = ai.define_prompt(name='greeting_prompt', model=MODEL, input_schema=Greeting, prompt='Say hi to {{name}}')
+
+    with pytest.raises(GenkitError) as ei:
+        await greeting(input={'nope': 1})
+    assert ei.value.status == 'INVALID_ARGUMENT'
+
+    spans = exporter.get_finished_spans()
+    assert _tree(spans) == [('greeting_prompt', None, 'dotprompt'), ('render', 'greeting_prompt', 'promptTemplate')]
+    assert all(s.attributes[Attr.STATE] == 'error' for s in spans)
+
+
+@pytest.mark.asyncio
+async def test_prompt_agent_turn_records_a_render_span(exporter) -> None:
+    """A prompt agent turn renders through render_prompt so the trace includes a render span."""
+    from genkit.exp import Genkit as ExpGenkit
+
+    ai = ExpGenkit()
+    ai.define_model(name=MODEL, fn=_fake_model)
+    agent = ai.define_agent(name='greeter', model=MODEL, system='Be polite.')
+
+    result = await agent.chat().send('Hello')
+
+    assert result.text == 'echo: Hello'
+    spans = exporter.get_finished_spans()
+    render_span = next(s for s in spans if s.name == 'render')
+    assert render_span.attributes.get(Attr.TYPE) == 'promptTemplate'
+    assert render_span.attributes.get('genkit:metadata:promptName') == 'greeter'

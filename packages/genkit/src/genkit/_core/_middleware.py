@@ -556,12 +556,14 @@ _LEGACY_HOOKS: dict[str, str] = {'model': 'wrap_model', 'generate': 'wrap_genera
 def _reject_legacy_hooks(cls: type[Middleware]) -> None:
     """Fail at class definition when a 0.12 hook name would be a silent no-op.
 
-    A guardrail written as ``async def model(...)`` inherits the no-op
-    ``wrap_model`` and never runs. Only plain functions are checked, so a
-    ``model`` property or attribute stays legal, as does defining both names.
+    A guardrail written as ``async def model(self, req, ctx, next)`` inherits
+    the no-op ``wrap_model`` and never runs. Only an ``async def`` with the
+    0.12 hook shape (self plus three positional parameters) is rejected, so a
+    helper like ``def tool(self, name)``, a property, or an attribute stays
+    legal, as does defining both names.
     """
     for legacy, hook in _LEGACY_HOOKS.items():
-        if not inspect.isfunction(cls.__dict__.get(legacy)):
+        if not _looks_like_legacy_hook(cls.__dict__.get(legacy)):
             continue
         if getattr(cls, hook) is not getattr(Middleware, hook):
             continue
@@ -569,6 +571,15 @@ def _reject_legacy_hooks(cls: type[Middleware]) -> None:
             f'{cls.__name__} defines `{legacy}()`, a 0.12 middleware hook that no longer runs. '
             f'Rename it to `{hook}(self, params, ctx, next_fn)`.'
         )
+
+
+def _looks_like_legacy_hook(fn: object) -> bool:
+    """True for ``async def name(self, req, ctx, next)``, the 0.12 hook shape."""
+    if not inspect.iscoroutinefunction(fn):
+        return False
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    params = [p for p in inspect.signature(cast(Callable[..., Any], fn)).parameters.values() if p.kind in positional]
+    return len(params) == 4
 
 
 def _copy_middleware_instance(impl: Middleware) -> Middleware:

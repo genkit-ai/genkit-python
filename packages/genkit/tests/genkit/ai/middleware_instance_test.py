@@ -125,3 +125,31 @@ def test_legacy_name_alongside_wrap_hook_is_allowed() -> None:
 
     class WithAttr(Middleware):  # pyright: ignore[reportUnusedClass]
         model = 'googleai/gemini-flash-lite-latest'
+
+
+def test_helper_method_named_like_a_legacy_hook_is_allowed() -> None:
+    """Only the 0.12 hook shape is rejected; a sync helper or other arity passes."""
+
+    class AuditLog(Middleware):  # pyright: ignore[reportUnusedClass]
+        def tool(self, name: str) -> str:
+            return f'tool:{name}'
+
+        async def model(self, order_id: str) -> str:
+            return order_id
+
+        def generate(self, req: Any, ctx: Any, next_fn: Any) -> None:  # noqa: ANN401
+            return None
+
+
+def test_legacy_tool_and_generate_hooks_raise() -> None:
+    with pytest.raises(TypeError, match=r'`tool\(\)`.*wrap_tool'):
+
+        class AllergyGate(Middleware):  # pyright: ignore[reportUnusedClass]
+            async def tool(self, req: Any, ctx: Any, next_fn: Any) -> Any:  # noqa: ANN401
+                return await next_fn(req, ctx)
+
+    with pytest.raises(TypeError, match=r'`generate\(\)`.*wrap_generate'):
+
+        class TurnLimit(Middleware):  # pyright: ignore[reportUnusedClass]
+            async def generate(self, req: Any, ctx: Any, next_fn: Any) -> Any:  # noqa: ANN401
+                return await next_fn(req, ctx)

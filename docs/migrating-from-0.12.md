@@ -900,12 +900,12 @@ Prompt input is now validated, and defaults from `.prompt` files are filled in.
 If a JSON reply is cut off, `response.output` is now `None` and `response.error` reports `INVALID_OUTPUT`. Before, you could get a partial object. Check for `None` where you read `output`.
 
 ```python
-res = await ai.generate(prompt=p, output_schema=City, raise_on_error=False)
+res = await ai.generate(prompt=p, output_schema=City)
 if res.output is None:
     ...   # the reply was incomplete; see res.error
 ```
 
-In 1.0, without `raise_on_error=False`, an incomplete reply raises `GenkitError` with reason `INVALID_OUTPUT` instead.
+With `raise_on_error=True`, an incomplete reply raises `GenkitError` with reason `INVALID_OUTPUT` instead.
 
 ## Flow input and output validation
 

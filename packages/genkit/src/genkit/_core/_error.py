@@ -133,15 +133,11 @@ _FAILURE_KEYS: frozenset[str] = frozenset({'status', 'message', 'details'})
 class Failure(_RuntimeErrorWire):
     """A failure value on ``response.error``, ``Operation.error``, ``AgentOutput.error``, or ``SessionSnapshot.error``.
 
-    Not an exception: agents, and generate with ``raise_on_error=False``,
-    return failures as values. ``reason`` is set when the framework
-    classified the failure.
+    Not an exception: generate and agents return failures as values
+    (generate raises instead with ``raise_on_error=True``). ``reason`` is set
+    when the framework classified the failure.
 
-        response = await ai.generate(
-            prompt='Refund order A-17.',
-            tools=['refund_order'],
-            raise_on_error=False,
-        )
+        response = await ai.generate(prompt='Refund order A-17.', tools=['refund_order'])
         response.error.status   # => 'INTERNAL'
         response.error.message  # => 'internal error'
     """

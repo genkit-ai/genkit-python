@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import mimetypes
 import os
+import re
 import stat
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -191,20 +193,23 @@ class Filesystem(Middleware[FilesystemConfig]):
 
     def _redact(self, text: str) -> str:
         """Rewrite host root paths in an error message relative to the root."""
+        seps = re.escape(os.sep + (os.altsep or ''))
         roots: set[str] = {self._root_abs, os.path.abspath(self.config.root_dir)}
         for root in sorted(roots, key=lambda r: len(r), reverse=True):
             if root == os.path.dirname(root):
                 continue  # A filesystem root ('/') is no secret, and replacing it mangles every path.
-            text = text.replace(root + os.sep, '').replace(root, '.')
+            escaped = re.escape(root)
+            text = re.sub(rf'(?<![\w.-]){escaped}[{seps}]', '', text)
+            text = re.sub(rf'(?<![\w.-]){escaped}(?![\w.\-{seps}])', '.', text)
         return text
 
     def _describe(self, abs_path: str) -> tuple[bool, int] | None:
         """Return ``(is_directory, size_bytes)`` for a listing entry.
 
         Uses ``lstat``, so a symlink is described by its target only when the
-        target is inside the root. A symlink out of the root, or an entry that
-        can't be stat'ed, is left out instead of leaking the target's type and
-        size.
+        target is inside the root. A symlink out of the root, a special file
+        (FIFO, socket, device), or an entry that can't be stat'ed is left out
+        instead of leaking or advertising an unreadable entry.
         """
         try:
             st = os.lstat(abs_path)
@@ -215,8 +220,11 @@ class Filesystem(Middleware[FilesystemConfig]):
                 st = os.stat(target)
         except OSError:
             return None
-        is_dir = stat.S_ISDIR(st.st_mode)
-        return is_dir, 0 if is_dir else st.st_size
+        if stat.S_ISDIR(st.st_mode):
+            return True, 0
+        if stat.S_ISREG(st.st_mode):
+            return False, st.st_size
+        return None
 
     def _enqueue_parts(self, parts: list[Part]) -> None:
         """Append parts to the pending user message for the next model turn."""
@@ -307,6 +315,14 @@ class Filesystem(Middleware[FilesystemConfig]):
 
     def _write_file_impl(self, file_path: str, content: str) -> str:
         abs_path = self._resolve_safe(file_path)
+        try:
+            st = os.lstat(abs_path)
+        except FileNotFoundError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            if stat.S_ISDIR(st.st_mode):
+                raise IsADirectoryError(errno.EISDIR, 'Is a directory', abs_path)
+            raise ValueError(f'Cannot write to non-regular file: {file_path!r}')
         os.makedirs(os.path.dirname(abs_path) or '.', exist_ok=True)
         with open(abs_path, 'w', encoding='utf-8') as fh:
             fh.write(content)
@@ -316,6 +332,10 @@ class Filesystem(Middleware[FilesystemConfig]):
         abs_path = self._resolve_safe(file_path)
         if not os.path.isfile(abs_path):
             raise ValueError(f'File not found: {file_path!r}')
+
+        stat_result = os.stat(abs_path)
+        if stat_result.st_size > _MAX_FILE_SIZE_BYTES:
+            raise ValueError(f'File too large ({stat_result.st_size:,} bytes; max {_MAX_FILE_SIZE_BYTES:,}).')
 
         with open(abs_path, encoding='utf-8', errors='replace') as fh:
             content = fh.read()
@@ -334,6 +354,13 @@ class Filesystem(Middleware[FilesystemConfig]):
             if not replace_all and count > 1:
                 raise ValueError(f'old_string matches {count} times but replace_all=False.')
             content = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+            if len(content) > _MAX_FILE_SIZE_BYTES:
+                encoded_len = len(content.encode('utf-8'))
+                raise ValueError(f'Edited file too large ({encoded_len:,} bytes; max {_MAX_FILE_SIZE_BYTES:,}).')
+
+        encoded_len = len(content.encode('utf-8'))
+        if encoded_len > _MAX_FILE_SIZE_BYTES:
+            raise ValueError(f'Edited file too large ({encoded_len:,} bytes; max {_MAX_FILE_SIZE_BYTES:,}).')
 
         with open(abs_path, 'w', encoding='utf-8') as fh:
             fh.write(content)

@@ -178,20 +178,16 @@ async def test_read_time_failure_does_not_leak_host_path(
     skills = Skills(skill_paths=[str(sandbox['root'])])
     (tool,) = skills.tools(ctx)
 
-    real_read = _skills._read_skill_file
     calls: list[Path] = []
 
-    def swapped(path: Path, root: Path) -> str:
-        # use_skill rescans (first call), then reads the file it found (second call).
+    def swapped(path: Path, _root: Path) -> str:
         calls.append(path)
-        if len(calls) == 1:
-            return real_read(path, root)
         raise ValueError(f'SKILL.md is not a regular file: {path}')
 
     monkeypatch.setattr(_skills, '_read_skill_file', swapped)
     result = await tool({'skill_name': 'allergy-check'})
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert result == 'Failed to read skill "allergy-check".'
     assert str(sandbox['root']) not in result
 

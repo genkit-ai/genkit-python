@@ -32,6 +32,7 @@ import os
 import re
 import stat
 import unicodedata
+import weakref
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ _SKILL_DESCRIPTION_MAX_CHARS = 1024
 
 # A '<' that opens a tag, e.g. '</skills>' or '<system>'.
 _TAG_OPEN = re.compile(r'<(?=/?[A-Za-z])')
+_FRONTMATTER_FENCE = re.compile(r'^[ \t]*---[ \t]*\r?$', re.MULTILINE)
 
 _O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 _O_NONBLOCK = getattr(os, 'O_NONBLOCK', 0)
@@ -147,6 +149,7 @@ class Skills(Middleware[SkillsConfig]):
 
     name = 'skills'
     description = 'Provides access to skill library for specialized instructions'
+    _cached_scan: tuple[weakref.ref[MiddlewareContext], dict[str, dict[str, str]]] | None = None
 
     def _scan_skills(self) -> dict[str, dict[str, str]]:
         skills: dict[str, dict[str, str]] = {}
@@ -167,7 +170,7 @@ class Skills(Middleware[SkillsConfig]):
                     if not subdir.is_dir():
                         continue
                     skill_dir = subdir.resolve()
-                    if not os.path.lexists(skill_file):
+                    if _SKILL_FILE_NAME not in os.listdir(skill_dir):
                         continue
                     content = _read_skill_file(skill_file, skill_dir)
                 except (OSError, RuntimeError, ValueError) as exc:
@@ -198,21 +201,33 @@ class Skills(Middleware[SkillsConfig]):
                 }
         return skills
 
+    def _skills_for(self, ctx: MiddlewareContext) -> dict[str, dict[str, str]]:
+        cached = self._cached_scan
+        if cached is not None and cached[0]() is ctx:
+            return cached[1]
+        scanned = self._scan_skills()
+        self._cached_scan = (weakref.ref(ctx), scanned)
+        return scanned
+
+    async def _skills_for_async(self, ctx: MiddlewareContext) -> dict[str, dict[str, str]]:
+        cached = self._cached_scan
+        if cached is not None and cached[0]() is ctx:
+            return cached[1]
+        scanned = await asyncio.to_thread(self._scan_skills)
+        self._cached_scan = (weakref.ref(ctx), scanned)
+        return scanned
+
     def _parse_frontmatter(self, content: str) -> tuple[str, str]:
         content = content.lstrip('\ufeff')
-        if content.startswith('---\r\n'):
-            start_idx = 5
-            end_marker = '\r\n---'
-        elif content.startswith('---\n'):
-            start_idx = 4
-            end_marker = '\n---'
-        else:
+        open_match = _FRONTMATTER_FENCE.match(content)
+        if open_match is None or open_match.end() >= len(content) or content[open_match.end()] != '\n':
             return '', ''
-        end_idx = content.find(end_marker, start_idx)
-        if end_idx == -1:
+        yaml_start = open_match.end() + 1
+        close_match = _FRONTMATTER_FENCE.search(content, yaml_start)
+        if close_match is None:
             return '', ''
         try:
-            data = yaml.safe_load(content[start_idx:end_idx])
+            data = yaml.safe_load(content[yaml_start : close_match.start()])
         except Exception:
             return '', ''
         if not isinstance(data, dict):
@@ -272,23 +287,25 @@ class Skills(Middleware[SkillsConfig]):
         return new_options
 
     def tools(self, ctx: MiddlewareContext) -> list[Tool]:
-        if not self._scan_skills():
+        skills = self._skills_for(ctx)
+        if not skills:
             return []
 
         async def use_skill(input: _UseSkillInput) -> str:
             skill_name = input.skill_name
-            skills = await asyncio.to_thread(self._scan_skills)
             # The catalog shows names with tag openers escaped; accept either form.
-            info = skills.get(skill_name) or skills.get(skill_name.replace('&lt;', '<'))
+            info = skills.get(skill_name)
             if info is None:
-                available = ', '.join(sorted(skills.keys()))
-                return f'Unknown skill "{skill_name}". Available skills: {available}'
+                info = next((v for k, v in skills.items() if _catalog_text(k) == skill_name), None)
+            if info is None:
+                available = ', '.join(_catalog_text(k) for k in sorted(skills.keys()))
+                return f'Unknown skill "{_catalog_text(skill_name)}". Available skills: {available}'
             try:
                 return await asyncio.to_thread(_read_skill_file, Path(info['path']), Path(info['skill_dir']))
             except (OSError, ValueError) as exc:
                 # Log the host path; keep it out of the model-visible result.
                 logger.warning('skill could not be read', skill=skill_name, path=info['path'], error=str(exc))
-                return f'Failed to read skill "{skill_name}".'
+                return f'Failed to read skill "{_catalog_text(skill_name)}".'
 
         return [Tool(use_skill, description='Load a skill by name.')]
 
@@ -298,7 +315,7 @@ class Skills(Middleware[SkillsConfig]):
         ctx: MiddlewareContext,
         next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        skills = await asyncio.to_thread(self._scan_skills)
+        skills = await self._skills_for_async(ctx)
         if skills:
             prompt_text = self._build_skills_prompt(skills)
             if prompt_text:

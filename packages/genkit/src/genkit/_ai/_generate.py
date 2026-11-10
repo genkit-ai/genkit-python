@@ -1411,6 +1411,10 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     # one line, no traceback: a pretty-printed traceback with locals costs
     # hundreds of ms per failed turn and dumps the user's prompt into the logs.
     logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
+    # The box hides the cause and no span keeps the stack, so a bug in Genkit
+    # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug
+    # brings it back.
+    logger.debug('%s failure details', culprit, exc_info=exc, **fields)
 
 
 def stamp_cancelled_error(

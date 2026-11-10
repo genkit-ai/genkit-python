@@ -610,6 +610,28 @@ async def test_failed_turn_log_does_not_print_the_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_traceback_is_kept_at_debug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GENKIT_LOG=debug adds the traceback, so a boxed bug in Genkit or a plugin is still debuggable."""
+    monkeypatch.setenv(GENKIT_LOG, 'debug')
+    structlog.reset_defaults()
+    ai = Genkit()
+    _define_crashing_model(ai)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='crash', prompt='hi')
+
+    assert response.finish_reason == FinishReason.FAILED
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert 'exc_info' not in errors[0]
+    details = [e for e in entries if e['event'] == "model 'crash' failure details"]
+    assert len(details) == 1
+    assert details[0]['log_level'] == 'debug'
+    assert isinstance(details[0]['exc_info'], RuntimeError)
+    assert str(details[0]['exc_info']) == 'model backend exploded'
+
+
+@pytest.mark.asyncio
 async def test_failed_turn_log_carries_the_trace_id_when_traced(exporter: Any) -> None:  # noqa: ANN401
     """Under tracing, the failed-turn line carries the trace id so you can jump to the trace."""
     structlog.reset_defaults()

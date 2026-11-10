@@ -18,8 +18,9 @@
 """Google AI and Vertex AI plugin implementations for Genkit.
 
 This module provides the GoogleAI and VertexAI plugins that enable Genkit to use
-Google's generative AI models. Both plugins use dynamic model discovery via the
-Google GenAI SDK to detect and register available models at runtime.
+Google's generative AI models. Both plugins register a static catalog of known
+models at init with no network call, resolve any other model id by name on first
+use, and list the live catalog only when the Dev UI asks for it.
 
 Supported capabilities include text generation (Gemini/Gemma), text embeddings,
 image generation (Gemini native image), and video generation (Veo).
@@ -29,10 +30,10 @@ Example:
     from genkit import Genkit
     from genkit_google_genai import GoogleAI
 
-    # 1. Initialize Genkit with dynamic model discovery
+    # 1. Initialize Genkit; no model listing happens at startup
     ai = Genkit(plugins=[GoogleAI()])
 
-    # 2. Generate content using any discovered Gemini model
+    # 2. Generate with any Gemini model id the API serves
     response = await ai.generate(
         model=GoogleAI.gemini('gemini-flash-latest'),
         prompt='Suggest 3 names for a space-themed coffee shop.',
@@ -451,11 +452,13 @@ class GoogleFamilyRefs:
 
 
 class GoogleAI(GoogleFamilyRefs, Plugin):
-    """GoogleAI plugin for Genkit with dynamic model discovery.
+    """GoogleAI plugin for Genkit.
 
     This plugin provides access to Google AI models (Gemini, embedders, Veo)
-    through the Google AI Studio API. Models are discovered dynamically at
-    initialization time, ensuring new models are available without SDK updates.
+    through the Google AI Studio API. Known models register at init with no
+    network call. Any other model id resolves by name on first use, so new
+    models work without an SDK update. The live catalog is listed only when
+    the Dev UI asks for it, then cached.
 
     Model Types:
         | Type | Action Kind | Example |
@@ -469,7 +472,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         from genkit import Genkit
         from genkit_google_genai import GoogleAI
 
-        # 1. Initialize Genkit with dynamic model discovery
+        # 1. Initialize Genkit; no model listing happens at startup
         ai = Genkit(plugins=[GoogleAI()])
 
         # 2. Generate text using Gemini Flash
@@ -944,11 +947,13 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
 
 
 class VertexAI(GoogleFamilyRefs, Plugin):
-    """Vertex AI plugin for Genkit with dynamic model discovery.
+    """Vertex AI plugin for Genkit.
 
     This plugin provides access to Google Cloud Vertex AI models including
-    Gemini, Veo, and embedders. Models are discovered dynamically,
-    ensuring new models are available without SDK updates.
+    Gemini, Veo, and embedders. Known models register at init with no network
+    call. Any other model id resolves by name on first use, so new models work
+    without an SDK update. The live catalog is listed only when the Dev UI asks
+    for it, then cached.
 
     Vertex AI vs Google AI:
         Vertex AI provides enterprise features including:

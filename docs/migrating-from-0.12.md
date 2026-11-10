@@ -554,7 +554,7 @@ except GenkitError as e:
 
 ## Plugin exception types
 
-Plugin-specific exceptions such as `OllamaConnectionError` are gone. Check the status on `res.error` instead.
+Plugin-specific exceptions such as `OllamaConnectionError` are gone. Check the failure's `status` instead: `ai.generate` returns the failure on `res.error`, and `ai.embed` raises it as a `GenkitError`.
 
 **Old:**
 

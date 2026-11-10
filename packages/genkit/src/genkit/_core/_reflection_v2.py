@@ -60,7 +60,7 @@ from genkit._core._reflection import as_agent_input_dict, resolve_agent_init, re
 from genkit._core._reflection_config import REFLECTION_AUTH_ERROR_CODE
 from genkit._core._registry import Registry
 from genkit._core._telemetry._http import connect_developer_ui_collector
-from genkit._core._telemetry._instrumentation import flush_instrumentations
+from genkit._core._telemetry._instrumentation import flush_span_exports
 from genkit._core._telemetry._log_exporter import enable_log_export
 from genkit._core._typing import (
     ReflectionCancelActionParams,
@@ -441,7 +441,7 @@ class ReflectionServerV2:
         stream.close()
 
     async def flush_tracing(self) -> None:
-        await asyncio.to_thread(flush_instrumentations)
+        await asyncio.to_thread(flush_span_exports)
 
     @staticmethod
     def run_action_call_options(

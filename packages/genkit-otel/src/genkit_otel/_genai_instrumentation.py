@@ -178,15 +178,13 @@ class GenAiInstrumentation(Instrumentation):
         ``meter``, or ``otel_logger`` aren't reachable from here; flush
         those on the provider you built.
         """
-        providers = (trace_api.get_tracer_provider(), metrics_api.get_meter_provider(), get_logger_provider())
-        for provider in providers:
-            force_flush = getattr(provider, 'force_flush', None)
-            if not callable(force_flush):
-                continue
-            try:
-                force_flush()
-            except Exception:  # noqa: BLE001 - shutdown flush must not raise into the app.
-                logger.warning('OpenTelemetry %s.force_flush() failed', type(provider).__name__, exc_info=True)
+        for provider in (trace_api.get_tracer_provider(), metrics_api.get_meter_provider(), get_logger_provider()):
+            _force_flush(provider)
+
+    def _flush_spans(self) -> None:
+        # Genkit's Dev UI calls this before every run response (core's
+        # flush_span_exports), so it skips the meter and logger providers.
+        _force_flush(trace_api.get_tracer_provider())
 
     async def run_in_new_span(
         self,
@@ -589,6 +587,17 @@ def _safe_encode_json(value: object) -> str:
         return _encode_json_value(value)
     except Exception as exc:  # noqa: BLE001 - any encode failure becomes a placeholder.
         return f'Unable to encode: {exc}'
+
+
+def _force_flush(provider: object) -> None:
+    """``provider.force_flush()``; skip proxies without it, log instead of raising."""
+    force_flush = getattr(provider, 'force_flush', None)
+    if not callable(force_flush):
+        return
+    try:
+        force_flush()
+    except Exception:  # noqa: BLE001 - a failed flush must not raise into the app.
+        logger.warning('OpenTelemetry %s.force_flush() failed', type(provider).__name__, exc_info=True)
 
 
 def _set_json_attribute(span: Span, key: str, value: object) -> None:

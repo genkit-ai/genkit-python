@@ -290,3 +290,28 @@ def test_poster_reuses_one_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         assert set(threading.enumerate()) - before == {sink.worker}
     finally:
         sink.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_dev_ui_run_flush_uses_the_span_only_hook() -> None:
+    """Before a run response, the reflection server drains spans only; a backend's full flush() stays for app code."""
+
+    class SpanAwareBackend:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def run_in_new_span(self, metadata: Any, next: Any) -> Any:  # noqa: ANN401
+            return await next()
+
+        def flush(self) -> None:
+            self.calls.append('flush')
+
+        def _flush_spans(self) -> None:
+            self.calls.append('spans')
+
+    backend = SpanAwareBackend()
+    configure_instrumentation(backend)
+
+    await _handshake_server().flush_tracing()
+
+    assert backend.calls == ['spans']

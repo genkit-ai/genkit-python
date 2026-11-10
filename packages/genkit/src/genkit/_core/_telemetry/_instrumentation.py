@@ -220,6 +220,22 @@ def flush_instrumentations() -> None:
             inst.flush()
 
 
+def flush_span_exports() -> None:
+    """Wait for in-flight span exports only. Internal; the Dev UI calls this per run.
+
+    The reflection server flushes before it hands a trace id back, so the run
+    shouldn't also wait on metric and log exports (JS ``flushTracing`` does the
+    same). A provider with a private ``_flush_spans`` hook (``GenAiInstrumentation``)
+    flushes spans only; any other flushable provider gets ``flush()``.
+    """
+    for inst in instrumentations:
+        flush_spans = getattr(inst, '_flush_spans', None)
+        if callable(flush_spans):
+            flush_spans()
+        elif isinstance(inst, FlushableInstrumentation):
+            inst.flush()
+
+
 def reset_instrumentation() -> None:
     """Start telemetry over. Tests only.
 

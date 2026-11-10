@@ -365,6 +365,39 @@ def test_flush_instrumentations_flushes_flushable() -> None:
     assert buffered.flushed == 1
 
 
+def test_flush_span_exports_prefers_span_hook_and_falls_back_to_flush() -> None:
+    """The Dev UI flush calls _flush_spans when a provider has it, else flush()."""
+
+    class SpanAware(FakeInstrumentation):
+        def __init__(self) -> None:
+            super().__init__('span-aware', [])
+            self.calls: list[str] = []
+
+        def flush(self) -> None:
+            self.calls.append('flush')
+
+        def _flush_spans(self) -> None:
+            self.calls.append('spans')
+
+    class Buffered(FakeInstrumentation):
+        def __init__(self) -> None:
+            super().__init__('buffered', [])
+            self.flushed = 0
+
+        def flush(self) -> None:
+            self.flushed += 1
+
+    span_aware = SpanAware()
+    buffered = Buffered()
+    configure_instrumentation(span_aware)
+    configure_instrumentation(buffered)
+
+    core_instrumentation.flush_span_exports()
+
+    assert span_aware.calls == ['spans']
+    assert buffered.flushed == 1
+
+
 def test_reset_instrumentation_removes_every_configured_provider() -> None:
     """After reset_instrumentation(), no provider configured before it is still installed."""
     first = FakeInstrumentation('first', [])

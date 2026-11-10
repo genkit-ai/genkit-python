@@ -1141,3 +1141,19 @@ def test_flush_skips_proxy_providers_and_swallows_flush_errors(monkeypatch: pyte
     GenAiInstrumentation().flush()
 
     assert (failing.flushes, healthy.flushes) == (1, 1)
+
+
+def test_dev_ui_span_flush_skips_meter_and_logger_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_flush_spans (the Dev UI's per-run hook) drains the tracer provider only, never metrics or logs."""
+    from genkit_otel import _genai_instrumentation
+
+    tracer_provider = _RecordingProvider()
+    meter_provider = _RecordingProvider()
+    logger_provider = _RecordingProvider()
+    monkeypatch.setattr(_genai_instrumentation.trace_api, 'get_tracer_provider', lambda: tracer_provider)
+    monkeypatch.setattr(_genai_instrumentation.metrics_api, 'get_meter_provider', lambda: meter_provider)
+    monkeypatch.setattr(_genai_instrumentation, 'get_logger_provider', lambda: logger_provider)
+
+    GenAiInstrumentation()._flush_spans()
+
+    assert (tracer_provider.flushes, meter_provider.flushes, logger_provider.flushes) == (1, 0, 0)

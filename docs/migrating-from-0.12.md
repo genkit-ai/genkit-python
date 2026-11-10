@@ -882,7 +882,7 @@ if res.output is None:
 
 ## Response media
 
-`response.media` is now the first media part (`Media | None`), matching JS, Go and agent results; `Message` and `ModelResponseChunk` get the same `.media`. Replace `response.media[0]` with `response.media`, and use `response.media_parts` for the full list. `Document.media` is still a list.
+`response.media` is now the first media part (`Media | None`), matching JS, Go and agent results; `Message` and `ModelResponseChunk` get the same `.media`. Replace `response.media[0]` with `response.media`, and use `response.media_parts` for the full list. Change `for m in response.media:` loops too: iterating a `Media` doesn't raise, it yields `(field, value)` pairs. `Document.media` is still a list.
 
 ## Flow input and output validation
 

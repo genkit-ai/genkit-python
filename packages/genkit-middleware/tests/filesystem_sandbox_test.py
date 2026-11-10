@@ -243,6 +243,36 @@ def test_symlinks_that_stay_inside_root_still_work(sandbox: dict[str, Path]) -> 
     assert entries['current']['is_directory'] is True
 
 
+@posix_only
+def test_relative_symlink_chain_that_ends_outside_is_refused(sandbox: dict[str, Path]) -> None:
+    """``specials -> archive -> ../outside``: every hop looks local, the last one leaves."""
+    root = sandbox['root']
+    (root / 'specials').symlink_to('archive')
+    (root / 'archive').symlink_to('../outside', target_is_directory=True)
+    fs = Filesystem(root_dir=str(root), allow_write_access=True)
+
+    with pytest.raises(ValueError, match='escapes'):
+        fs._read_file_impl('specials/canary.txt', 0, 0)
+    with pytest.raises(ValueError, match='escapes'):
+        fs._write_file_impl('specials/pwn.txt', 'pwned')
+    assert {e['path'] for e in fs._list_files()} == {'menu.md', 'orders'}
+    assert sorted(p.name for p in sandbox['outside'].iterdir()) == ['canary.txt']
+
+
+@posix_only
+def test_symlink_loop_fails_without_escaping(sandbox: dict[str, Path]) -> None:
+    root = sandbox['root']
+    (root / 'loop_a').symlink_to('loop_b')
+    (root / 'loop_b').symlink_to('loop_a')
+    fs = Filesystem(root_dir=str(root), allow_write_access=True)
+
+    with pytest.raises(ValueError, match='File not found'):
+        fs._read_file_impl('loop_a', 0, 0)
+    with pytest.raises(OSError):
+        fs._write_file_impl('loop_a/order.txt', 'x')
+    assert {e['path'] for e in fs._list_files()} == {'menu.md', 'orders'}
+
+
 # ---------------------------------------------------------------------------
 # Names: NUL, Unicode, attribute breakout
 # ---------------------------------------------------------------------------

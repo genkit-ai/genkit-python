@@ -19,7 +19,8 @@ import pytest
 from genkit_mcp import create_mcp_server
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import TextContent
+from mcp.server.streamable_http import EventCallback, EventId, EventStore, StreamId
+from mcp.types import JSONRPCMessage, TextContent
 from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.routing import Mount
@@ -292,6 +293,37 @@ def test_a_single_string_for_allowed_origins_is_refused() -> None:
 
     with pytest.raises(TypeError, match='allowed_origins'):
         server.asgi_app(allowed_origins='https://app.example.com')
+
+
+class RecordingEventStore(EventStore):
+    def __init__(self) -> None:
+        self.stored: list[StreamId] = []
+
+    async def store_event(self, stream_id: StreamId, message: JSONRPCMessage | None) -> EventId:
+        self.stored.append(stream_id)
+        return str(len(self.stored))
+
+    async def replay_events_after(self, last_event_id: EventId, send_callback: EventCallback) -> StreamId | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_stateful_app_records_events_in_the_given_store() -> None:
+    server = create_mcp_server(app_with_tools(), 'bookshop')
+    store = RecordingEventStore()
+
+    async with session_over(server.asgi_app(event_store=store)) as session:
+        await session.call_tool('ping', {})
+
+    assert store.stored
+
+
+def test_an_event_store_on_a_stateless_app_is_refused() -> None:
+    """A stateless app has no session to replay, so the store would never be used."""
+    server = create_mcp_server(app_with_tools(), 'bookshop')
+
+    with pytest.raises(ValueError, match='event_store'):
+        server.asgi_app(stateless=True, event_store=RecordingEventStore())
 
 
 @pytest.mark.asyncio

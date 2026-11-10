@@ -242,8 +242,8 @@ app = server.asgi_app()  # uvicorn myserver:app
 ```
 
 Pass `stateless=True` for a fresh transport per request with no session id, `json_response=True` for
-one JSON body instead of an SSE stream, and `event_store=` to let a reconnecting client replay what
-it missed. Nothing here touches stdout: only stdio makes stdout the wire.
+one JSON body instead of an SSE stream, and, when stateful, `event_store=` to let a reconnecting
+client replay what it missed. Nothing here touches stdout: only stdio makes stdout the wire.
 
 The endpoint has no authentication. Anyone who can reach it can list and call every tool the app
 defines, so bind it to localhost, which uvicorn does by default, or put authentication in front of

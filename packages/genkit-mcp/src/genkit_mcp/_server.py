@@ -180,6 +180,7 @@ class McpServer:
             json_response: Whether a response is one JSON body rather than an
                 SSE stream.
             event_store: Where to record events for a reconnecting client.
+                Stateful only.
             allowed_hosts: ``Host`` header values to accept. ``name:*``
                 accepts any port. Defaults to localhost on any port.
             allowed_origins: ``Origin`` header values to accept from a
@@ -193,10 +194,14 @@ class McpServer:
         Raises:
             TypeError: If ``allowed_hosts`` or ``allowed_origins`` is a single
                 string rather than a sequence of them.
+            ValueError: If ``event_store`` is given with ``stateless=True``,
+                where there is no session to replay.
         """
         for argument, value in (('allowed_hosts', allowed_hosts), ('allowed_origins', allowed_origins)):
             if isinstance(value, str):
                 raise TypeError(f'{argument} takes a sequence of strings, not one string: [{value!r}]')
+        if stateless and event_store is not None:
+            raise ValueError('event_store needs a stateful app; a stateless one would never use it')
         manager = self._session_manager(
             stateless=stateless,
             json_response=json_response,

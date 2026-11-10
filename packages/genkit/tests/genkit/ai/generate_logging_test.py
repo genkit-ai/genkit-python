@@ -566,6 +566,7 @@ async def test_tool_raises_in_generate_logs_one_line_naming_the_tool_and_error()
     assert errors[0]['event'] == "tool 'explode' raised, returning finish_reason=failed"
     assert errors[0]['tool'] == 'explode'
     assert errors[0]['error'] == 'RuntimeError: tool exploded'
+    assert 'model' not in errors[0]
     assert 'exc_info' not in errors[0]
 
 
@@ -653,21 +654,23 @@ async def test_failed_turn_log_carries_the_trace_id_when_traced(exporter: Any) -
 
 
 @pytest.mark.asyncio
-async def test_tool_failure_is_logged_once_not_again_by_generate() -> None:
-    """A raising tool is logged by name once; generate does not add a second line for the same failure."""
+async def test_bare_exception_without_message_logs_type_name_only() -> None:
+    """An exception raised with no message logs `TypeName`, not `TypeName: `."""
     structlog.reset_defaults()
     ai = Genkit()
-    _define_exploding_tool(ai)
+
+    async def silent_crash(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise RuntimeError
+
+    ai.define_model(name='silent_crash', fn=silent_crash)
 
     with capture_logs() as entries:
-        response = await ai.generate(model='scriptedModel', prompt='hi', tools=['explode'])
+        response = await ai.generate(model='silent_crash', prompt='hi')
 
     assert response.finish_reason == FinishReason.FAILED
     errors = _errors(entries)
     assert len(errors) == 1
-    assert errors[0]['tool'] == 'explode'
-    assert errors[0]['error'] == 'RuntimeError: tool exploded'
-    assert 'model' not in errors[0]
+    assert errors[0]['error'] == 'RuntimeError'
     assert 'exc_info' not in errors[0]
 
 

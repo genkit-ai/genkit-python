@@ -148,7 +148,7 @@ def fallback_request_config(
     primary: object = None,
     backup_schema: object = None,
 ) -> dict[str, Any] | None:
-    """A ref entry uses only its own config; a string entry inherits the caller's.
+    """A ref entry with config uses only that config; any other entry inherits the caller's.
 
     Matches JS: ``normalizedModel.config ?? req.config``, narrowed so the
     backup model can validate it.
@@ -161,8 +161,9 @@ def fallback_request_config(
 class Fallback(Middleware[FallbackConfig]):
     """Fallback middleware to try alternative models on failure.
 
-    A backup named by string inherits the caller's config, narrowed to keys
-    the backup accepts; a ``ModelRef`` backup uses only its own config. Once
+    A backup named by string, or a ``ModelRef`` with no config or version,
+    inherits the caller's config, narrowed to keys the backup accepts; a
+    ``ModelRef`` with config uses only that config. Once
     an attempt has streamed chunks, its failure is raised rather than failed
     over. Backups run directly, not through middleware listed after
     ``Fallback``, so ``use=[Fallback(...), Retry(...)]`` retries only the

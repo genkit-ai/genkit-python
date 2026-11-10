@@ -161,8 +161,7 @@ async def test_generate_stream_with_tool_calls(sample_request: ModelRequest) -> 
 async def test_scalar_tool_schema_is_wrapped_and_round_trips(make_completion: Callable[..., ChatCompletion]) -> None:
     """`async def tool(city: str)` sends an object schema and gets the bare string back."""
     from genkit import Message, Part, Role
-    from genkit._core._typing import ToolRequest
-    from genkit.model import ToolDefinition
+    from genkit.model import ToolDefinition, ToolRequest
 
     completion = make_completion(
         choice={

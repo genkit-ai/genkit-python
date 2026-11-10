@@ -1353,7 +1353,7 @@ class OutputConfig(GenkitModel):
     content_type: str | None = None
 
     @property
-    def schema(self) -> dict[str, Any] | None:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def schema(self) -> dict[str, Any] | None:  # pyright: ignore[reportIncompatibleMethodOverride]  # pyrefly: ignore[bad-override]
         """Read-only alias for ``json_schema``, matching the wire key and JS.
 
         Shadows Pydantic's deprecated ``BaseModel.schema()`` classmethod so

@@ -49,6 +49,7 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn
@@ -97,8 +98,9 @@ from genkit_google_genai._models._embedder import (
     get_embedder_info,
 )
 from genkit_google_genai._models._gemini import (
-    GEMINI_CATALOG_IDS,
+    GOOGLEAI_KNOWN_MODELS,
     SUPPORTED_MODELS,
+    VERTEX_KNOWN_MODELS,
     GeminiConfig,
     GeminiImageConfig,
     GeminiModel,
@@ -703,6 +705,10 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         # One client per event loop, used everywhere in plugin runtime paths.
         return _plugin_client(self._loop_client_kwargs())
 
+    @loop_local_client
+    def _list_actions_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
     def _loop_client_kwargs(self) -> dict[str, Any]:
         """Client kwargs carrying this loop's client from ``http_client_factory``, if one was given."""
         return _with_loop_http_client(self._client_kwargs, self._http_client_factory)
@@ -746,7 +752,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         actions: list[Action | BackgroundAction[Any, Any]] = []
 
         # Gemini / Gemma Models
-        for name in sorted(GEMINI_CATALOG_IDS):
+        for name in GOOGLEAI_KNOWN_MODELS:
             if action := self._resolve_model(name):
                 actions.append(action)
 
@@ -914,36 +920,40 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         if self._list_actions_cache is not None:
             return self._list_actions_cache
 
-        actions_list = list(await self.init())
-        seen_names = {a.name for a in actions_list}
+        async with self._list_actions_lock():
+            if self._list_actions_cache is not None:
+                return self._list_actions_cache
 
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=False)
+            actions_list = list(await self.init())
+            seen_names = {a.name for a in actions_list}
 
-        for name in genai_models.gemini:
-            if (model_action := self._resolve_model(name)) is not None:
-                if model_action.name not in seen_names:
-                    actions_list.append(model_action)
-                    seen_names.add(model_action.name)
+            genai_models = await _list_genai_models(self._runtime_client(), is_vertex=False)
 
-        for name in genai_models.veo:
-            veo_action = _create_veo_background_model(
-                name,
-                self._runtime_client,
-                GOOGLEAI_PLUGIN_NAME,
-                client_kwargs=self._loop_client_kwargs,
-            )
-            if veo_action.name not in seen_names:
-                actions_list.append(veo_action)
-                seen_names.add(veo_action.name)
+            for name in genai_models.gemini:
+                if (model_action := self._resolve_model(name)) is not None:
+                    if model_action.name not in seen_names:
+                        actions_list.append(model_action)
+                        seen_names.add(model_action.name)
 
-        for name in genai_models.embedders:
-            embedder_action = _create_embedder_action(name, self._runtime_client, GOOGLEAI_PLUGIN_NAME)
-            if embedder_action.name not in seen_names:
-                actions_list.append(embedder_action)
-                seen_names.add(embedder_action.name)
+            for name in genai_models.veo:
+                veo_action = _create_veo_background_model(
+                    name,
+                    self._runtime_client,
+                    GOOGLEAI_PLUGIN_NAME,
+                    client_kwargs=self._loop_client_kwargs,
+                )
+                if veo_action.name not in seen_names:
+                    actions_list.append(veo_action)
+                    seen_names.add(veo_action.name)
 
-        self._list_actions_cache = actions_list
-        return actions_list
+            for name in genai_models.embedders:
+                embedder_action = _create_embedder_action(name, self._runtime_client, GOOGLEAI_PLUGIN_NAME)
+                if embedder_action.name not in seen_names:
+                    actions_list.append(embedder_action)
+                    seen_names.add(embedder_action.name)
+
+            self._list_actions_cache = actions_list
+            return actions_list
 
 
 class VertexAI(GoogleFamilyRefs, Plugin):
@@ -1203,6 +1213,10 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         # One client per event loop, used everywhere in plugin runtime paths.
         return _plugin_client(self._loop_client_kwargs())
 
+    @loop_local_client
+    def _list_actions_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
     def _loop_client_kwargs(self) -> dict[str, Any]:
         """Client kwargs carrying this loop's client from ``http_client_factory``, if one was given."""
         return _with_loop_http_client(self._client_kwargs, self._http_client_factory)
@@ -1224,10 +1238,8 @@ class VertexAI(GoogleFamilyRefs, Plugin):
 
         actions: list[Action | BackgroundAction[Any, Any]] = []
 
-        # Gemini / Gemma Models (Vertex does not serve rotating -latest aliases)
-        for name in sorted(GEMINI_CATALOG_IDS):
-            if name.endswith('-latest'):
-                continue
+        # Gemini Models (Vertex does not serve rotating -latest aliases or Gemma via generate_content)
+        for name in VERTEX_KNOWN_MODELS:
             if action := self._resolve_model(name):
                 actions.append(action)
 
@@ -1385,30 +1397,34 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         if self._list_actions_cache is not None:
             return self._list_actions_cache
 
-        actions_list = list(await self.init())
-        seen_names = {a.name for a in actions_list}
+        async with self._list_actions_lock():
+            if self._list_actions_cache is not None:
+                return self._list_actions_cache
 
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=True)
+            actions_list = list(await self.init())
+            seen_names = {a.name for a in actions_list}
 
-        for name in genai_models.gemini:
-            if (model_action := self._resolve_model(name)) is not None:
-                if model_action.name not in seen_names:
-                    actions_list.append(model_action)
-                    seen_names.add(model_action.name)
+            genai_models = await _list_genai_models(self._runtime_client(), is_vertex=True)
 
-        for name in genai_models.veo:
-            veo_action = _create_veo_background_model(
-                name,
-                self._runtime_client,
-                VERTEXAI_PLUGIN_NAME,
-                client_kwargs=self._loop_client_kwargs,
-            )
-            if veo_action.name not in seen_names:
-                actions_list.append(veo_action)
-                seen_names.add(veo_action.name)
+            for name in genai_models.gemini:
+                if (model_action := self._resolve_model(name)) is not None:
+                    if model_action.name not in seen_names:
+                        actions_list.append(model_action)
+                        seen_names.add(model_action.name)
 
-        self._list_actions_cache = actions_list
-        return actions_list
+            for name in genai_models.veo:
+                veo_action = _create_veo_background_model(
+                    name,
+                    self._runtime_client,
+                    VERTEXAI_PLUGIN_NAME,
+                    client_kwargs=self._loop_client_kwargs,
+                )
+                if veo_action.name not in seen_names:
+                    actions_list.append(veo_action)
+                    seen_names.add(veo_action.name)
+
+            self._list_actions_cache = actions_list
+            return actions_list
 
 
 def _loop_local_http_client(

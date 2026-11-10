@@ -1115,11 +1115,18 @@ def test_the_request_timeout_defaults_to_sixty_seconds(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_a_request_timeout_fails_that_call_alone(tmp_path: Path) -> None:
     """A tool which never replies gives up without taking the connection with it."""
-    # The timeout also covers the handshake, which a loaded machine can take seconds to finish.
-    connection = McpConnection('fake', config(tmp_path), request_timeout_millis=8000)
+    connection = McpConnection('fake', config(tmp_path))
+
+    # The session-wide timeout also bounds the handshake, which takes seconds on a
+    # loaded machine, so the stalled call carries its own. The SDK enforces both
+    # with the same deadline and raises the same 408.
+    async def stall(session: ClientSession) -> CallToolResult:
+        return await session.call_tool('stall', {}, read_timeout_seconds=timedelta(milliseconds=100))
+
     try:
+        await asyncio.wait_for(connection.list_tools(), timeout=LIMIT)
         with pytest.raises(_RequestTimeoutError, match="MCP request to 'fake' .* timed out") as timed_out:
-            await asyncio.wait_for(connection.call_tool('stall', {}), timeout=LIMIT)
+            await asyncio.wait_for(connection._request(stall), timeout=LIMIT)
         assert timed_out.value.status == 'DEADLINE_EXCEEDED'
         assert isinstance(timed_out.value.__cause__, McpError)
         assert timed_out.value.__cause__.error.code == 408
@@ -1127,8 +1134,9 @@ async def test_a_request_timeout_fails_that_call_alone(tmp_path: Path) -> None:
         assert str(timed_out.value.__cause__) in str(timed_out.value)
 
         assert connection._state is _ConnectionState.OPEN
-        alive = await asyncio.wait_for(connection.call_tool('echo', {'message': 'alive'}), timeout=LIMIT)
-        assert text_of(alive) == 'alive'
+        # Answers only once the timed-out stall is in flight on the server.
+        alive = await asyncio.wait_for(connection.call_tool('await_stall', {}), timeout=LIMIT)
+        assert text_of(alive) == 'stalled'
     finally:
         await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
@@ -1143,6 +1151,22 @@ async def test_a_handshake_which_never_answers_gives_up(tmp_path: Path) -> None:
 
     causes = leaf_causes(failure.value.__cause__)
     assert [error.error.code for error in causes if isinstance(error, McpError)] == [408]
+    await asyncio.wait_for(connection.close(), timeout=LIMIT)
+
+
+@pytest.mark.asyncio
+async def test_a_handshake_answered_after_the_timeout_still_reports_the_timeout(tmp_path: Path) -> None:
+    """The late reply breaks the SDK's closed read stream, and that error must not replace the timeout."""
+    server = Path(__file__).with_name('late_handshake_server.py')
+    connection = McpConnection(
+        'fake', McpStdioServerConfig(command=sys.executable, args=[str(server)]), request_timeout_millis=100
+    )
+
+    with pytest.raises(_ConnectionFailedError, match='failed') as failure:
+        await asyncio.wait_for(connection.list_tools(), timeout=LIMIT)
+
+    assert isinstance(failure.value.__cause__, McpError)
+    assert failure.value.__cause__.error.code == 408
     await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
 

@@ -54,12 +54,18 @@ def misplaced_key_error() -> GenkitError:
 
 
 def string_secret(value: object) -> str | None:
-    if value is None or value == '':
+    # A blank key is a tenant that meant to bring one and didn't (a missing
+    # header, say). Raise instead of returning None, which would bill the
+    # plugin key. Same rule as genkit-openai and genkit-anthropic.
+    if value is None:
         return None
     if isinstance(value, str):
         cleaned = value.strip()
         if not cleaned:
-            return None
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message=f'context.secrets.api_key is blank. {SECRETS_SLOT}',
+            )
         if any(c in cleaned for c in ('\r', '\n', '\0', ' ', '\t')):
             raise GenkitError(
                 status='INVALID_ARGUMENT',
@@ -83,7 +89,7 @@ def context_api_key(context: dict[str, Any]) -> str | None:
 
     Returns ``None`` when ``secrets`` holds only app secrets; the call
     then falls back to the plugin key, as in genkit-openai and
-    genkit-anthropic.
+    genkit-anthropic. A key that is set but blank raises.
     """
     extra = context.get('config')
     if isinstance(extra, dict) and (extra.get('api_key') is not None or extra.get('apiKey') is not None):

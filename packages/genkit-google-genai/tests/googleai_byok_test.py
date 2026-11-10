@@ -58,11 +58,8 @@ def _text_response(text: str = 'Smoked Salmon Tartine') -> genai_types.GenerateC
 
 
 async def _generate_error(ai: Genkit, **kwargs: Any) -> Any:
-    """The call's error, raised or boxed on the response (PR0 flips generate to raise)."""
-    try:
-        response = await ai.generate(**kwargs)
-    except GenkitError as e:
-        return e
+    """The model failure, which generate returns on ``response.error`` by default."""
+    response = await ai.generate(**kwargs)
     assert response.error is not None
     return response.error
 
@@ -238,8 +235,8 @@ async def test_app_secrets_without_api_key_fall_back_to_plugin_key(no_key_env: N
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'context',
-    [None, {'secrets': {'crm_token': 'crm-123'}}, {'secrets': {'api_key': ''}}],
-    ids=['no-context', 'app-secrets-only', 'empty-key'],
+    [None, {'secrets': {'crm_token': 'crm-123'}}, {'secrets': {'api_key': None}}],
+    ids=['no-context', 'app-secrets-only', 'none-key'],
 )
 async def test_keyless_call_without_secret_is_failed_precondition(
     no_key_env: None, context: dict[str, object] | None
@@ -255,6 +252,25 @@ async def test_keyless_call_without_secret_is_failed_precondition(
     assert 'https://aistudio.google.com/app/apikey' in message
     assert "context={'secrets': {'api_key': ...}}" in message
     client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blank', ['', '   '], ids=['empty', 'whitespace'])
+async def test_blank_secret_is_invalid_argument_not_plugin_key(no_key_env: None, blank: str) -> None:
+    """A tenant that sends a blank key (missing header) must not be billed to the plugin key."""
+    ai = Genkit(plugins=[GoogleAI(api_key='plugin-key')])
+    with (
+        _no_listing(),
+        patch('genkit_google_genai._google.genai.client.Client') as base_cls,
+    ):
+        base_cls.return_value.vertexai = False
+        base_cls.return_value.aio.models.generate_content = AsyncMock(return_value=_text_response())
+        error = await _generate_error(
+            ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.', context={'secrets': {'api_key': blank}}
+        )
+    assert error.status == 'INVALID_ARGUMENT'
+    assert 'blank' in error.message
+    base_cls.return_value.aio.models.generate_content.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -316,7 +332,7 @@ async def test_keyless_veo_without_secret_is_failed_precondition(no_key_env: Non
     assert raised.value.status == 'FAILED_PRECONDITION'
 
 
-# Embedders (PR4-06)
+# Embedders
 
 
 @pytest.mark.asyncio

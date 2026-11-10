@@ -651,7 +651,9 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
                 then ``GOOGLE_GENAI_API_KEY``. With no key and no ``credentials``
                 the plugin still loads: each call then needs
                 ``context={'secrets': {'api_key': ...}}``, and a call without
-                one raises ``GenkitError`` with ``FAILED_PRECONDITION``.
+                one fails with ``FAILED_PRECONDITION`` (``generate`` returns
+                it on ``response.error``; ``embed`` and
+                ``generate_operation`` raise ``GenkitError``).
             credentials: Google Cloud credentials for authentication.
                 Defaults to None, in which case the client uses default authentication
                 mechanisms (e.g., application default credentials or API key).

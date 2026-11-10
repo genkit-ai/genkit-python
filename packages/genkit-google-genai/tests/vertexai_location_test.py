@@ -661,9 +661,12 @@ class TestResolveRequestClient:
             client,
             client_kwargs={'vertexai': False, 'api_key': 'plugin-key'},
         )
-        for secrets in ({}, {'db_password': 'hunter2'}, {'api_key': ''}):
+        for secrets in ({}, {'db_password': 'hunter2'}, {'api_key': None}):
             resolved = await model._resolve_request_client(_text_request(), context={'secrets': secrets})
             assert resolved is client
+        with pytest.raises(GenkitError, match='blank') as exc:
+            await model._resolve_request_client(_text_request(), context={'secrets': {'api_key': ''}})
+        assert exc.value.status == 'INVALID_ARGUMENT'
 
     @pytest.mark.asyncio
     async def test_secrets_api_key_surrounding_whitespace_stripped(self) -> None:

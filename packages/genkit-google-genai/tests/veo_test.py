@@ -760,9 +760,18 @@ class TestVeoContextClient:
         """App secrets with no api_key fall back to the plugin client."""
         plugin_client = MagicMock()
         veo = VeoModel('veo-3.1-generate-001', plugin_client)
-        for pocket in ({}, {'api_key': None}, {'api_key': ''}, {'db_password': 'hunter2'}):
+        for pocket in ({}, {'api_key': None}, {'db_password': 'hunter2'}):
             client = veo._client_for_context(ModelContext(context={'secrets': pocket}))
             assert client is plugin_client
+
+    @pytest.mark.asyncio
+    async def test_blank_api_key_is_invalid_argument(self) -> None:
+        """A blank tenant key raises instead of falling back to the plugin key."""
+        veo = VeoModel('veo-3.1-generate-001', MagicMock())
+        for blank in ('', '   '):
+            with pytest.raises(GenkitError) as raised:
+                veo._client_for_context(ModelContext(context={'secrets': {'api_key': blank}}))
+            assert raised.value.status == 'INVALID_ARGUMENT'
 
     @pytest.mark.asyncio
     async def test_top_level_api_key_is_invalid_argument(self) -> None:

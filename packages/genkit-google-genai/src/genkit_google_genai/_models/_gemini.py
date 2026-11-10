@@ -738,7 +738,7 @@ class GeminiTtsConfig(GeminiConfig):
         )
 
         # 3. Access synthesized audio parts
-        print(res.media.url)
+        print(res.media.url if res.media else '')
         # => data:audio/wav;base64,UklGRiQAAABXQVZFZ...
         ```
     """
@@ -787,7 +787,7 @@ class GeminiImageConfig(GeminiConfig):
         )
 
         # 3. Access generated image media
-        print(res.media.url)
+        print(res.media.url if res.media else '')
         # => data:image/png;base64,iVBORw0KGgoAAAANSU...
         ```
     """

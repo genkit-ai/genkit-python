@@ -13,7 +13,6 @@
 import os
 import sys
 from typing import Any, TextIO
-from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.lowlevel import Server
@@ -23,6 +22,7 @@ from mcp.types import INTERNAL_ERROR, CallToolResult, ErrorData, Tool as McpTool
 from pydantic import TypeAdapter
 
 from genkit import Genkit, GenkitError, Interrupt, MultipartToolResponse, PublicError, Tool, get_logger
+from genkit.web import error_body, error_status
 from genkit_mcp._export import error_result, multipart_to_call_result, tool_to_mcp
 
 logger = get_logger(__name__)
@@ -64,13 +64,14 @@ class McpServer:
             version: Version the server advertises.
             instructions: How a client should use this server.
             redirect_stdout: Whether ``start`` moves this process's stdout to
-                stderr. Leave it on unless the app already keeps stdout clear.
+                stderr and its stdin to the null device. Leave it on unless the
+                app already keeps both clear.
         """
         self._ai = ai
         self._name = name
         self._version = version
         self._redirect_stdout = redirect_stdout
-        self._described: WeakKeyDictionary[Tool, McpTool | None] = WeakKeyDictionary()
+        self._described: dict[str, tuple[dict[str, Any], McpTool | None]] = {}
         self._server: Server[Any, Any] = Server(name, version=version, instructions=instructions)
         self._server.list_tools()(self._list_tools)
         self._server.call_tool()(self._call_tool)
@@ -104,15 +105,16 @@ class McpServer:
     async def start(self) -> None:
         """Serve on this process's stdin and stdout until stdin closes.
 
-        stdout is the wire. The transport writes to a copy of descriptor 1
-        taken before anything else can, whatever ``sys.stdout`` is at the time.
-        Descriptor 1 and ``sys.stdout`` then point at stderr for the rest of
-        the process's life, so ``print``, loggers and child processes cannot
-        write between frames.
+        stdin and stdout are the wire. The transport reads and writes copies of
+        descriptors 0 and 1, taken whatever ``sys.stdin`` and ``sys.stdout``
+        are at the time. With ``redirect_stdout`` on, descriptor 1 and
+        ``sys.stdout`` then point at stderr and descriptor 0 at the null device
+        for the rest of the process's life, so ``print``, loggers and child
+        processes can neither write between frames nor read them.
         """
         stdin, stdout = _wire_files()
         if self._redirect_stdout:
-            _redirect_stdout_to_stderr()
+            _move_stdio_off_the_wire()
         with stdin, stdout:
             async with stdio_server(stdin=anyio.wrap_file(stdin), stdout=anyio.wrap_file(stdout)) as streams:
                 await self.serve(*streams)
@@ -134,9 +136,13 @@ class McpServer:
             raise McpError(ErrorData(code=INTERNAL_ERROR, message=_LISTING_FAILED)) from error
         served: list[tuple[Tool, McpTool]] = []
         for tool in tools:
-            if tool not in self._described:
-                self._described[tool] = tool_to_mcp(tool)
-            described = self._described[tool]
+            # A plain tool action comes back as a new view on every listing, so
+            # the description is keyed by name and the metadata the view shares.
+            cached = self._described.get(tool.name)
+            if cached is None or cached[0] is not tool.metadata:
+                cached = (tool.metadata, tool_to_mcp(tool))
+                self._described[tool.name] = cached
+            described = cached[1]
             if described is not None:
                 served.append((tool, described))
         return served
@@ -147,16 +153,17 @@ class McpServer:
         A raised error becomes an ``isError`` result and is logged here, where
         its traceback is still useful.
         """
-        try:
-            tool = await self._find_tool(name)
-        except McpError as error:
-            return error_result(error.error.message)
+        tool = await self._find_tool(name)
         if tool is None:
             return error_result(f'Tool {name!r} is not registered')
 
         context = self._request_context()
         try:
-            return multipart_to_call_result(await _run(tool, arguments, context), name)
+            result = multipart_to_call_result(await _run(tool, arguments, context), name)
+            # Fail here rather than in the transport, where a result that cannot
+            # be encoded, such as text with a lone surrogate, ends the session.
+            result.model_dump_json(by_alias=True, exclude_none=True)
+            return result
         except Interrupt:
             logger.warning('an MCP tool call paused for input, which MCP cannot ask for', tool=name)
             return error_result(f'Tool {name!r} paused for input from the user, which this server cannot ask for')
@@ -216,26 +223,38 @@ async def _run(tool: Tool, arguments: dict[str, Any], context: dict[str, Any] | 
 
     A tool built as a ``Tool`` has a ``tool.v2`` action that returns the
     envelope already. A plain tool action returns its function's value, which
-    becomes the envelope's output.
+    becomes the envelope's output, dumped by alias as JSON.
     """
     wire = tool.wire_action
     if wire is not None:
         return (await wire.run(arguments, context=context)).response
     output = (await tool.run(arguments, context=context)).response
     if isinstance(output, MultipartToolResponse):
-        return output
-    return MultipartToolResponse(output=_JSON.dump_python(output, mode='json'))
+        return MultipartToolResponse(
+            output=_as_json(output.output),
+            content=output.content,
+            metadata=_as_json(output.metadata),
+        )
+    return MultipartToolResponse(output=_as_json(output))
+
+
+def _as_json(value: object) -> Any:  # noqa: ANN401 - whatever JSON the value dumps to
+    """Dump a tool's value to JSON data, by alias as Genkit's own tools do."""
+    return _JSON.dump_python(value, mode='json', by_alias=True)
 
 
 def _client_message(tool_name: str, error: Exception) -> str:
     """Say why a tool failed without passing on text the app never chose to show.
 
-    A ``PublicError`` is the app's message for the caller, so its status and
-    message are sent. Any other ``GenkitError`` sends only its status, since a
-    provider's error text can name a project, a resource path or a URL.
+    The rule is a served flow's: a ``PublicError`` sends its status and
+    message, and arguments the tool's own schema rejects send the failing
+    fields without their values. Any other ``GenkitError`` sends only its
+    status, since a provider's error text can name a project, a resource path
+    or a URL.
     """
-    if isinstance(error, PublicError):
-        return f'{error.status}: {error.message}'
+    if isinstance(error, PublicError) or error_status(error) < 500:
+        body = error_body(error)
+        return f'{body["status"]}: {body["message"]}'
     if isinstance(error, GenkitError):
         return f'Tool {tool_name!r} failed: {error.status}'
     return f'Tool {tool_name!r} failed'
@@ -252,12 +271,17 @@ def _wire_files() -> tuple[TextIO, TextIO]:
     return open(os.dup(0), encoding='utf-8'), open(os.dup(1), 'w', encoding='utf-8')
 
 
-def _redirect_stdout_to_stderr() -> None:
-    """Point this process's stdout at stderr, so nothing else can write to the wire.
+def _move_stdio_off_the_wire() -> None:
+    """Point stdout at stderr and stdin at the null device, so nothing else can use the wire.
 
-    Moving descriptor 1 covers child processes, C code and any stream still
-    bound to the original stdout. Rebinding ``sys.stdout`` covers ``print``
-    and structlog's default logger, which reads ``sys.stdout`` on every call.
+    Moving the descriptors covers child processes, C code and any stream still
+    bound to the originals. Rebinding ``sys.stdout`` covers ``print`` and
+    structlog's default logger, which reads ``sys.stdout`` on every call.
     """
     os.dup2(2, 1)
+    null = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(null, 0)
+    finally:
+        os.close(null)
     sys.stdout = sys.stderr

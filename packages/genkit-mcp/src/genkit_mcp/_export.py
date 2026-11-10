@@ -159,8 +159,11 @@ def _output_schema(tool: Tool) -> dict[str, Any] | None:
     declares an output schema, and ``structuredContent`` is an object. So the
     schema is advertised only when it is an object and the tool returns that
     object itself. A tool returning a ``MultipartToolResponse`` may leave its
-    output out, so its schema is not advertised.
+    output out, so its schema is not advertised, and neither is a plain tool
+    action's, which cannot tell the two apart.
     """
+    if tool.wire_action is None:
+        return None
     original = _as_object(tool.model_output_schema)
     if original.get('type') != 'object' or tool.output_schema != tool.model_output_schema:
         return None

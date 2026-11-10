@@ -39,8 +39,9 @@ async def accented() -> str:
 
 @ai.tool()
 async def raw_writes() -> str:
-    """Write to stdout below sys.stdout: a child process, the descriptor, and the original stream."""
-    child = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("written by a child process")')
+    """Use stdio below sys.stdout: a child process, the descriptor, and the original stream."""
+    script = 'import sys; print("written by a child process"); print("child read", repr(sys.stdin.read()))'
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', script)
     await child.wait()
     os.write(1, b'written to descriptor 1\n')
     assert sys.__stdout__ is not None

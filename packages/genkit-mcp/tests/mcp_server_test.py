@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult, ImageContent, TextContent
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from structlog.testing import capture_logs
 
 from genkit import Genkit, MultipartToolResponse, Part, PublicError, Tool, ToolContext
@@ -37,6 +37,25 @@ class Greeting(BaseModel):
     """Input of a tool whose schema MCP can carry."""
 
     name: str
+
+
+class Label(BaseModel):
+    """Output whose field travels under an alias."""
+
+    shelf_title: str = Field(alias='shelfTitle')
+
+
+class Order(BaseModel):
+    """Input whose validator rejects values its JSON schema allows."""
+
+    qty: int
+
+    @field_validator('qty')
+    @classmethod
+    def positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(f'{value} is not a positive quantity')
+        return value
 
 
 @asynccontextmanager
@@ -176,20 +195,67 @@ async def test_a_tool_returning_a_tool_response_advertises_no_output_schema() ->
 
 
 @pytest.mark.asyncio
-async def test_a_tool_registered_as_a_plain_action_is_served() -> None:
+async def test_a_tool_registered_as_a_plain_action_is_served_by_alias_without_an_output_schema() -> None:
     """A tool action with no ``tool.v2`` companion returns its value, which becomes the output."""
     ai = app()
 
-    async def shelf(_: dict[str, object]) -> Shelf:
-        return Shelf(title='Poetry', count=3)
+    async def label(_: dict[str, object]) -> Label:
+        return Label(shelfTitle='Poetry')
 
-    ai._registry.register_action_from_instance(Action(kind=ActionKind.TOOL, name='shelf', fn=shelf))
+    async def photo(_: dict[str, object]) -> MultipartToolResponse[Label]:
+        return MultipartToolResponse(
+            output=Label(shelfTitle='Poetry'),
+            content=[Part.from_media(url='data:image/png;base64,aW1n')],
+        )
+
+    ai._registry.register_action_from_instance(Action(kind=ActionKind.TOOL, name='label', fn=label))
+    ai._registry.register_action_from_instance(Action(kind=ActionKind.TOOL, name='photo', fn=photo))
 
     async with connected(create_mcp_server(ai, 'bookshop')) as session:
-        result = await session.call_tool('shelf', {})
+        listed = await session.list_tools()
+        labelled = await session.call_tool('label', {})
+        photographed = await session.call_tool('photo', {})
 
-    assert result.isError is False
-    assert result.structuredContent == {'title': 'Poetry', 'count': 3}
+    assert [tool.outputSchema for tool in listed.tools] == [None, None]
+    assert labelled.structuredContent == {'shelfTitle': 'Poetry'}
+    assert photographed.isError is False
+    assert photographed.structuredContent == {'shelfTitle': 'Poetry'}
+    assert photographed.content[1:] == [ImageContent(type='image', mimeType='image/png', data='aW1n')]
+
+
+@pytest.mark.asyncio
+async def test_arguments_the_tool_rejects_name_the_field_but_not_the_validator_text() -> None:
+    """The MCP SDK checks the JSON schema only, so the model learns which argument to fix from Genkit."""
+    ai = app()
+
+    @ai.tool()
+    async def order(order: Order) -> str:
+        """Order copies."""
+        return f'{order.qty} ordered'
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        result = await session.call_tool('order', {'qty': -3})
+
+    assert result.isError is True
+    assert text_of(result).startswith("INVALID_ARGUMENT: Invalid input for tool 'order': qty:")
+    assert 'positive quantity' not in text_of(result)
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_cannot_be_encoded_is_an_error_result() -> None:
+    """Text with a lone surrogate, as a non-UTF-8 file name decodes to, would otherwise end the session."""
+    ai = app()
+
+    @ai.tool()
+    async def filename() -> str:
+        """Name a file."""
+        return 'notes-\udcff.txt'
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        result = await session.call_tool('filename', {})
+
+    assert result.isError is True
+    assert text_of(result) == "Tool 'filename' failed"
 
 
 @pytest.mark.asyncio
@@ -342,15 +408,19 @@ async def test_a_tool_mcp_cannot_describe_is_warned_about_once() -> None:
         """Answer."""
         return 'pong'
 
+    async def whisper(word: str) -> str:
+        return word.lower()
+
+    ai._registry.register_action_from_instance(Action(kind=ActionKind.TOOL, name='whisper', fn=whisper))
+
     with capture_logs() as logs:
         async with connected(create_mcp_server(ai, 'bookshop')) as session:
             await session.list_tools()
             await session.call_tool('ping', {})
             await session.list_tools()
 
-    assert [entry['event'] for entry in logs if entry['log_level'] == 'warning'] == [
-        'skipping a tool whose input is not an object, which MCP arguments cannot express'
-    ]
+    skipped = [entry['tool'] for entry in logs if entry['log_level'] == 'warning']
+    assert sorted(skipped) == ['shout', 'whisper']
 
 
 @pytest.mark.asyncio

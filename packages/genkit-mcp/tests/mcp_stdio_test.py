@@ -63,16 +63,20 @@ async def call_over_stdio(tools: list[str], **env: str) -> tuple[list[str], str]
         lines = await asyncio.wait_for(_read_until_answered(process.stdout, len(tools)), timeout=LIMIT)
         process.stdin.close()
         rest, stderr = await asyncio.wait_for(process.communicate(), timeout=LIMIT)
-    except (AssertionError, asyncio.TimeoutError) as error:
+    except BaseException as error:
         process.kill()
         _, stderr = await process.communicate()
-        raise AssertionError(f'{error!r}\nserver stderr:\n{stderr.decode()}') from error
+        if isinstance(error, (AssertionError, asyncio.TimeoutError)):
+            raise AssertionError(f'{error!r}\nserver stderr:\n{stderr.decode()}') from error
+        raise
     return lines + rest.decode().splitlines(), stderr.decode()
 
 
 @pytest.mark.asyncio
 async def test_stdout_carries_only_json_rpc_once_the_server_is_serving() -> None:
     """Logging, a child process, descriptor 1 and the original stdout all land on stderr while serving.
+
+    A child process cannot read the client's requests either: its stdin is the null device.
 
     What the app writes before ``start()`` runs is another matter: stdout is not
     the wire yet, so it is flushed there ahead of the first frame.
@@ -86,6 +90,7 @@ async def test_stdout_carries_only_json_rpc_once_the_server_is_serving() -> None
     for text in (
         'serving plain text',
         'written by a child process',
+        "child read ''",
         'written to descriptor 1',
         'written to the original stdout',
     ):

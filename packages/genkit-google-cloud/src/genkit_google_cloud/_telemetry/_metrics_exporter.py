@@ -38,7 +38,7 @@ from opentelemetry.sdk.metrics.export import (
     MetricsData,
 )
 
-from ._constants import METRIC_START_TIME_ADJUSTMENT_NS
+from ._constants import METRIC_START_TIME_ADJUSTMENT_NS, MIN_SPAN_DURATION_NS
 
 
 class GenkitMetricExporter(MetricExporter):
@@ -49,7 +49,7 @@ class GenkitMetricExporter(MetricExporter):
     overlap in the start/end times that the Metric reader sends -- the end_time
     of the previous export becomes the start_time of the current export.
 
-    This wrapper adds a microsecond to start times to ensure discrete export
+    This wrapper adds a millisecond to start times to ensure discrete export
     timeframes and prevent data being overwritten.
     """
 
@@ -116,7 +116,7 @@ class GenkitMetricExporter(MetricExporter):
             raise
 
     def _modify_start_times(self, metrics_data: MetricsData) -> None:
-        """Add 1ms to start times to prevent overlap.
+        """Add 1ms to DELTA start times to prevent overlap without inverting short intervals.
 
         Args:
             metrics_data: The metrics data to modify in-place.
@@ -124,15 +124,20 @@ class GenkitMetricExporter(MetricExporter):
         for resource_metrics in metrics_data.resource_metrics:
             for scope_metrics in resource_metrics.scope_metrics:
                 for metric in scope_metrics.metrics:
+                    if getattr(metric.data, 'aggregation_temporality', None) != AggregationTemporality.DELTA:
+                        continue
                     for data_point in metric.data.data_points:
-                        # Add 1 millisecond to start time
                         if hasattr(data_point, 'start_time_unix_nano'):
+                            adjusted_start = data_point.start_time_unix_nano + METRIC_START_TIME_ADJUSTMENT_NS
                             # Modifying frozen dataclass via workaround
-                            object.__setattr__(
-                                data_point,
-                                'start_time_unix_nano',
-                                data_point.start_time_unix_nano + METRIC_START_TIME_ADJUSTMENT_NS,
-                            )
+                            object.__setattr__(data_point, 'start_time_unix_nano', adjusted_start)
+                            # On a sub-1ms flush/shutdown, Cloud Monitoring still requires end_time > start_time.
+                            if hasattr(data_point, 'time_unix_nano') and data_point.time_unix_nano <= adjusted_start:
+                                object.__setattr__(
+                                    data_point,
+                                    'time_unix_nano',
+                                    adjusted_start + MIN_SPAN_DURATION_NS,
+                                )
 
     def force_flush(self, timeout_millis: float = 10_000) -> bool:
         """Delegate force flush to wrapped exporter.

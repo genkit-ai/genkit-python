@@ -188,8 +188,10 @@ def resolve_project(
             return env_value
 
     # Check credentials for project_id
-    if credentials and 'project_id' in credentials:
-        return credentials['project_id']
+    if credentials and isinstance(credentials, Mapping):
+        project_id = credentials.get('project_id')
+        if project_id:
+            return str(project_id)
 
     return None
 
@@ -201,8 +203,13 @@ _SERVICE_ACCOUNT_REQUIRED_FIELDS = ('client_email', 'private_key', 'token_uri')
 def _load_service_account_credentials(info: dict[str, Any]) -> GoogleCredentials:
     """Build service-account credentials from ``credentials=``, or raise INVALID_ARGUMENT.
 
-    Messages name fields, never values: the dict holds a private key.
+    Messages name fields and types, never values: the argument may hold a private key.
     """
+    if not isinstance(info, Mapping):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'credentials= must be a service account key dict, got {type(info).__name__}',
+        )
     missing = [field for field in _SERVICE_ACCOUNT_REQUIRED_FIELDS if not info.get(field)]
     if missing:
         raise GenkitError(
@@ -210,7 +217,7 @@ def _load_service_account_credentials(info: dict[str, Any]) -> GoogleCredentials
             message=f'credentials= is not a service account key; missing {", ".join(missing)}',
         )
     try:
-        return ServiceAccountCredentials.from_service_account_info(info)
+        return ServiceAccountCredentials.from_service_account_info(dict(info))
     except Exception as e:
         # google-auth and cryptography errors are dropped (from None) so no part of
         # the key can reach a log line through the exception chain.
@@ -358,11 +365,11 @@ class GcpTelemetry:
         """Stamp Cloud Logging trace correlation fields on structlog events."""
         try:
             current_config = structlog.get_config()
-            processors = list(current_config.get('processors', []))
-
-            # Early return if already configured
-            if any(getattr(p, '__name__', '') == '_genkit_inject_trace_context' for p in processors):
-                return
+            processors = [
+                p
+                for p in current_config.get('processors', [])
+                if getattr(p, '__name__', '') != '_genkit_inject_trace_context'
+            ]
 
             # Define processor function that captures self
             def _genkit_inject_trace_context(

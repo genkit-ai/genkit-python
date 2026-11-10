@@ -612,23 +612,25 @@ def test_adc_project_id_is_none_without_default_credentials() -> None:
 
 
 def test_enable_google_cloud_telemetry_is_fail_safe() -> None:
-    """A Cloud Trace auth failure does not crash the process."""
+    """Cloud Trace and Cloud Monitoring auth failures do not crash the process."""
     with (
         mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}),
         patch(
             'genkit_google_cloud._telemetry._config.GenkitGCPExporter',
-            side_effect=Exception('Auth failed'),
+            side_effect=Exception('Trace auth failed'),
         ),
-        patch('genkit_google_cloud._telemetry._config.handle_tracing_error') as mock_handler,
+        patch('genkit_google_cloud._telemetry._config.GoogleCloudResourceDetector'),
+        patch(
+            'genkit_google_cloud._telemetry._config.CloudMonitoringMetricsExporter',
+            side_effect=Exception('Metrics auth failed'),
+        ),
+        patch('genkit_google_cloud._telemetry._config.handle_tracing_error') as mock_trace_handler,
+        patch('genkit_google_cloud._telemetry._config.handle_metric_error') as mock_metric_handler,
     ):
-        # This should NOT raise an exception
-        try:
-            enable_google_cloud_telemetry()
-        except Exception as e:
-            raise AssertionError(f'enable_google_cloud_telemetry raised an exception: {e}') from e
+        enable_google_cloud_telemetry()
 
-        # Verify error handler was called
-        mock_handler.assert_called_once()
+        mock_trace_handler.assert_called_once()
+        mock_metric_handler.assert_called_once()
 
 
 def test_enable_google_cloud_telemetry_called_twice_raises() -> None:
@@ -784,6 +786,24 @@ def test_up_down_counter_reaches_cloud_monitoring_as_running_total() -> None:
         provider.shutdown()
 
 
+def test_counter_immediate_flush_keeps_end_time_after_adjusted_start_time() -> None:
+    """Adding 1ms to DELTA start_time on a sub-1ms flush never leaves end_time <= start_time."""
+    client = MagicMock()
+    client.common_project_path.return_value = 'projects/kitchen-prod'
+    client.create_metric_descriptor.side_effect = lambda request, *_, **__: request.metric_descriptor
+    cloud_exporter = CloudMonitoringMetricsExporter(project_id='kitchen-prod', client=client)
+    reader = PeriodicExportingMetricReader(GenkitMetricExporter(cloud_exporter), export_interval_millis=math.inf)
+    provider = MeterProvider(metric_readers=[reader])
+    try:
+        provider.get_meter('kitchen').create_counter('orders_placed').add(3)
+        reader.force_flush()
+
+        point = client.create_time_series.call_args.args[0].time_series[0].points[0]
+        assert point.interval.end_time > point.interval.start_time
+    finally:
+        provider.shutdown()
+
+
 def test_enable_telemetry_with_credentials_dict_creates_clients() -> None:
     """A credentials dict becomes a client on each Cloud exporter; raw credentials never reach them."""
     sample_creds = _service_account_key('creds-project')
@@ -838,10 +858,16 @@ def test_enable_telemetry_with_credentials_dict_creates_clients() -> None:
             'credentials= could not be loaded as a service account key',
             id='private_key_not_pem',
         ),
+        pytest.param(
+            'secrets/secret-key-material.json',
+            'credentials= must be a service account key dict, got str',
+            id='non_dict_string_path',
+        ),
     ],
 )
 def test_enable_rejects_unusable_credentials_without_echoing_them(
-    credentials: dict[str, str], expected_message: str
+    credentials: Any,  # noqa: ANN401 - tests runtime rejection of non-dict inputs too
+    expected_message: str,
 ) -> None:
     """A bad credentials= raises INVALID_ARGUMENT naming fields, not values, and can be retried."""
     with mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False):
@@ -937,3 +963,27 @@ def test_structlog_json_line_carries_cloud_logging_trace_fields() -> None:
     assert line['logging.googleapis.com/trace'] == f'projects/test-proj/traces/{ctx.trace_id:032x}'
     assert line['logging.googleapis.com/spanId'] == f'{ctx.span_id:016x}'
     assert line['logging.googleapis.com/trace_sampled'] == '1'
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_structlog_trace_processor_replaces_prior_closure_without_duplicating() -> None:
+    """Re-configuring with a new GcpTelemetry updates self.project instead of keeping a stale closure."""
+    out = io.StringIO()
+    structlog.configure(
+        processors=[structlog.processors.add_log_level, structlog.processors.JSONRenderer()],
+        logger_factory=structlog.PrintLoggerFactory(out),
+        cache_logger_on_first_use=False,
+    )
+    GcpTelemetry(project=None)._configure_logging()
+    GcpTelemetry(project='orders-prod')._configure_logging()
+
+    names = [getattr(p, '__name__', type(p).__name__) for p in structlog.get_config()['processors']]
+    assert names.count('_genkit_inject_trace_context') == 1
+
+    with TracerProvider().get_tracer('test').start_as_current_span('answer') as span:
+        get_logger('orders').info('generating answer')
+        ctx = span.get_span_context()
+
+    lines = [json.loads(raw) for raw in out.getvalue().splitlines()]
+    line = next(entry for entry in lines if entry['event'] == 'generating answer')
+    assert line['logging.googleapis.com/trace'] == f'projects/orders-prod/traces/{ctx.trace_id:032x}'

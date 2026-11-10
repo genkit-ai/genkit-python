@@ -343,11 +343,6 @@ def test_unicode_names_are_preserved(sandbox: dict[str, Path]) -> None:
     assert scanned['crème-brûlée']['description'] == 'Dessert plating — 甜点'
 
 
-def test_overlong_name_falls_back_to_directory(sandbox: dict[str, Path]) -> None:
-    _skill(sandbox['root'], 'short-dir', f'name: {"n" * 65}')
-    assert 'short-dir' in Skills(skill_paths=[str(sandbox['root'])])._scan_skills()
-
-
 # ---------------------------------------------------------------------------
 # Shadowing
 # ---------------------------------------------------------------------------

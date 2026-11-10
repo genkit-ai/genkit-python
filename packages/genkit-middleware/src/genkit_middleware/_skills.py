@@ -51,9 +51,7 @@ _SKILL_FILE_NAME = 'SKILL.md'
 
 # Process resource limit, same as Go: an oversized SKILL.md is skipped, never truncated.
 _SKILL_MAX_BYTES = 1 << 20
-# Agent Skills spec bounds. A longer frontmatter name falls back to the
-# directory name; a longer description is clipped in the catalog only.
-_SKILL_NAME_MAX_CHARS = 64
+# Agent Skills spec bound. A longer description is clipped in the catalog only.
 _SKILL_DESCRIPTION_MAX_CHARS = 1024
 
 # A '<' that opens a tag, e.g. '</skills>' or '<system>'.

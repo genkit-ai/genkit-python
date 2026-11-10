@@ -1007,7 +1007,9 @@ async def test_vertexai_list_actions_registers_veo_as_background(
     actions = await plugin.list_actions()
 
     # list_actions returns the BackgroundModel itself; the registry files start + check.
-    veo = [a for a in actions if 'veo' in a.name]
+    # Static Veo ids are listed too; none of them is a plain MODEL action.
+    assert all(isinstance(a, BackgroundModel) for a in actions if 'veo' in a.name)
+    veo = [a for a in actions if a.name == 'vertexai/veo-3.1-generate-001']
     assert len(veo) == 1
     assert isinstance(veo[0], BackgroundModel)
     assert {a.kind for a in veo[0].actions} == {ActionKind.BACKGROUND_MODEL, ActionKind.CHECK_OPERATION}
@@ -1037,9 +1039,9 @@ async def test_list_actions_advertises_veo_as_background(
         plugin = VertexAI(project='test-project')
     actions = await plugin.list_actions()
 
-    veo_entries = [a for a in actions if 'veo' in a.name]
+    # Static and discovered ids are deduplicated, so the listed id appears once.
+    veo_entries = [a for a in actions if a.name == f'{backend}/{veo_id}']
     assert len(veo_entries) == 1
-    assert veo_entries[0].name == f'{backend}/{veo_id}'
     assert veo_entries[0].kind == ActionKind.BACKGROUND_MODEL
 
 

@@ -143,9 +143,7 @@ async def test_decimal_keeps_its_lexeme() -> None:
 
 @pytest.mark.asyncio
 async def test_wrong_shape_is_invalid_output_for_non_model_schema() -> None:
-    response = await _ai_with_reply('[{"sku": "CH-1"}]').generate(
-        prompt='hi', output_schema=list[InvoiceItem], raise_on_error=False
-    )
+    response = await _ai_with_reply('[{"sku": "CH-1"}]').generate(prompt='hi', output_schema=list[InvoiceItem])
 
     assert response.output is None
     assert response.error is not None

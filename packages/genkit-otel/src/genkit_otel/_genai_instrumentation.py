@@ -32,7 +32,7 @@ from pydantic_core import to_jsonable_python
 
 from genkit import FinishReason, Interrupt, ModelResponse, get_logger as get_genkit_logger
 from genkit.model import ModelRequest
-from genkit.telemetry import Instrumentation, SpanContext, SpanMetadata, SpanNext
+from genkit.telemetry import Instrumentation, SpanContext, SpanMetadata, SpanNext, StatusMessageSpanContext
 from genkit_otel._gen_ai_attributes import (
     CAPTURE_CONTENT_ENV_VAR,
     CONTENT_ATTRIBUTES,
@@ -429,7 +429,7 @@ class GenAiInstrumentation(Instrumentation):
         )
 
 
-class GenAiSpanContext(SpanContext):
+class GenAiSpanContext(SpanContext, StatusMessageSpanContext):
     """SpanContext backed by an OpenTelemetry span."""
 
     def __init__(self, span: Span) -> None:

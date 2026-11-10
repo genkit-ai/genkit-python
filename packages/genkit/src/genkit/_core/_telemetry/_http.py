@@ -78,9 +78,18 @@ class ActiveSpan:
     attributes: dict[str, object] = field(default_factory=dict)
     status_code: int = 0
     status_message: str | None = None
+    parent: ActiveSpan | None = field(default=None, repr=False, compare=False)
+    has_failed_child: bool = field(default=False, repr=False, compare=False)
 
 
 _parent_span: ContextVar[ActiveSpan | None] = ContextVar('genkit_direct_http_parent', default=None)
+
+
+def note_child_failed(span: ActiveSpan) -> None:
+    curr = span.parent
+    while curr is not None and not curr.has_failed_child:
+        curr.has_failed_child = True
+        curr = curr.parent
 
 
 class DirectSpanContext:
@@ -109,6 +118,9 @@ class DirectSpanContext:
         self._span.attributes[Attr.STATE] = state
         if state == State.ERROR:
             self._span.status_code = 2
+            if not self._span.has_failed_child:
+                self._span.attributes[Attr.IS_FAILURE_SOURCE] = True
+            note_child_failed(self._span)
 
     def set_status_message(self, message: str) -> None:
         self._span.attributes[Attr.ERROR] = message
@@ -265,6 +277,7 @@ class DirectHttpInstrumentation:
             name=metadata.name,
             start_time_unix_nano=now_unix_nano(),
             attributes=start_attributes(metadata, qualified_path=qualified_path, is_action=is_action),
+            parent=parent,
         )
         if parent is None:
             span.attributes[Attr.IS_ROOT] = True
@@ -328,14 +341,20 @@ FAILURE_SOURCE_MARK = '_genkit_failure_source'
 
 
 def mark_failure_source(*, span: ActiveSpan, exc: BaseException) -> None:
+    note_child_failed(span)
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         if getattr(current, FAILURE_SOURCE_MARK, False):
             return
         seen.add(id(current))
-        current = current.__cause__
-    span.attributes[Attr.IS_FAILURE_SOURCE] = True
+        current = (
+            current.__cause__
+            if current.__cause__ is not None
+            else (None if current.__suppress_context__ else current.__context__)
+        )
+    if not span.has_failed_child:
+        span.attributes[Attr.IS_FAILURE_SOURCE] = True
     with contextlib.suppress(AttributeError, TypeError):
         setattr(exc, FAILURE_SOURCE_MARK, True)
 

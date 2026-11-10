@@ -1163,3 +1163,41 @@ async def test_set_custom_metadata_attributes_encodes_non_json_values(harness) -
     assert span is not None
     assert harness.attr(span, 'genkit:metadata:at') == '"2026-11-10T00:00:00Z"'
     assert harness.attr(span, 'genkit:metadata:raw') == '"_w=="'
+
+
+@pytest.mark.asyncio
+async def test_failed_generate_sets_otel_span_status_description(harness) -> None:
+    """When a tool raises inside ai.generate, the OTel generate span gets StatusCode.ERROR and the failure text."""
+    from genkit import Genkit
+    from genkit.model import ModelContext
+    from genkit.telemetry import configure_instrumentation, reset_instrumentation
+
+    reset_instrumentation()
+    try:
+        configure_instrumentation(harness.instrumentation(emit_tool_spans=True))
+        ai = Genkit()
+
+        @ai.tool(name='check_stock')
+        async def check_stock() -> str:
+            raise RuntimeError('fridge offline')
+
+        async def calls_tool(_req: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+            return ModelResponse(
+                finish_reason=FinishReason.STOP,
+                message=Message(
+                    role=Role.MODEL,
+                    content=[Part.from_tool_request('check_stock', input={}, ref='r1')],
+                ),
+            )
+
+        ai.define_model(name='googleai/gemini-flash-latest', fn=calls_tool)
+
+        resp = await ai.generate(model='googleai/gemini-flash-latest', prompt='Check salmon', tools=['check_stock'])
+        assert resp.finish_reason == FinishReason.FAILED
+
+        gen_span = harness.span_named('generate')
+        assert gen_span is not None
+        assert gen_span.status.status_code == StatusCode.ERROR
+        assert gen_span.status.description == 'fridge offline'
+    finally:
+        reset_instrumentation()

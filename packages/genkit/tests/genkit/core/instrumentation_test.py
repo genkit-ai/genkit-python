@@ -360,10 +360,10 @@ def test_span_metadata_attributes_keep_bool_int_and_float() -> None:
 
 
 def test_telemetry_exports_provider_types() -> None:
-    """SpanNext, DisposableInstrumentation, FlushableInstrumentation import from genkit.telemetry."""
+    """Optional provider SPI protocols and SpanNext are exported on genkit.telemetry."""
     import genkit.telemetry as telemetry
 
-    for name in ('SpanNext', 'DisposableInstrumentation', 'FlushableInstrumentation'):
+    for name in ('SpanNext', 'DisposableInstrumentation', 'FlushableInstrumentation', 'StatusMessageSpanContext'):
         assert name in telemetry.__all__
         assert getattr(telemetry, name) is not None
     assert 'instrumentations' not in telemetry.__all__

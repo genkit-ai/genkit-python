@@ -39,6 +39,7 @@ from typing_extensions import Never, Self
 from genkit._ai import _aio
 from genkit._ai._generate import (
     CallScope,
+    failed_span_message,
     generate_action,
     register_middleware,
     register_tools,
@@ -485,7 +486,7 @@ class Prompt(Generic[InputT, OutputT]):
         async def body(_span: SpanContext) -> ModelResponse:
             result = await run()
             if result.error is not None:
-                set_span_state('error')
+                set_span_state('error', message=failed_span_message(result))
             return result
 
         result = await run_in_new_span(

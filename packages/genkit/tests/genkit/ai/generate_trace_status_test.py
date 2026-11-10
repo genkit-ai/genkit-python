@@ -319,3 +319,53 @@ async def test_successful_flow_marks_only_the_root_span_as_root(exporter) -> Non
     assert resp.finish_reason == FinishReason.STOP
     assert resp.error is None
     assert out == 'stop'
+
+
+@pytest.mark.asyncio
+async def test_loop_failure_without_failing_child_marks_innermost_generate_as_failure_source(exporter) -> None:
+    """When generate hits max_turns with no failing child, the innermost generate turn is the failure source."""
+    ai = Genkit()
+    _define_tools(ai)
+    _fake_model(ai, [_calls_tool('get_weather'), _calls_tool('get_weather')])
+
+    @ai.flow(name='capped_flow')
+    async def capped_flow(_: str) -> str:
+        resp = await ai.generate(model='fake', prompt='plan a trip', tools=['get_weather'], max_turns=1)
+        return str(resp.finish_reason)
+
+    assert await capped_flow('go') == 'aborted'
+
+    spans = exporter.get_finished_spans()
+    generates = _generate_spans(spans)
+    assert len(generates) == 2
+    outer, inner = generates[0], generates[1]
+    assert inner.parent_span_id == outer.span_id
+    expected_msg = 'Exceeded maximum tool call iterations (1)'
+    assert [(g.attributes[Attr.STATE], g.status_message) for g in generates] == [('error', expected_msg)] * 2
+    assert [s.span_id for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == [inner.span_id]
+
+
+@pytest.mark.asyncio
+async def test_parent_flow_wrapping_child_error_without_from_keeps_child_as_failure_source(exporter) -> None:
+    """Implicit exception chaining (`raise ...` inside `except:` without `from`) keeps the child as culprit."""
+    ai = Genkit()
+
+    @ai.flow(name='inner_flow')
+    async def inner_flow(_: str) -> str:
+        raise ValueError('bad kitchen input')
+
+    @ai.flow(name='outer_flow')
+    async def outer_flow(x: str) -> str:
+        try:
+            return await inner_flow(x)
+        except ValueError:
+            raise RuntimeError('outer wrapper')  # noqa: B904
+
+    with pytest.raises(RuntimeError, match='outer wrapper'):
+        await outer_flow('go')
+
+    spans = exporter.get_finished_spans()
+    outer, inner = _span(spans, 'outer_flow'), _span(spans, 'inner_flow')
+    assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'bad kitchen input')
+    assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'outer wrapper')
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['inner_flow']

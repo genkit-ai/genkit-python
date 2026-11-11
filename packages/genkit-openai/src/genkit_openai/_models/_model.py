@@ -29,6 +29,7 @@ from genkit_openai._models._utils import (
     check_extra_body,
     extract_response_metadata,
     reraise_openai_error,
+    split_reply_content,
     strip_markdown_fences,
 )
 from genkit_openai._typing import OpenAIConfig
@@ -94,7 +95,8 @@ def _openai_create_kwargs(*, config: OpenAIConfig, model: str | None = None) -> 
     the JSON body, so a colliding key wins. ``max_output_tokens`` goes out as
     ``max_completion_tokens`` for reasoning models (or when
     ``reasoning_effort`` is set), since the OpenAI API rejects the deprecated
-    ``max_tokens`` there, and as ``max_tokens`` otherwise.
+    ``max_tokens`` there, and as ``max_tokens`` otherwise. ``_mistral.py``
+    renames the fields Mistral spells differently after this runs.
     """
     body: dict[str, Any] = {}
     for name in type(config).model_fields:
@@ -471,14 +473,18 @@ class OpenAIModel:
             if response_format:
                 # pyrefly: ignore[bad-typed-dict-key] - response_format dict is valid for OpenAI API
                 openai_config['response_format'] = response_format
+        top_k: int | None = None
         if request.config:
             config = (
                 request.config if isinstance(request.config, OpenAIConfig) else self._normalize_config(request.config)
             )
+            top_k = config.top_k
             if config.version:
                 openai_config['model'] = config.version
             effective_model = config.model or config.version or self._model
             openai_config.update(_openai_create_kwargs(config=config, model=effective_model))
+        if self._mistral:
+            openai_config = mistral_chat_body(openai_config, top_k=top_k)
         return openai_config
 
     async def _generate(self, request: ModelRequest) -> ModelResponse:
@@ -492,8 +498,6 @@ class OpenAIModel:
         """
         openai_config = await self._get_openai_request_config(request=request)
         openai_config.pop('stream_options', None)
-        if self._mistral:
-            openai_config = mistral_chat_body(openai_config)
         logger.debug('OpenAI generate request', model=self._model, streaming=False)
         response = await self._openai_client.chat.completions.create(**openai_config)
         if not response.choices:
@@ -530,7 +534,10 @@ class OpenAIModel:
             finish_message=finish_message,
             usage=_usage_from_completion(response.usage),
             custom=metadata or None,
-            raw=response.to_dict(),
+            # raw is the provider's reply as sent. A list content (Mistral's
+            # thinking chunks) doesn't fit the SDK's str field, which is not
+            # worth a serializer warning on every call.
+            raw=response.to_dict(warnings=False),
         )
         return self._clean_json_response(result, request)
 
@@ -548,12 +555,12 @@ class OpenAIModel:
         """
         openai_config = await self._get_openai_request_config(request=request)
         openai_config['stream'] = True
-        openai_config['stream_options'] = {
-            **(openai_config.get('stream_options') or {}),
-            'include_usage': True,
-        }
-        if self._mistral:
-            openai_config = mistral_chat_body(openai_config)
+        # Mistral has no stream_options and sends usage unasked.
+        if not self._mistral:
+            openai_config['stream_options'] = {
+                **(openai_config.get('stream_options') or {}),
+                'include_usage': True,
+            }
 
         stream = await self._openai_client.chat.completions.create(**openai_config)
 
@@ -595,9 +602,14 @@ class OpenAIModel:
                 reasoning_parts.append(reasoning_part)
                 parts.append(reasoning_part)
 
-            # Text content
-            if delta.content:
-                text_part = MessageConverter.text_part_to_genkit(delta.content)
+            # Text content; Mistral's reasoning models stream reasoning in it too.
+            thinking, text = split_reply_content(delta.content)
+            if thinking:
+                thinking_part = Part.from_reasoning(thinking)
+                reasoning_parts.append(thinking_part)
+                parts.append(thinking_part)
+            if text:
+                text_part = MessageConverter.text_part_to_genkit(text)
                 text_parts.append(text_part)
                 parts.append(text_part)
 
@@ -680,8 +692,6 @@ class OpenAIModel:
 
         if isinstance(config, dict):
             config_dict = cast(dict[str, Any], config)
-            if config_dict.get('top_k'):
-                del config_dict['top_k']
             return OpenAIConfig(**config_dict)
 
         raise ValueError(f'Expected request.config to be a dict or OpenAIConfig, got {type(config).__name__}.')

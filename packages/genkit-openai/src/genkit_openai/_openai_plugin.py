@@ -601,49 +601,21 @@ class OpenAI(Plugin):
             if request.options.get('encodingFormat') == 'float':
                 encoding_format = 'float'
 
-            # Call with only non-None optional params to satisfy strict typings
+            # Only set options go out; the SDK's sentinel for an unset one
+            # differs across the openai versions this package supports.
             client = self._embed_client()
-            try:
-                # Mistral names the setting output_dimension and rejects
-                # dimensions. The SDK has no output_dimension kwarg, so it
-                # rides in extra_body.
-                if dimensions is not None and encoding_format is not None and is_mistral(client):
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        encoding_format=encoding_format,
-                        extra_body={'output_dimension': dimensions},
-                    )
-                elif dimensions is not None and is_mistral(client):
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        extra_body={'output_dimension': dimensions},
-                    )
-                elif dimensions is not None and encoding_format is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        dimensions=dimensions,
-                        encoding_format=encoding_format,
-                    )
-                elif dimensions is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        dimensions=dimensions,
-                    )
-                elif encoding_format is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        encoding_format=encoding_format,
-                    )
+            create_kwargs: dict[str, Any] = {}
+            if dimensions is not None:
+                if is_mistral(client):
+                    # Mistral names it output_dimension and rejects dimensions.
+                    # The SDK has no output_dimension kwarg, so it rides in extra_body.
+                    create_kwargs['extra_body'] = {'output_dimension': dimensions}
                 else:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                    )
+                    create_kwargs['dimensions'] = dimensions
+            if encoding_format is not None:
+                create_kwargs['encoding_format'] = encoding_format
+            try:
+                response = await client.embeddings.create(model=name, input=texts, **create_kwargs)
             except APIError as e:
                 reraise_openai_error(e)
 

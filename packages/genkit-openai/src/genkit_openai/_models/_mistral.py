@@ -19,8 +19,15 @@
 ``OpenAI(base_url='https://api.mistral.ai/v1')`` talks to Mistral. Its chat and
 embeddings endpoints take the OpenAI shape with a few fields renamed or
 missing, and reject any field they don't declare, so a body built for OpenAI
-fails with a 422. The plugin derives the target from the client's base URL
-and rewrites the few fields that differ; everything else goes out unchanged.
+fails with a 422. The plugin rewrites the few fields that differ; everything
+else goes out unchanged.
+
+The target is read from the client's base URL, not the model id as DeepSeek's
+JSON handling is. Mistral's ids share no prefix (``mistral-``, ``magistral-``,
+``codestral-``, ``pixtral-``, ...), and the same ids are served through other
+OpenAI-compatible hosts that take OpenAI's names: Vertex Model Garden reuses
+``OpenAIModel`` for ``mistralai/...`` models with a Vertex client, so it never
+matches here.
 
 Source: https://docs.mistral.ai/openapi.yaml (``ChatCompletionRequest``,
 ``EmbeddingRequest``).
@@ -30,27 +37,32 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-MISTRAL_HOST = 'api.mistral.ai'
+# Mistral's API hosts: the main one, and the one Codestral keys are issued for.
+MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'codestral.mistral.ai'})
 
 
 def is_mistral(client: AsyncOpenAI) -> bool:
-    """Whether ``client`` sends its requests to Mistral's API."""
-    return getattr(client.base_url, 'host', None) == MISTRAL_HOST
+    """Whether ``client`` sends its requests to one of Mistral's API hosts."""
+    return client.base_url.host in MISTRAL_HOSTS
 
 
-def mistral_chat_body(body: dict[str, Any]) -> dict[str, Any]:
+def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict[str, Any]:
     """Rewrite ``chat.completions.create()`` kwargs into a body Mistral accepts.
 
     - ``stream_options`` is dropped. Mistral has no such field; it reports
       usage on the last streamed chunk without being asked.
     - ``max_completion_tokens`` goes out as ``max_tokens``, Mistral's only
       reply cap, including when ``reasoning_effort`` is set.
-    - ``seed`` goes out as ``random_seed``. The SDK has no ``random_seed``
-      kwarg, so it rides in ``extra_body``; a ``random_seed`` the caller put in
-      ``extra`` wins, as every ``extra`` key does.
+    - ``seed`` goes out as ``random_seed``.
+    - ``top_k``, which OpenAI has no field for, goes out as is.
+
+    The SDK has no ``random_seed`` or ``top_k`` kwarg, so both ride in
+    ``extra_body``; the same key in the caller's ``extra`` wins, as every
+    ``extra`` key does.
 
     Args:
         body: The kwargs the plugin built for OpenAI. Not modified.
+        top_k: Genkit's ``top_k`` setting, which the OpenAI kwargs leave out.
 
     Returns:
         A copy with Mistral's field names.
@@ -59,7 +71,11 @@ def mistral_chat_body(body: dict[str, Any]) -> dict[str, Any]:
     out.pop('stream_options', None)
     if 'max_completion_tokens' in out:
         out['max_tokens'] = out.pop('max_completion_tokens')
+    renamed: dict[str, Any] = {}
     if 'seed' in out:
-        seed = out.pop('seed')
-        out['extra_body'] = {'random_seed': seed, **(out.get('extra_body') or {})}
+        renamed['random_seed'] = out.pop('seed')
+    if top_k is not None:
+        renamed['top_k'] = top_k
+    if renamed:
+        out['extra_body'] = {**renamed, **(out.get('extra_body') or {})}
     return out

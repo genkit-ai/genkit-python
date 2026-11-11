@@ -149,7 +149,8 @@ class OpenAIConfig(ModelConfig):
         top_logprobs: Number of top log probabilities to return (0-20).
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-top_logprobs
 
-        seed: Random seed for deterministic sampling (beta).
+        seed: Random seed for deterministic sampling (beta). Sent as
+            ``random_seed`` to Mistral (see ``_models/_mistral.py``).
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-seed
 
         safety_identifier: Stable identifier for detecting policy violations.
@@ -193,7 +194,8 @@ class OpenAIConfig(ModelConfig):
         prediction: Predicted output content for regeneration.
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-prediction
 
-        stream_options: Streaming options (e.g., include_usage).
+        stream_options: Streaming options (e.g., include_usage). Not sent
+            to Mistral, which has no such field (see ``_models/_mistral.py``).
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-stream_options
 
         web_search_options: Web search tool configuration.
@@ -201,7 +203,8 @@ class OpenAIConfig(ModelConfig):
 
         max_output_tokens: Genkit's cross-model reply cap (``maxOutputTokens``
             in the Dev UI). Sent as ``max_tokens``, or ``max_completion_tokens``
-            on reasoning models and when ``reasoning_effort`` is set.
+            on reasoning models and when ``reasoning_effort`` is set. Always
+            ``max_tokens`` to Mistral (see ``_models/_mistral.py``).
 
         stop_sequences: Genkit's cross-model stop strings. Sent as ``stop``.
 

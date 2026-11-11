@@ -21,7 +21,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import httpx
 from openai import (
@@ -411,6 +411,42 @@ def _extract_media(request: ModelRequest) -> tuple[str, str]:
     return url, content_type
 
 
+def split_reply_content(content: object) -> tuple[str, str]:
+    """The reasoning and the text in a reply's ``content``.
+
+    OpenAI sends ``content`` as a string. Mistral's reasoning models send a
+    list of chunks instead, in full replies and in streamed deltas alike:
+    ``{'type': 'text', 'text': ...}`` for the answer and
+    ``{'type': 'thinking', 'thinking': [{'type': 'text', 'text': ...}]}`` for
+    the reasoning before it. Other chunk types carry no text and are skipped.
+
+    Args:
+        content: A message's or delta's ``content`` as the SDK parsed it.
+
+    Returns:
+        The reasoning text and the reply text, each empty when absent.
+    """
+    if isinstance(content, str):
+        return '', content
+    if not isinstance(content, list):
+        return '', ''
+    reasoning: list[str] = []
+    text: list[str] = []
+    for chunk in cast(list[object], content):
+        if not isinstance(chunk, Mapping):
+            continue
+        chunk = cast(Mapping[str, object], chunk)
+        if chunk.get('type') == 'text' and isinstance(chunk.get('text'), str):
+            text.append(cast(str, chunk['text']))
+        elif chunk.get('type') == 'thinking' and isinstance(chunk.get('thinking'), list):
+            for item in cast(list[object], chunk['thinking']):
+                if isinstance(item, Mapping):
+                    item = cast(Mapping[str, object], item)
+                    if item.get('type') == 'text' and isinstance(item.get('text'), str):
+                        reasoning.append(cast(str, item['text']))
+    return ''.join(reasoning), ''.join(text)
+
+
 class DictMessageAdapter:
     """Adapter for dictionary-based chat message objects with OpenAI-compatible fields."""
 
@@ -650,8 +686,11 @@ class MessageConverter:
         if reasoning:
             content.append(Part.from_reasoning(reasoning))
 
-        if message.content:
-            content.append(cls.text_part_to_genkit(message.content))
+        thinking, text = split_reply_content(message.content)
+        if thinking:
+            content.append(Part.from_reasoning(thinking))
+        if text:
+            content.append(cls.text_part_to_genkit(text))
 
         for tool_call in message.tool_calls or []:
             content.append(cls.tool_call_to_genkit(tool_call, args_parser=json.loads))

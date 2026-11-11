@@ -19,7 +19,7 @@
 from enum import Enum
 
 from genkit_google_genai import GoogleAI
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from genkit import Genkit
 
@@ -74,13 +74,14 @@ async def main() -> None:
     final_country = (await sr.response).output
     print(final_country)
 
-    # Array: output_schema=list[Book] hands back a list of Book models.
+    # Array / jsonl take an items schema; TypeAdapter is how you get one
+    # from list[T]. validate_python turns the raw list into Book models.
     books = await ai.generate(
         prompt='List 3 famous fantasy books.',
         output_format='array',
-        output_schema=list[Book],
+        output_schema=TypeAdapter(list[Book]).json_schema(),
     )
-    print(books.output)
+    print(TypeAdapter(list[Book]).validate_python(books.output))
 
 
 if __name__ == '__main__':

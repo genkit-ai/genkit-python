@@ -18,12 +18,31 @@ import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import McpError
-from mcp.types import INTERNAL_ERROR, CallToolResult, ErrorData, Tool as McpTool
-from pydantic import TypeAdapter
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    CallToolResult,
+    ErrorData,
+    GetPromptResult,
+    Prompt,
+    Tool as McpTool,
+)
+from pydantic import TypeAdapter, ValidationError
 
-from genkit import Genkit, GenkitError, Interrupt, MultipartToolResponse, PublicError, Tool, get_logger
+from genkit import (
+    ErrorReason,
+    Genkit,
+    GenkitError,
+    Interrupt,
+    MultipartToolResponse,
+    PublicError,
+    Tool,
+    get_logger,
+)
+from genkit.plugin_api import Action
 from genkit.web import error_body, error_status
 from genkit_mcp._export import error_result, multipart_to_call_result, tool_to_mcp
+from genkit_mcp._prompts import PromptArgumentError, prompt_input, prompt_to_mcp, request_to_messages
 
 logger = get_logger(__name__)
 
@@ -34,12 +53,17 @@ DEFAULT_VERSION = '1.0.0'
 
 _LISTING_FAILED = 'The server could not list its tools'
 
+_PROMPT_LISTING_FAILED = 'The server could not list its prompts'
+
+_CUSTOM_ERROR_TYPES = frozenset({'value_error', 'assertion_error'})
+"""Pydantic error types whose message is a custom validator's own text."""
+
 
 class McpServer:
-    """Serves a Genkit app's tools to MCP clients.
+    """Serves a Genkit app's tools and prompts to MCP clients.
 
-    Tools are read from the app on every ``tools/list``, so a tool defined
-    after the server was built is still served. Tools a dynamic action
+    Tools and prompts are read from the app on every list request, so one
+    defined after the server was built is still served. Tools a dynamic action
     provider serves are not.
 
     Attributes:
@@ -59,7 +83,7 @@ class McpServer:
         """Build a server over a Genkit app.
 
         Args:
-            ai: The app whose tools are served.
+            ai: The app whose tools and prompts are served.
             name: Name the server advertises.
             version: Version the server advertises.
             instructions: How a client should use this server.
@@ -75,6 +99,8 @@ class McpServer:
         self._server: Server[Any, Any] = Server(name, version=version, instructions=instructions)
         self._server.list_tools()(self._list_tools)
         self._server.call_tool()(self._call_tool)
+        self._server.list_prompts()(self._list_prompts)
+        self._server.get_prompt()(self._get_prompt)
 
     @property
     def name(self) -> str:
@@ -182,6 +208,47 @@ class McpServer:
             logger.exception('an MCP tool call failed', tool=name)
             return error_result(_client_message(name, error))
 
+    async def _list_prompts(self) -> list[Prompt]:
+        """Describe every prompt this server offers, read fresh from the app."""
+        try:
+            return [prompt_to_mcp(action) for action in await self._ai.list_prompts()]
+        except Exception as error:
+            logger.exception("could not list the app's prompts for MCP")
+            raise McpError(ErrorData(code=INTERNAL_ERROR, message=_PROMPT_LISTING_FAILED)) from error
+
+    async def _get_prompt(self, name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+        """Render one prompt with the client's arguments, without calling a model.
+
+        An error the client caused is reported as invalid params, and any other
+        as an internal error, logged here where its traceback is still useful. A
+        result that cannot be encoded fails here rather than in the transport,
+        where it would end the session.
+        """
+        try:
+            action = await self._find_prompt(name)
+            if action is None:
+                raise McpError(ErrorData(code=INVALID_PARAMS, message=f'Prompt {name!r} is not registered'))
+            value = prompt_input(dict(action.input_schema or {}), arguments or {})
+            request = (await action.run(value)).response
+            result = GetPromptResult(description=action.description, messages=request_to_messages(request, name))
+            result.model_dump_json(by_alias=True, exclude_none=True)
+            return result
+        except McpError:
+            raise
+        except PromptArgumentError as error:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(error))) from None
+        except Exception as error:
+            if error_status(error) >= 500:
+                logger.exception('an MCP prompt failed to render', prompt=name)
+            raise _prompt_error(name, error) from None
+
+    async def _find_prompt(self, name: str) -> Action | None:
+        """Find a prompt by the name it was listed under."""
+        for action in await self._ai.list_prompts():
+            if action.name == name:
+                return action
+        return None
+
     def _request_context(self) -> dict[str, Any] | None:
         """Pass the request's MCP ``_meta`` in the shape the client's handler reads."""
         try:
@@ -211,7 +278,7 @@ def create_mcp_server(
     """Build a server over a Genkit app, registering nothing.
 
     Args:
-        ai: The app whose tools are served.
+        ai: The app whose tools and prompts are served.
         name: Name the server advertises.
         version: Version the server advertises.
         instructions: How a client should use this server.
@@ -265,6 +332,45 @@ async def _run(tool: Tool, arguments: dict[str, Any], context: dict[str, Any] | 
 def _as_json(value: object) -> Any:  # noqa: ANN401 - whatever JSON the value dumps to
     """Dump a tool's value to JSON data, by alias as Genkit's own tools do."""
     return _JSON.dump_python(value, mode='json', by_alias=True)
+
+
+def _prompt_error(prompt_name: str, error: Exception) -> McpError:
+    """Say why a prompt failed to render, by the rule ``_client_message`` follows for tools.
+
+    Input the prompt's schema rejects is the client's, so it is invalid params
+    naming the failing fields, without the values sent. A ``PublicError`` sends
+    its status and message, and anything else only its status, as an internal
+    error.
+    """
+    if isinstance(error, GenkitError) and error.reason == ErrorReason.INVALID_INPUT:
+        return McpError(ErrorData(code=INVALID_PARAMS, message=_invalid_input_message(prompt_name, error)))
+    status = error_status(error)
+    if isinstance(error, PublicError) or status < 500:
+        body = error_body(error)
+        message = f'{body["status"]}: {body["message"]}'
+    elif isinstance(error, GenkitError):
+        message = f'Prompt {prompt_name!r} failed to render: {error.status}'
+    else:
+        message = f'Prompt {prompt_name!r} failed to render'
+    return McpError(ErrorData(code=INVALID_PARAMS if status < 500 else INTERNAL_ERROR, message=message))
+
+
+def _invalid_input_message(prompt_name: str, error: GenkitError) -> str:
+    """Name each field the prompt's model rejected and why, in Pydantic's fixed wording.
+
+    A schema given as JSON is checked by text that quotes the value, so its
+    failure is reported without the field.
+    """
+    message = f'Invalid input for prompt {prompt_name!r}'
+    cause = error.__cause__
+    if not isinstance(cause, ValidationError):
+        return message
+    problems = [
+        f'{".".join(str(part) for part in problem["loc"]) or "input"}: '
+        f'{"Value error" if problem["type"] in _CUSTOM_ERROR_TYPES else problem["msg"]}'
+        for problem in cause.errors(include_url=False, include_input=False)
+    ]
+    return f'{message}: {"; ".join(problems)}' if problems else message
 
 
 def _client_message(tool_name: str, error: Exception) -> str:

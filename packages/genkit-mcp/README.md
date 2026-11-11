@@ -165,8 +165,8 @@ them, so the next `generate` lists every server again.
 
 ## Serving your app as an MCP server
 
-`create_mcp_server` wraps a `Genkit` instance and registers nothing, so the tools it serves are the
-ones the app already has:
+`create_mcp_server` wraps a `Genkit` instance and registers nothing, so the tools and prompts it
+serves are the ones the app already has:
 
 ```python
 import asyncio
@@ -218,6 +218,44 @@ call. A result that cannot be encoded as UTF-8 answers with `Tool '<name>' faile
 fails to start fails the listing, and the client is told only that the server could not list its
 tools.
 
+### Prompts
+
+The app's prompts are read with `ai.list_prompts()` on every `prompts/list`, and each variant is its
+own prompt, named `greet.formal`. `prompts/get` renders the prompt into the messages a model would
+get, without calling the model:
+
+```python
+ai = Genkit(model='googleai/gemini-flash-latest')
+
+
+class Person(BaseModel):
+    name: str
+
+
+ai.define_prompt(name='greet', input_schema=Person, system='Be brief.', prompt='Hello {{name}}')
+```
+
+Each named input field is one argument. MCP arguments are always strings, so each is read as the
+type its field's schema names: a number, a boolean, or JSON for an object or an array. An optional
+field is read as its type without the null, and a field that may be one of several types is left
+as text. A prompt whose input is not an object takes it as a single `input` argument, and one that
+accepts fields its schema does not name, including a prompt with no input schema, takes them
+together as an `inputJson` JSON object. The input is then checked against the prompt's schema, with
+the prompt's defaults filled in first.
+
+A failure is worded as a tool's is. An argument that does not parse as its type, or input the
+prompt's schema rejects, answers with invalid params naming the failing field, without the value
+sent. A schema given as JSON, as a `.prompt` file's is, quotes the value in its error, so its
+rejection names only the prompt. A `PublicError` sends
+its status and message. Any other `GenkitError` answers with an internal error saying `Prompt
+'<name>' failed to render: <status>`, and any other exception with just `Prompt '<name>' failed to
+render`.
+
+Context documents come first, as user messages. MCP has only user and assistant messages, so a
+system turn is sent as a user message beginning `System instructions:` and a tool turn as one
+beginning `Tool output:`. Inline images and audio are embedded, media that lives at a URL is sent
+as a resource link, and a part MCP has no content for, such as a tool request, is sent as its JSON.
+
 ### stdio
 
 `await server.start()` serves on this process's stdin and stdout until stdin closes. They are the
@@ -247,3 +285,8 @@ check of the result. Nothing sends `notifications/tools/list_changed`; the list 
 request instead. A client's `notifications/cancelled` cancels the tool call. Progress, sampling and
 elicitation are not supported. A plugin-namespaced tool name carries a `/`, which the MCP SDK warns
 about. stdio reads and writes UTF-8 whatever the locale, but is untested on Windows.
+
+A prompt renders only when the app has a model configured, even though `prompts/get` never calls it;
+without one, it answers with `Prompt '<name>' failed to render: INVALID_ARGUMENT`. An argument that has a default is still advertised as
+required when the schema requires it. A prompt's output instructions are not part of the rendered
+messages, since Genkit adds them when it generates.

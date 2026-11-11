@@ -157,8 +157,38 @@ async def test_genkit_run() -> None:
     def sync_fn() -> str:
         return 'hello'
 
-    with pytest.raises(TypeError, match='fn must be a coroutine function'):
+    with pytest.raises(TypeError, match='fn must return an awaitable'):
         await ai.run(name='test3', fn=sync_fn)  # type: ignore[arg-type]
+
+    # JS/Go shape: positional name and fn, lambdas, async-callable instances.
+    assert await ai.run('test4', async_fn) == 'world'
+    assert await ai.run('test5', lambda: async_fn()) == 'world'
+
+    class Fetch:
+        async def __call__(self) -> str:
+            return 'menu'
+
+    assert await ai.run('test6', Fetch()) == 'menu'
+
+
+@pytest.mark.asyncio
+async def test_genkit_run_rejects_a_sync_def_before_it_runs() -> None:
+    """A sync step raises before its body runs, so the card is never charged."""
+    ai = Genkit()
+    charges: list[int] = []
+
+    def charge_card() -> str:
+        charges.append(40)
+        return 'charged'
+
+    with pytest.raises(TypeError, match='fn must return an awaitable'):
+        await ai.run('charge', charge_card)  # type: ignore[arg-type]
+    assert charges == []
+
+    # A lambda can't be inspected up front; it still fails, after the call.
+    with pytest.raises(TypeError, match='fn must return an awaitable'):
+        await ai.run('charge', lambda: charge_card())  # type: ignore[arg-type]
+    assert charges == [40]
 
 
 @pytest.mark.asyncio

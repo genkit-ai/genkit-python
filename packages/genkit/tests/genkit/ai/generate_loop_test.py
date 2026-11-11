@@ -5,6 +5,9 @@
 
 """Turn-loop invariants: max_turns, restart input, system= with history, docs=, and resume with prompt=."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from genkit import (
@@ -14,13 +17,16 @@ from genkit import (
     Message,
     ModelResponse,
     Part,
+    Tool,
     ToolContext,
 )
 from genkit._ai._agents._client import agent_interrupts_from_message
 from genkit._ai._generate import CallScope, augment_with_context, generate_action, restarted_tool_request
+from genkit._core._action import ActionRunContext
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._model import GenerateActionOptions, ModelRequest
 from genkit._core._typing import FinishReason, Role, ToolRequest
+from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
 from genkit.testing import ScriptedModel, define_scripted_model
 
 
@@ -261,6 +267,30 @@ def test_docs_context_without_extra_metadata_is_unchanged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_child_flows_get_their_own_copy_of_the_context() -> None:
+    """Concurrent child flows writing ctx.context don't clobber each other or the parent."""
+    ai = Genkit()
+    seen: dict[str, object] = {}
+
+    @ai.flow()
+    async def tag_order(table: str, ctx: ActionRunContext) -> str:
+        ctx.context['table'] = table
+        await asyncio.sleep(0.01)
+        seen[table] = ctx.context['table']
+        return table
+
+    @ai.flow()
+    async def seat_party(n: int, ctx: ActionRunContext) -> list[str]:
+        tables = await asyncio.gather(*(tag_order(f't{i}') for i in range(n)))
+        seen['parent'] = ctx.context.get('table')
+        return list(tables)
+
+    await seat_party(3, context={'auth': {'uid': 'host-1'}})
+
+    assert seen == {'t0': 't0', 't1': 't1', 't2': 't2', 'parent': None}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('bad', [True, False, float('nan'), float('inf'), 2.5])
 async def test_max_turns_rejects_non_whole_numbers(bad: object) -> None:
     """max_turns=True used to run as 1; nan leaked a raw ValidationError."""
@@ -354,3 +384,45 @@ async def test_bare_restart_still_reads_as_resumed() -> None:
     await ai.generate(messages=paused.messages, tools=['transfer'], resume_restart=paused.interrupts[0].restart())
 
     assert len(seen) == 1
+
+
+def test_tool_accepts_an_async_callable_instance() -> None:
+    """A class with `async def __call__` is an async tool; sync callables still fail."""
+
+    class AllergyCheck:
+        async def __call__(self, dish: str) -> str:
+            return f'{dish}: nut-free'
+
+    class SyncCheck:
+        def __call__(self, dish: str) -> str:
+            return dish
+
+    tool = Tool(AllergyCheck(), name='allergy_check')
+    assert tool.name == 'allergy_check'
+
+    with pytest.raises(TypeError, match='must be async'):
+        Tool(SyncCheck(), name='sync_check')  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]
+
+
+@pytest.mark.asyncio
+async def test_middleware_sees_the_context_passed_to_generate() -> None:
+    """Genkit.current_context() inside a hook is the generate call's context."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok')]
+    seen: list[object] = []
+
+    class AuditTenant(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            seen.append(Genkit.current_context())
+            return await next_fn(params, ctx)
+
+    await ai.generate(prompt='hi', context={'tenant': 'bistro-9'}, use=[AuditTenant()])
+
+    assert seen == [{'tenant': 'bistro-9'}]
+    assert Genkit.current_context() is None

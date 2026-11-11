@@ -554,7 +554,7 @@ except GenkitError as e:
 
 ## Plugin exception types
 
-Plugin-specific exceptions such as `OllamaConnectionError` are gone. Check the status instead.
+Plugin-specific exceptions such as `OllamaConnectionError` are gone. Check the failure's `status` instead: `ai.generate` returns the failure on `res.error`, and `ai.embed` raises it as a `GenkitError`.
 
 **Old:**
 
@@ -566,8 +566,13 @@ except GenkitError as e:
 **New:**
 
 ```python
-except GenkitError as e:
-    if e.status == 'UNAVAILABLE': ...
+res = await ai.generate(model=m, prompt=p)
+if res.error and res.error.status == 'UNAVAILABLE': ...
+
+try:
+    await ai.embed(embedder=e, content=doc)
+except GenkitError as err:
+    if err.status == 'UNAVAILABLE': ...
 ```
 
 ## Interrupts and except Exception

@@ -47,6 +47,43 @@ OpenAI(
 )
 ```
 
+## Mistral
+
+Point `base_url` at Mistral's API and pass a Mistral key. Models keep the
+`openai/` prefix:
+
+```python
+import os
+
+from genkit import Genkit
+from genkit_openai import OpenAI
+
+ai = Genkit(
+    plugins=[OpenAI(api_key=os.environ['MISTRAL_API_KEY'], base_url='https://api.mistral.ai/v1')]
+)
+
+res = await ai.generate(
+    model='openai/mistral-small-latest',
+    prompt='Suggest 2 names for a French bakery.',
+    config={'temperature': 0.3, 'seed': 42, 'max_output_tokens': 200},
+)
+
+embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant')
+```
+
+Mistral rejects any request field it doesn't declare, so with that `base_url`
+the plugin sends Mistral's names for the settings that differ:
+
+- `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
+  even with `reasoning_effort` set.
+- `seed` goes out as `random_seed`.
+- Streaming sends no `stream_options`; Mistral reports usage on the last chunk.
+- An embedder's `dimensions` goes out as `output_dimension`.
+
+Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
+and Mistral rejects them. Mistral-only fields like `safe_prompt` go in `extra`.
+A gateway in front of Mistral on another host gets the OpenAI field names.
+
 ## Config
 
 `config` takes the settings `OpenAIConfig` declares. Any other key raises

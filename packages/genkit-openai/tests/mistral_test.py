@@ -24,40 +24,98 @@ from typing import Any
 import httpx
 import pytest
 from genkit_openai import OpenAI
+from genkit_openai._models._mistral import mistral_chat_body
+from pydantic import BaseModel
 
-from genkit import Genkit
+from genkit import FinishReason, Genkit, Part
 
 MISTRAL_URL = 'https://api.mistral.ai/v1'
+CODESTRAL_URL = 'https://codestral.mistral.ai/v1'
 PLUGIN_KEY = 'mistral-key'
 
+# The fields Mistral's ChatCompletionRequest and EmbeddingRequest declare
+# (https://docs.mistral.ai/openapi.yaml, as mirrored by the mistralai SDK). Mistral
+# answers any other top-level field with a 422, and so does the fake below.
+_CHAT_FIELDS = frozenset({
+    'model',
+    'messages',
+    'temperature',
+    'top_p',
+    'max_tokens',
+    'stream',
+    'stop',
+    'random_seed',
+    'metadata',
+    'response_format',
+    'tools',
+    'tool_choice',
+    'presence_penalty',
+    'frequency_penalty',
+    'min_tokens',
+    'repetition_penalty',
+    'top_k',
+    'logprobs',
+    'top_logprobs',
+    'prompt_logprobs',
+    'top_prompt_logprobs',
+    'n',
+    'prediction',
+    'parallel_tool_calls',
+    'reasoning_effort',
+    'prompt_mode',
+    'guardrails',
+    'prompt_cache_key',
+    'service_tier',
+    'safe_prompt',
+})
+_EMBEDDING_FIELDS = frozenset({'model', 'input', 'metadata', 'output_dimension', 'output_dtype', 'encoding_format'})
+_MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'codestral.mistral.ai'})
 
-def _completion() -> dict[str, Any]:
+# A Magistral reply: reasoning in a thinking chunk, then the answer, in a content list.
+_THINKING = {'type': 'thinking', 'thinking': [{'type': 'text', 'text': 'Two loaves, one each.'}]}
+
+
+def _content(model: str, text: str) -> Any:  # noqa: ANN401
+    if model.startswith('magistral'):
+        return [_THINKING, {'type': 'text', 'text': text}]
+    return text
+
+
+def _completion(model: str) -> dict[str, Any]:
     return {
         'id': 'cmpl-1',
         'object': 'chat.completion',
         'created': 0,
-        'model': 'mistral-small-latest',
-        'choices': [{'index': 0, 'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'bonjour'}}],
+        'model': model,
+        'choices': [
+            {
+                'index': 0,
+                'finish_reason': 'stop',
+                'message': {'role': 'assistant', 'content': _content(model, 'bonjour')},
+            }
+        ],
         'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5},
     }
 
 
-def _stream_body() -> bytes:
+def _stream_body(model: str) -> bytes:
     # Mistral sends usage on the last chunk, beside finish_reason, without stream_options.
+    first: Any = [_THINKING] if model.startswith('magistral') else 'bon'
+    second: Any = [{'type': 'text', 'text': 'bonjour'}] if model.startswith('magistral') else 'jour'
     chunks = [
         {
             'id': 'cmpl-1',
             'object': 'chat.completion.chunk',
             'created': 0,
-            'model': 'mistral-small-latest',
-            'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': 'bon'}, 'finish_reason': None}],
+            'model': model,
+            'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': first}, 'finish_reason': None}],
         },
         {
             'id': 'cmpl-1',
             'object': 'chat.completion.chunk',
             'created': 0,
-            'model': 'mistral-small-latest',
-            'choices': [{'index': 0, 'delta': {'content': 'jour'}, 'finish_reason': 'stop'}],
+            'model': model,
+            'choices': [{'index': 0, 'delta': {'content': second}, 'finish_reason': 'stop'}],
             'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5},
         },
     ]
@@ -77,8 +135,16 @@ def _embeddings(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extra_forbidden(fields: list[str]) -> httpx.Response:
+    detail = [
+        {'type': 'extra_forbidden', 'loc': ['body', f], 'msg': 'Extra inputs are not permitted', 'input': None}
+        for f in fields
+    ]
+    return httpx.Response(422, json={'object': 'error', 'message': {'detail': detail}, 'type': 'invalid_request_error'})
+
+
 class _Server:
-    """A fake OpenAI-compatible endpoint that records every request it gets."""
+    """A fake OpenAI-compatible endpoint that records every request and, on Mistral's hosts, enforces its schema."""
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
@@ -86,11 +152,18 @@ class _Server:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         body = json.loads(request.content)
-        if request.url.path.endswith('/embeddings'):
+        embeddings = request.url.path.endswith('/embeddings')
+        if request.url.host in _MISTRAL_HOSTS:
+            allowed = _EMBEDDING_FIELDS if embeddings else _CHAT_FIELDS
+            if unknown := sorted(set(body) - allowed):
+                return _extra_forbidden(unknown)
+        if embeddings:
             return httpx.Response(200, json=_embeddings(body))
         if body.get('stream'):
-            return httpx.Response(200, content=_stream_body(), headers={'content-type': 'text/event-stream'})
-        return httpx.Response(200, json=_completion())
+            return httpx.Response(
+                200, content=_stream_body(body['model']), headers={'content-type': 'text/event-stream'}
+            )
+        return httpx.Response(200, json=_completion(body['model']))
 
     def bodies(self) -> list[dict[str, Any]]:
         return [json.loads(r.content) for r in self.requests]
@@ -278,3 +351,170 @@ async def test_openai_base_url_keeps_openai_field_names(openai: Genkit, server: 
     assert 'random_seed' not in chat
     assert embed['dimensions'] == 256
     assert 'output_dimension' not in embed
+
+
+@pytest.mark.asyncio
+async def test_codestral_host_gets_mistral_field_names(server: _Server) -> None:
+    """OpenAI(base_url='https://codestral.mistral.ai/v1') sends Mistral's names too."""
+    ai = _ai(server, CODESTRAL_URL)
+
+    await ai.generate(model='openai/codestral-latest', prompt='def add(a, b):', config={'seed': 7})
+
+    [request] = server.requests
+    assert str(request.url) == f'{CODESTRAL_URL}/chat/completions'
+    body = json.loads(request.content)
+    assert body['random_seed'] == 7
+    assert 'seed' not in body
+
+
+@pytest.mark.asyncio
+async def test_openai_base_url_env_pointing_at_mistral_gets_mistral_field_names(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OPENAI_BASE_URL=https://api.mistral.ai/v1` with no `base_url` argument still sends Mistral's names."""
+    monkeypatch.setenv('OPENAI_BASE_URL', MISTRAL_URL)
+    ai = _ai(server, None)
+
+    stream = ai.generate_stream(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+    await stream.response
+
+    [request] = server.requests
+    assert request.url.host == 'api.mistral.ai'
+    body = json.loads(request.content)
+    assert 'stream_options' not in body
+    assert body['random_seed'] == 7
+
+
+@pytest.mark.asyncio
+async def test_mistral_generate_drops_stream_options_from_config(mistral: Genkit, server: _Server) -> None:
+    """`config={'stream_options': {...}}` on a non-streamed call is not sent to Mistral either."""
+    await mistral.generate(
+        model='openai/mistral-small-latest', prompt='salut', config={'stream_options': {'include_usage': True}}
+    )
+
+    [body] = server.bodies()
+    assert 'stream_options' not in body
+
+
+@pytest.mark.asyncio
+async def test_mistral_top_k_goes_out(mistral: Genkit, server: _Server) -> None:
+    """`config={'top_k': 5}` reaches Mistral, which declares `top_k`; OpenAI never gets it."""
+    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'top_k': 5})
+
+    [body] = server.bodies()
+    assert body['top_k'] == 5
+
+
+@pytest.mark.asyncio
+async def test_mistral_magistral_reply_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
+    """A Magistral reply's `thinking` chunk comes back as a reasoning part, its `text` chunk as the text."""
+    response = await mistral.generate(model='openai/magistral-medium-latest', prompt='Bread for two?')
+
+    assert response.text == 'bonjour'
+    assert response.message is not None
+    assert [p.reasoning for p in response.message.content if p.reasoning] == ['Two loaves, one each.']
+
+
+@pytest.mark.asyncio
+async def test_mistral_magistral_stream_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
+    """Streamed `thinking` chunks arrive as reasoning parts, and the final response keeps reasoning before text."""
+    stream = mistral.generate_stream(model='openai/magistral-medium-latest', prompt='Bread for two?')
+    chunks = [chunk async for chunk in stream.stream]
+    response = await stream.response
+
+    assert [c.text for c in chunks] == ['', 'bonjour']
+    assert chunks[0].content[0].reasoning == 'Two loaves, one each.'
+    assert response.text == 'bonjour'
+    assert response.message is not None
+    assert response.message.content[0].reasoning == 'Two loaves, one each.'
+
+
+@pytest.mark.asyncio
+async def test_mistral_tools_pass_the_schema(mistral: Genkit, server: _Server) -> None:
+    """A call with tools and `tool_choice` gets through Mistral's schema with the tool definitions."""
+
+    @mistral.tool(name='lookup_menu')
+    async def lookup_menu(dish: str) -> str:
+        return f'{dish}: in stock'
+
+    response = await mistral.generate(
+        model='openai/mistral-small-latest',
+        prompt='Is the baguette in stock?',
+        tools=['lookup_menu'],
+        tool_choice='auto',
+    )
+
+    assert response.text == 'bonjour'
+    [body] = server.bodies()
+    assert [t['function']['name'] for t in body['tools']] == ['lookup_menu']
+    assert body['tool_choice'] == 'auto'
+
+
+class _Loaf(BaseModel):
+    name: str
+    grams: int
+
+
+@pytest.mark.asyncio
+async def test_mistral_output_schema_goes_out_as_json_schema(mistral: Genkit, server: _Server) -> None:
+    """`output_schema=` reaches Mistral as a `json_schema` response format."""
+    await mistral.generate(model='openai/mistral-small-latest', prompt='Describe a loaf.', output_schema=_Loaf)
+
+    [body] = server.bodies()
+    assert body['response_format']['type'] == 'json_schema'
+    assert set(body['response_format']['json_schema']['schema']['properties']) == {'name', 'grams'}
+
+
+@pytest.mark.asyncio
+async def test_mistral_image_input_goes_out_as_image_url(mistral: Genkit, server: _Server) -> None:
+    """An image part reaches Mistral as an `image_url` content block."""
+    await mistral.generate(
+        model='openai/pixtral-large-latest',
+        prompt=[Part.from_text('What bread is this?'), Part.from_media('https://example.com/loaf.png', 'image/png')],
+    )
+
+    [body] = server.bodies()
+    blocks = body['messages'][-1]['content']
+    assert {'type': 'image_url', 'image_url': {'url': 'https://example.com/loaf.png'}} in blocks
+
+
+@pytest.mark.asyncio
+async def test_mistral_rejects_an_openai_only_setting(mistral: Genkit, server: _Server) -> None:
+    """An OpenAI-only setting such as `verbosity` is sent as given, and Mistral's 422 fails the turn."""
+    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'verbosity': 'low'})
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert 'verbosity' in str(response.error)
+    [body] = server.bodies()
+    assert body['verbosity'] == 'low'
+
+
+@pytest.mark.asyncio
+async def test_mistral_embed_without_options_sends_only_mistral_fields(mistral: Genkit, server: _Server) -> None:
+    """An embed call with no options sends `model`, `input`, and the SDK's default `encoding_format`."""
+    response = await mistral.embed(embedder='openai/mistral-embed', content='croissant')
+
+    assert response[0].embedding == [0.5, 0.25]
+    [body] = server.bodies()
+    assert set(body) == {'model', 'input', 'encoding_format'}
+
+
+def test_mistral_chat_body_leaves_its_input_alone() -> None:
+    """`mistral_chat_body` returns a rewritten copy; the OpenAI kwargs it was given are unchanged."""
+    body = {
+        'model': 'mistral-small-latest',
+        'seed': 7,
+        'max_completion_tokens': 50,
+        'stream_options': {'include_usage': True},
+        'extra_body': {'safe_prompt': True},
+    }
+    before = json.loads(json.dumps(body))
+
+    out = mistral_chat_body(body, top_k=5)
+
+    assert body == before
+    assert out == {
+        'model': 'mistral-small-latest',
+        'max_tokens': 50,
+        'extra_body': {'random_seed': 7, 'top_k': 5, 'safe_prompt': True},
+    }

@@ -1402,6 +1402,11 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
         fields['trace_id'] = span.trace_id
     message = str(exc)
     fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        fields['at'] = f'{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
@@ -1409,7 +1414,7 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     else:
         culprit = 'generate'
     # one line, no traceback: a pretty-printed traceback with locals costs
-    # hundreds of ms per failed turn and dumps the user's prompt into the logs.
+    # hundreds of ms per failed turn and dumps frame locals into the logs.
     logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
     # The box hides the cause and no span keeps the stack, so a bug in Genkit
     # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug

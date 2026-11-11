@@ -3,8 +3,9 @@
 
 """Unit tests for the debug-log records emitted by genkit._ai._generate."""
 
+import inspect
 import io
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ import structlog
 from structlog.testing import capture_logs
 
 from genkit import ErrorReason, Genkit, Message, ModelResponse, ModelResponseChunk, Part, PublicError
-from genkit._ai._generate import CallScope, generate_action
+from genkit._ai._generate import CallScope, generate_action, log_dropped_failure
 from genkit._ai._model import resolve_model_arg
 from genkit._ai._tools import Interrupt
 from genkit._core._environment import GENKIT_ENV
@@ -521,7 +522,7 @@ async def test_resumed_tool_stream_callback_failure_returns_closed_history() -> 
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL]
 
 
-def _errors(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+def _errors(entries: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [e for e in entries if e['log_level'] == 'error']
 
 
@@ -532,28 +533,38 @@ def _tool_turn(name: str) -> ModelResponse:
     )
 
 
-def _define_exploding_tool(ai: Genkit) -> None:
+def _define_exploding_tool(ai: Genkit) -> int:
+    frame = inspect.currentframe()
+    assert frame is not None
+    raise_line = frame.f_lineno + 4
+
     @ai.tool(name='explode')
     async def explode(_: dict) -> str:  # noqa: ARG001
         raise RuntimeError('tool exploded')
 
     pm, _ = define_scripted_model(ai)
     pm.responses = [_tool_turn('explode')]
+    return raise_line
 
 
-def _define_crashing_model(ai: Genkit) -> None:
+def _define_crashing_model(ai: Genkit) -> int:
+    frame = inspect.currentframe()
+    assert frame is not None
+    raise_line = frame.f_lineno + 3
+
     async def crashing(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
         raise RuntimeError('model backend exploded')
 
     ai.define_model(name='crash', fn=crashing)
+    return raise_line
 
 
 @pytest.mark.asyncio
 async def test_tool_raises_in_generate_logs_one_line_naming_the_tool_and_error() -> None:
-    """A tool that raises leaves one error line naming the tool and the error, with no traceback."""
+    """A tool that raises leaves one error line naming the tool, location, and error, with no traceback."""
     structlog.reset_defaults()
     ai = Genkit()
-    _define_exploding_tool(ai)
+    raise_line = _define_exploding_tool(ai)
 
     with capture_logs() as entries:
         response = await ai.generate(model='scriptedModel', prompt='hi', tools=['explode'])
@@ -566,16 +577,17 @@ async def test_tool_raises_in_generate_logs_one_line_naming_the_tool_and_error()
     assert errors[0]['event'] == "tool 'explode' raised, returning finish_reason=failed"
     assert errors[0]['tool'] == 'explode'
     assert errors[0]['error'] == 'RuntimeError: tool exploded'
+    assert errors[0]['at'] == f'{__file__}:{raise_line}'
     assert 'model' not in errors[0]
     assert 'exc_info' not in errors[0]
 
 
 @pytest.mark.asyncio
 async def test_model_raises_in_generate_logs_one_line_naming_the_model_and_error() -> None:
-    """A model that raises leaves one error line naming the model and the error, with no traceback."""
+    """A model that raises leaves one error line naming the model, location, and error, with no traceback."""
     structlog.reset_defaults()
     ai = Genkit()
-    _define_crashing_model(ai)
+    raise_line = _define_crashing_model(ai)
 
     with capture_logs() as entries:
         response = await ai.generate(model='crash', prompt='hi')
@@ -588,12 +600,25 @@ async def test_model_raises_in_generate_logs_one_line_naming_the_model_and_error
     assert errors[0]['event'] == "model 'crash' raised, returning finish_reason=failed"
     assert errors[0]['model'] == 'crash'
     assert errors[0]['error'] == 'RuntimeError: model backend exploded'
+    assert errors[0]['at'] == f'{__file__}:{raise_line}'
     assert 'exc_info' not in errors[0]
 
 
+def test_unraised_exception_omits_at_field() -> None:
+    """An exception with no traceback logs cleanly without an ``at`` field."""
+    structlog.reset_defaults()
+    with capture_logs() as entries:
+        log_dropped_failure(RuntimeError('unraised'), tool='explode')
+
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['error'] == 'RuntimeError: unraised'
+    assert 'at' not in errors[0]
+
+
 @pytest.mark.asyncio
-async def test_failed_turn_log_does_not_print_the_prompt() -> None:
-    """The console line for a failed turn is one line and never echoes the user's prompt."""
+async def test_failed_turn_log_does_not_dump_frame_locals() -> None:
+    """A failed turn logs one console line with no frame locals, so the prompt shows only if the error quotes it."""
     buf = io.StringIO()
     structlog.reset_defaults()
     structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=buf))

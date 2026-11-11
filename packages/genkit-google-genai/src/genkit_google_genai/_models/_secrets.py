@@ -40,7 +40,7 @@ def missing_api_key_error() -> GenkitError:
 
     ``FAILED_PRECONDITION`` matches JS ``MISSING_API_KEY_ERROR``. A key the
     API rejects is a different failure: the provider's 4xx comes back as
-    ``UNAUTHENTICATED`` or ``PERMISSION_DENIED`` (see ``_provider_errors``).
+    ``UNAUTHENTICATED`` with reason ``INVALID_CREDENTIALS`` (see ``_provider_errors``).
     """
     return GenkitError(status='FAILED_PRECONDITION', message=MISSING_API_KEY_MESSAGE)
 

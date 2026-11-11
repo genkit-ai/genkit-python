@@ -18,9 +18,10 @@
 
 import pytest
 
-from genkit import GenkitError
+from genkit import ErrorReason, Genkit, GenkitError, ModelResponse
 from genkit._core import _error as error_mod
 from genkit._core._error import PublicError
+from genkit.model import ModelContext, ModelRequest
 from genkit.plugin_api import StatusName, provider_error
 from genkit.web import error_body, error_status
 
@@ -195,3 +196,40 @@ def test_genkit_error_skips_a_cause_with_no_text() -> None:
     error = GenkitError(status='DEADLINE_EXCEEDED', message='bedrock converse failed', cause=TimeoutError())
 
     assert str(error) == 'DEADLINE_EXCEEDED: bedrock converse failed'
+
+
+def test_provider_error_reason_lands_in_details() -> None:
+    """`provider_error(e, reason=...)` sets `.reason` and `details['reason']`, keeping status and message."""
+    rejected = RuntimeError('API key not valid. Please pass a valid API key.')
+
+    error = provider_error(rejected, status='UNAUTHENTICATED', reason=ErrorReason.INVALID_CREDENTIALS)
+
+    assert error.status == 'UNAUTHENTICATED'
+    assert error.reason is ErrorReason.INVALID_CREDENTIALS
+    assert error.details['reason'] == 'INVALID_CREDENTIALS'
+    assert error.message == 'API key not valid. Please pass a valid API key.'
+    assert error.__cause__ is rejected
+
+
+def test_provider_error_without_reason_has_none() -> None:
+    assert provider_error(RuntimeError('overloaded'), http_status=503).reason is None
+
+
+@pytest.mark.asyncio
+async def test_provider_error_reason_survives_generate_boxing() -> None:
+    """generate returns the failure on response.error; the plugin's reason rides along."""
+    ai = Genkit()
+
+    async def rejecting_model(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise provider_error(
+            RuntimeError('API key not valid.'), status='UNAUTHENTICATED', reason=ErrorReason.INVALID_CREDENTIALS
+        )
+
+    ai.define_model(name='rejecting', fn=rejecting_model)
+
+    response = await ai.generate(model='rejecting', prompt='Suggest a dish.')
+
+    assert response.error is not None
+    assert response.error.status == 'UNAUTHENTICATED'
+    assert response.error.reason is ErrorReason.INVALID_CREDENTIALS
+    assert response.error.message == 'API key not valid.'

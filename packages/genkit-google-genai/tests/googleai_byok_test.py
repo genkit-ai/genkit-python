@@ -34,7 +34,7 @@ from genkit_google_genai._models._interactions_utils import api_key_for_context
 from genkit_google_genai._models._secrets import MISSING_API_KEY_MESSAGE, context_api_key
 from google.genai import errors as genai_errors, types as genai_types
 
-from genkit import Genkit, GenkitError
+from genkit import ErrorReason, Genkit, GenkitError
 
 _ENV_KEYS = ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY')
 _PLUGIN_LOGGER = 'genkit_google_genai._google'
@@ -312,6 +312,8 @@ async def test_keyless_call_without_secret_is_failed_precondition(
     with patch('genkit_google_genai._google.genai.client.Client') as client_cls:
         error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.', context=context)
     assert error.status == 'FAILED_PRECONDITION'
+    # Distinct from a rejected key: no INVALID_CREDENTIALS reason.
+    assert error.reason is None
     assert error.message == MISSING_API_KEY_MESSAGE
     assert 'GEMINI_API_KEY' in error.message
     assert 'GOOGLE_API_KEY' in error.message
@@ -499,6 +501,7 @@ async def test_bad_plugin_key_on_generate_is_boxed_unauthenticated(no_key_env: N
         client_cls.return_value.aio.models.generate_content = AsyncMock(side_effect=_bad_key_error())
         error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.')
     assert error.status == 'UNAUTHENTICATED'
+    assert error.reason is ErrorReason.INVALID_CREDENTIALS
     assert 'API key not valid' in error.message
 
 
@@ -519,6 +522,7 @@ async def test_bad_secret_key_on_keyless_generate_is_boxed_unauthenticated(no_ke
             context={'secrets': {'api_key': 'tenant-typo'}},
         )
     assert error.status == 'UNAUTHENTICATED'
+    assert error.reason is ErrorReason.INVALID_CREDENTIALS
     assert 'API key not valid' in error.message
     assert error.message != MISSING_API_KEY_MESSAGE
     assert request_cls.call_args.kwargs['api_key'] == 'tenant-typo'
@@ -532,6 +536,7 @@ async def test_bad_key_on_embed_raises_unauthenticated(no_key_env: None) -> None
         with pytest.raises(GenkitError) as raised:
             await ai.embed(embedder='googleai/gemini-embedding-001', content='Peanut allergy: no satay.')
     assert raised.value.status == 'UNAUTHENTICATED'
+    assert raised.value.reason is ErrorReason.INVALID_CREDENTIALS
     assert 'API key not valid' in raised.value.message
 
 
@@ -544,4 +549,5 @@ async def test_bad_key_on_model_listing_raises_unauthenticated(no_key_env: None)
         with pytest.raises(GenkitError) as raised:
             await plugin.list_actions()
     assert raised.value.status == 'UNAUTHENTICATED'
+    assert raised.value.reason is ErrorReason.INVALID_CREDENTIALS
     assert 'API key not valid' in raised.value.message

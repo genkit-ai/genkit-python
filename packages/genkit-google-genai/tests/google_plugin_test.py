@@ -48,7 +48,7 @@ from google.auth.exceptions import DefaultCredentialsError, RefreshError
 from google.genai.errors import APIError
 from pydantic import ValidationError
 
-from genkit import Document, Genkit, GenkitError, Message, Part, Role
+from genkit import Document, ErrorReason, Genkit, GenkitError, Message, Part, Role
 from genkit.embedder import EmbedRequest
 from genkit.model import BackgroundModel, ModelInfo, ModelRequest
 from genkit.plugin_api import GENKIT_USER_AGENT, Action, ActionKind
@@ -906,6 +906,8 @@ async def test_lazy_client_credential_failure_is_unauthenticated_in_action_body(
             await embedder_action.run(EmbedRequest(input=[Document.from_text('Smoked salmon tartine')]))
 
     assert raised.value.status == 'UNAUTHENTICATED'
+    # Nothing was sent, so nothing was rejected.
+    assert raised.value.reason is None
     assert raised.value.__cause__ is no_adc
 
 
@@ -955,20 +957,29 @@ async def test_googleai_list_actions_rejected_key_is_unauthenticated(googleai_pl
         await googleai_plugin_instance.list_actions()
 
     assert raised.value.status == 'UNAUTHENTICATED'
+    assert raised.value.reason is ErrorReason.INVALID_CREDENTIALS
     assert raised.value.__cause__ is rejected
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('failure', 'status'),
+    ('failure', 'status', 'reason'),
     [
-        (APIError(503, {'error': {'code': 503, 'message': 'overloaded', 'status': 'UNAVAILABLE'}}), 'UNAVAILABLE'),
-        (RefreshError('invalid_grant: Token has been expired or revoked.'), 'UNAUTHENTICATED'),
-        (httpx.ConnectError('[Errno 61] Connection refused'), 'UNAVAILABLE'),
+        (
+            APIError(503, {'error': {'code': 503, 'message': 'overloaded', 'status': 'UNAVAILABLE'}}),
+            'UNAVAILABLE',
+            None,
+        ),
+        (
+            RefreshError('invalid_grant: Token has been expired or revoked.'),
+            'UNAUTHENTICATED',
+            ErrorReason.INVALID_CREDENTIALS,
+        ),
+        (httpx.ConnectError('[Errno 61] Connection refused'), 'UNAVAILABLE', None),
     ],
 )
 async def test_vertexai_list_actions_classifies_model_listing_failure(
-    vertexai_plugin_instance: VertexAI, failure: Exception, status: str
+    vertexai_plugin_instance: VertexAI, failure: Exception, status: str, reason: ErrorReason | None
 ) -> None:
     """Model listing in list_actions maps provider, credential, and connection failures like a generate call."""
     mock_client = MagicMock()
@@ -979,6 +990,7 @@ async def test_vertexai_list_actions_classifies_model_listing_failure(
         await vertexai_plugin_instance.list_actions()
 
     assert raised.value.status == status
+    assert raised.value.reason is reason
     assert raised.value.__cause__ is failure
 
 

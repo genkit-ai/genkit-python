@@ -660,8 +660,27 @@ class Part(GenkitModel):
         output: Any | None = None,  # noqa: ANN401
         ref: str | None = None,
         metadata: dict[str, Any] | None = None,
+        content: Sequence[Part] | None = None,
     ) -> Part:
-        return cls(tool_response=ToolResponse(name=name, output=output, ref=ref), metadata=metadata)
+        """Build a tool-response part, e.g. for a manual tool loop.
+
+        ``content`` carries media the model should see next to ``output``
+        (a screenshot, a chart). A ``MultipartToolResponse`` passed as
+        ``output`` is unwrapped the way the engine does it: its ``output``,
+        ``content``, and ``metadata`` land in their own slots instead of being
+        serialized as JSON text.
+        """
+        if isinstance(output, MultipartToolResponse):
+            multipart = cast('MultipartToolResponse[Any]', output)
+            if content is None:
+                content = multipart.content
+            if metadata is None:
+                metadata = multipart.metadata
+            output = multipart.output
+        wire = (
+            [as_part(p).model_dump(mode='json', by_alias=True, exclude_none=True) for p in content] if content else None
+        )
+        return cls(tool_response=ToolResponse(name=name, output=output, ref=ref, content=wire), metadata=metadata)
 
     @classmethod
     def from_data(cls, data: Any, metadata: dict[str, Any] | None = None) -> Part:  # noqa: ANN401
@@ -959,6 +978,11 @@ class Message(GenkitModel):
     def media(self) -> Media | None:
         """The first media part in this message, or ``None``."""
         return next((p.media for p in self.content if p.media is not None), None)
+
+    @property
+    def reasoning(self) -> str:
+        """All reasoning (thinking) parts concatenated; ``''`` when the model sent none."""
+        return ''.join(p.reasoning for p in self.content if p.reasoning is not None)
 
     @property
     def tool_requests(self) -> list[Part]:
@@ -1698,6 +1722,13 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
         return self.message.text
 
     @property
+    def reasoning(self) -> str:
+        """The reply's reasoning (thinking) text, kept out of ``.text``. Same as JS ``response.reasoning``."""
+        if self.message is None:
+            return ''
+        return self.message.reasoning
+
+    @property
     def output(self) -> OutputT | None:
         """Parsed structured output, or None when the reply is not that shape.
 
@@ -1823,6 +1854,11 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
     def text(self) -> str:
         """Text content of this chunk."""
         return ''.join(p.text for p in self.content if p.text is not None)
+
+    @property
+    def reasoning(self) -> str:
+        """Reasoning (thinking) text in this chunk."""
+        return ''.join(p.reasoning for p in self.content if p.reasoning is not None)
 
     @property
     def accumulated_text(self) -> str:

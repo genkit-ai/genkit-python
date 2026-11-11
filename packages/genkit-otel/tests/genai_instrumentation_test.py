@@ -15,6 +15,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import datetime
+import json
 from collections.abc import Mapping
 from typing import get_args
 
@@ -25,12 +27,14 @@ from genkit_otel._gen_ai_attributes import (
     CONTENT_ATTRIBUTES,
     GEN_AI_OPERATION_DETAILS_EVENT,
     GenAiAttr,
+    GenAiMetric,
     GenkitAttr,
 )
 from opentelemetry._logs import LogRecord
+from opentelemetry.sdk.metrics.export import MetricsData
 from opentelemetry.trace import StatusCode
 
-from genkit import FinishReason, Interrupt, Message, ModelResponse, Part, Role
+from genkit import Failure, FinishReason, Interrupt, Message, ModelResponse, Part, Role
 from genkit.model import GenerationUsage, ModelRequest, OutputConfig
 from genkit.telemetry import SpanContext, SpanMetadata, SpanNext
 
@@ -73,6 +77,13 @@ def _model_response(
         message=message or Message(role=Role.MODEL, content=[Part.from_text('ok')]),
         usage=usage,
     )
+
+
+def _returning(value: object) -> SpanNext[object]:
+    async def next_fn(span: SpanContext | None = None) -> object:
+        return value
+
+    return next_fn
 
 
 async def _run_model(
@@ -182,6 +193,64 @@ async def test_records_error_status_and_type_on_throw(harness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_returned_failure_marks_chat_span_error(harness) -> None:
+    """A model that returns error=Failure(...) instead of raising still gets an ERROR chat span."""
+    instr = harness.instrumentation()
+    response = ModelResponse(
+        finish_reason=FinishReason.FAILED,
+        message=Message(role=Role.MODEL, content=[]),
+        error=Failure(status='UNAVAILABLE', message='503 Service Unavailable'),
+    )
+
+    result = await _run_model(instr, 'googleai/gemini-flash-latest', _model_request(), _returning(response))
+
+    assert result is response
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.status.description == '503 Service Unavailable'
+    assert harness.attr(span, GenAiAttr.ERROR_TYPE) == 'UNAVAILABLE'
+    assert list(harness.attr(span, GenAiAttr.RESPONSE_FINISH_REASONS)) == ['error']
+    duration = [
+        dict(point.attributes or {})
+        for resource in (harness.metrics.get_metrics_data() or MetricsData(resource_metrics=[])).resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == GenAiMetric.OPERATION_DURATION
+        for point in metric.data.data_points
+    ]
+    assert [attrs.get(GenAiAttr.ERROR_TYPE) for attrs in duration] == ['UNAVAILABLE']
+
+
+@pytest.mark.asyncio
+async def test_failed_finish_reason_without_error_uses_other_error_type(harness) -> None:
+    """finish_reason=failed with no error payload falls back to the semconv _OTHER error.type."""
+    instr = harness.instrumentation()
+    await _run_model(
+        instr,
+        'googleai/gemini-flash-latest',
+        _model_request(),
+        _returning(_model_response(finish_reason=FinishReason.FAILED)),
+    )
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code == StatusCode.ERROR
+    assert harness.attr(span, GenAiAttr.ERROR_TYPE) == '_OTHER'
+    assert list(harness.attr(span, GenAiAttr.RESPONSE_FINISH_REASONS)) == ['error']
+
+
+@pytest.mark.asyncio
+async def test_successful_response_leaves_chat_span_unset(harness) -> None:
+    """A normal stop response keeps status UNSET and writes no error.type."""
+    instr = harness.instrumentation()
+    await _run_model(instr, 'googleai/gemini-flash-latest', _model_request(), _returning(_model_response()))
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code == StatusCode.UNSET
+    assert harness.attr(span, GenAiAttr.ERROR_TYPE) is None
+
+
+@pytest.mark.asyncio
 async def test_does_not_capture_content_by_default(harness) -> None:
     instr = harness.instrumentation()
     await _run_model(
@@ -268,6 +337,37 @@ async def test_span_and_event_writes_both(harness) -> None:
     assert span is not None
     assert 'hello' in harness.attr(span, GenAiAttr.INPUT_MESSAGES)
     assert GEN_AI_OPERATION_DETAILS_EVENT in _event_names(harness)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['EVENT_ONLY', 'SPAN_AND_EVENT'])
+async def test_event_capture_encodes_non_json_values_without_failing_the_call(harness, mode: str) -> None:
+    """A datetime in message history lands as ISO 8601 and the model call still returns."""
+    instr = harness.instrumentation(content_capturing_mode=mode)
+    delivered_at = datetime.datetime(2026, 11, 8, 12, 0, tzinfo=datetime.timezone.utc)
+    request = _model_request(
+        messages=[
+            Message(role=Role.USER, content=[Part.from_text('when did my order arrive?')]),
+            Message(role=Role.MODEL, content=[Part.from_tool_request('delivery_status', input={})]),
+            Message(
+                role=Role.TOOL,
+                content=[Part.from_tool_response('delivery_status', output={'delivered_at': delivered_at})],
+            ),
+        ]
+    )
+    response = _model_response()
+
+    result = await _run_model(instr, 'googleai/gemini-flash-latest', request, _returning(response))
+
+    assert result is response
+    span = harness.span_named('chat gemini-flash-latest')
+    assert span is not None
+    assert span.status.status_code == StatusCode.UNSET
+    record = _operation_details_record(harness)
+    assert record is not None
+    raw = str(dict(record.attributes or {})[GenAiAttr.INPUT_MESSAGES])
+    assert '2026-11-08T12:00:00Z' in raw
+    assert isinstance(json.loads(raw), list)
 
 
 @pytest.mark.asyncio
@@ -395,6 +495,98 @@ async def test_span_and_event_records_tool_arguments_on_span_and_event(harness) 
 
 
 @pytest.mark.asyncio
+async def test_tool_arguments_pydantic_serialized_as_valid_json(harness) -> None:
+    """Pydantic tool input and result serialize to valid JSON on tool spans and events."""
+    from pydantic import BaseModel
+
+    class OrderInput(BaseModel):
+        dish: str
+        quantity: int
+
+    class OrderOutput(BaseModel):
+        status: str
+
+    instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT', emit_tool_spans=True)
+
+    async def order_tool(span=None):
+        return OrderOutput(status='confirmed')
+
+    await instr.run_in_new_span(
+        SpanMetadata(name='order_food', action_type='tool.v2', input=OrderInput(dish='pad thai', quantity=2)),
+        order_tool,
+    )
+    span = harness.span_named('execute_tool order_food')
+    assert span is not None
+    raw_args = harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS)
+    assert raw_args is not None
+    parsed = json.loads(raw_args)
+    assert parsed == {'dish': 'pad thai', 'quantity': 2}
+    raw_result = harness.attr(span, GenAiAttr.TOOL_CALL_RESULT)
+    assert raw_result is not None
+    assert json.loads(raw_result) == {'status': 'confirmed'}
+
+    record = _operation_details_record(harness)
+    assert record is not None
+    attrs = dict(record.attributes or {})
+    raw_event_args = attrs[GenAiAttr.TOOL_CALL_ARGUMENTS]
+    assert isinstance(raw_event_args, str)
+    event_parsed = json.loads(raw_event_args)
+    assert event_parsed == {'dish': 'pad thai', 'quantity': 2}
+    raw_event_result = attrs[GenAiAttr.TOOL_CALL_RESULT]
+    assert isinstance(raw_event_result, str)
+    assert json.loads(raw_event_result) == {'status': 'confirmed'}
+
+
+@pytest.mark.asyncio
+async def test_tool_arguments_nested_pydantic_serialized_as_valid_json(harness) -> None:
+    """Nested Pydantic models in lists/dicts serialize to valid JSON."""
+    from pydantic import BaseModel
+
+    class Item(BaseModel):
+        name: str
+        qty: int
+
+    instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT', emit_tool_spans=True)
+
+    await instr.run_in_new_span(
+        SpanMetadata(
+            name='bulk_order',
+            action_type='tool.v2',
+            input={'items': [Item(name='spring roll', qty=4)], 'special': Item(name='pad thai', qty=1)},
+        ),
+        lambda span=None: _awaitable({'status': 'ok'}),
+    )
+    span = harness.span_named('execute_tool bulk_order')
+    assert span is not None
+    raw_args = harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS)
+    assert raw_args is not None
+    parsed = json.loads(raw_args)
+    assert parsed == {'items': [{'name': 'spring roll', 'qty': 4}], 'special': {'name': 'pad thai', 'qty': 1}}
+
+
+@pytest.mark.asyncio
+async def test_tool_string_arguments_and_result_are_json_encoded(harness) -> None:
+    """A str tool input and output land as JSON strings, so json.loads round-trips them."""
+    instr = harness.instrumentation(content_capturing_mode='SPAN_AND_EVENT', emit_tool_spans=True)
+
+    await instr.run_in_new_span(
+        SpanMetadata(name='confirm_order', action_type='tool', input='ORD-555'),
+        lambda span=None: _awaitable('CONFIRMED:ORD-555'),
+    )
+    span = harness.span_named('execute_tool confirm_order')
+    assert span is not None
+    assert harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS) == '"ORD-555"'
+    assert json.loads(harness.attr(span, GenAiAttr.TOOL_CALL_ARGUMENTS)) == 'ORD-555'
+    assert json.loads(harness.attr(span, GenAiAttr.TOOL_CALL_RESULT)) == 'CONFIRMED:ORD-555'
+
+    record = _operation_details_record(harness)
+    assert record is not None
+    attrs = dict(record.attributes or {})
+    assert json.loads(str(attrs[GenAiAttr.TOOL_CALL_ARGUMENTS])) == 'ORD-555'
+    assert json.loads(str(attrs[GenAiAttr.TOOL_CALL_RESULT])) == 'CONFIRMED:ORD-555'
+
+
+@pytest.mark.asyncio
 async def test_does_not_capture_action_io_by_default(harness) -> None:
     instr = harness.instrumentation()
     await _run_model(
@@ -433,8 +625,8 @@ async def test_capture_action_io_records_raw_io_on_all_span_types(harness) -> No
     )
     tool = harness.span_named('execute_tool weather')
     assert tool is not None
-    assert 'Paris' in harness.attr(tool, GenkitAttr.INPUT)
-    assert 'sunny' in harness.attr(tool, GenkitAttr.OUTPUT)
+    assert harness.attr(tool, GenkitAttr.INPUT) == '"Paris"'
+    assert harness.attr(tool, GenkitAttr.OUTPUT) == '"sunny"'
     assert harness.attr(tool, GenAiAttr.INPUT_MESSAGES) is None
     assert harness.attr(tool, GenAiAttr.OUTPUT_MESSAGES) is None
 
@@ -444,8 +636,8 @@ async def test_capture_action_io_records_raw_io_on_all_span_types(harness) -> No
     await instr.run_in_new_span(SpanMetadata(name='myFlow', action_type='flow', input='in'), flow_out)
     flow = harness.span_named('myFlow')
     assert flow is not None
-    assert 'in' in harness.attr(flow, GenkitAttr.INPUT)
-    assert 'out' in harness.attr(flow, GenkitAttr.OUTPUT)
+    assert harness.attr(flow, GenkitAttr.INPUT) == '"in"'
+    assert harness.attr(flow, GenkitAttr.OUTPUT) == '"out"'
     assert harness.attr(flow, GenAiAttr.INPUT_MESSAGES) is None
 
 
@@ -892,3 +1084,82 @@ def test_otel_logger_resolves_once_with_scope_name(
     assert instr._otel_logger is recorded_logger
     assert instr._otel_logger is recorded_logger
     assert requested_scopes == ['dining-genai']
+
+
+class _RecordingProvider:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.flushes = 0
+        self.fail = fail
+
+    def force_flush(self) -> bool:
+        self.flushes += 1
+        if self.fail:
+            raise RuntimeError('collector unreachable')
+        return True
+
+
+def test_flush_instrumentations_force_flushes_global_otel_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """flush_instrumentations() reaches GenAiInstrumentation and force-flushes every global OTel provider."""
+    from genkit_otel import _genai_instrumentation
+
+    from genkit.telemetry import (
+        FlushableInstrumentation,
+        configure_instrumentation,
+        flush_instrumentations,
+        reset_instrumentation,
+    )
+
+    tracer_provider = _RecordingProvider()
+    meter_provider = _RecordingProvider()
+    logger_provider = _RecordingProvider()
+    monkeypatch.setattr(_genai_instrumentation.trace_api, 'get_tracer_provider', lambda: tracer_provider)
+    monkeypatch.setattr(_genai_instrumentation.metrics_api, 'get_meter_provider', lambda: meter_provider)
+    monkeypatch.setattr(_genai_instrumentation, 'get_logger_provider', lambda: logger_provider)
+
+    instr = GenAiInstrumentation()
+    assert isinstance(instr, FlushableInstrumentation)
+    reset_instrumentation()
+    configure_instrumentation(instr)
+    try:
+        flush_instrumentations()
+    finally:
+        reset_instrumentation()
+
+    assert (tracer_provider.flushes, meter_provider.flushes, logger_provider.flushes) == (1, 1, 1)
+
+
+def test_flush_skips_proxy_providers_and_swallows_flush_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider without force_flush is skipped; one that raises doesn't stop the rest or reach the caller."""
+    from genkit_otel import _genai_instrumentation
+
+    failing = _RecordingProvider(fail=True)
+    healthy = _RecordingProvider()
+    monkeypatch.setattr(_genai_instrumentation.trace_api, 'get_tracer_provider', object)
+    monkeypatch.setattr(_genai_instrumentation.metrics_api, 'get_meter_provider', lambda: failing)
+    monkeypatch.setattr(_genai_instrumentation, 'get_logger_provider', lambda: healthy)
+
+    GenAiInstrumentation().flush()
+
+    assert (failing.flushes, healthy.flushes) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_set_custom_metadata_attributes_encodes_non_json_values(harness) -> None:
+    """set_custom_metadata_attributes encodes datetime and bytes via _safe_encode_json instead of failing."""
+    from datetime import datetime, timezone
+
+    from genkit.telemetry import set_custom_metadata_attributes
+
+    instr = harness.instrumentation()
+
+    async def body(span=None):
+        if span is not None:
+            span.set_metadata({'at': datetime(2026, 11, 10, tzinfo=timezone.utc), 'raw': b'\xff'})
+        set_custom_metadata_attributes({'tenant': 'acme'})
+        return 'ok'
+
+    await instr.run_in_new_span(SpanMetadata(name='myFlow', action_type='flow'), body)
+    span = harness.span_named('myFlow')
+    assert span is not None
+    assert harness.attr(span, 'genkit:metadata:at') == '"2026-11-10T00:00:00Z"'
+    assert harness.attr(span, 'genkit:metadata:raw') == '"_w=="'

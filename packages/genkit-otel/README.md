@@ -54,6 +54,29 @@ ai = Genkit()
 
 When the SDK is not initialized, the provider is effectively a no-op.
 
+### Flushing before exit
+
+`BatchSpanProcessor` and periodic metric readers buffer exports. A
+serverless handler or a short script can return before they're sent. Call
+`flush_instrumentations()` before the process freezes. It force-flushes the
+global OTel tracer, meter, and logger providers. If a flush fails, it logs a
+warning and doesn't raise:
+
+```python
+import asyncio
+
+from genkit.telemetry import flush_instrumentations
+
+# 1. Handle the request
+response = await ai.generate(prompt='Suggest a dish for a peanut allergy.')
+
+# 2. Drain buffered spans, metrics, and log events before returning
+await asyncio.to_thread(flush_instrumentations)
+```
+
+If you passed `tracer`, `meter`, or `otel_logger` explicitly, flush the
+provider you built them from. `GenAiInstrumentation` can't reach it.
+
 ### Content capture (PII)
 
 Prompt and response content may contain PII, so capture is off by default.

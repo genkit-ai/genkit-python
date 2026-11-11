@@ -254,9 +254,7 @@ def _warn_on_spec_version_mismatch(spec_version: object) -> None:
     if spec_version == _REFLECTION_API_SPEC_VERSION:
         return
     if not isinstance(spec_version, int | float) or spec_version < _REFLECTION_API_SPEC_VERSION:
-        logger.warning(
-            'WARNING: Genkit CLI version may be outdated. Please update `genkit-cli` to the latest version.'
-        )
+        logger.warning('WARNING: Genkit CLI version may be outdated. Please update `genkit-cli` to the latest version.')
     else:
         logger.warning(
             'Genkit CLI is newer than runtime library. Some feature may not be supported. '

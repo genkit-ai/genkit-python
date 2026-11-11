@@ -65,6 +65,8 @@ def find_project_root(start: Path | None = None) -> Path:
             return current
         current = current.parent
     return cwd
+
+
 ACTIVE_CLEANUPS: list[Callable[[], None]] = []
 # RLock so a SIGINT/SIGTERM mid-update can re-enter: signal handlers run on the
 # main thread, and a plain Lock would deadlock if that thread already holds it.

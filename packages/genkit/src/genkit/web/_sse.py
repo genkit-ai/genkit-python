@@ -161,11 +161,13 @@ async def to_sse(handle: StreamHandle) -> AsyncGenerator[str, None]:
             if aclose is not None:
                 await aclose()
         result = await handle.response
-        # Generate boxes turn failures onto the response instead of raising.
-        # Whatever handle carried it (generate_stream, prompt.stream, or a flow
-        # that returns the whole ModelResponse), re-raise here so SSE callers
-        # get the error frame and log instead of {"result": ...} with no text.
-        if isinstance(result, ModelResponse) and result.finish_reason == FinishReason.FAILED:
+        # ModelStreamResponse boxes turn failures onto .response instead of raising
+        # from .stream; re-raise here so SSE callers get the error frame and log.
+        if (
+            isinstance(handle, ModelStreamResponse)
+            and isinstance(result, ModelResponse)
+            and result.finish_reason == FinishReason.FAILED
+        ):
             raise (
                 result._failure.to_exception()
                 if result._failure is not None

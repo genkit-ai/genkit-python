@@ -3,7 +3,7 @@
 # Copyright 2026 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""to_sse unboxes a FAILED ModelResponse whatever handle carried it."""
+"""to_sse frames: generate streams unbox failures; flows return data as-is."""
 
 import json
 import math
@@ -22,11 +22,24 @@ async def _frames(handle: object) -> list[dict[str, object]]:
 
 
 @pytest.mark.asyncio
-async def test_flow_stream_returning_a_failed_response_sends_an_error_frame() -> None:
-    """A flow that returns the whole ModelResponse no longer serves {"result": ...} on failure."""
+async def test_generate_stream_failure_sends_an_error_frame() -> None:
+    """generate_stream boxes the failure on .response; to_sse unboxes it into an error frame."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
     pm.responses = []  # The scripted model raises when it runs out of responses.
+
+    frames = await _frames(ai.generate_stream(prompt='tartine'))
+
+    assert 'error' in frames[-1]
+    assert 'result' not in frames[-1]
+
+
+@pytest.mark.asyncio
+async def test_flow_returning_a_failed_response_sends_it_as_the_result() -> None:
+    """A flow's return value is data: a FAILED ModelResponse goes out as result, same as JSON."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = []
 
     @ai.flow()
     async def suggest_dish(order: str) -> ModelResponse:
@@ -35,7 +48,7 @@ async def test_flow_stream_returning_a_failed_response_sends_an_error_frame() ->
     frames = await _frames(suggest_dish.stream('tartine'))
 
     assert len(frames) == 1
-    assert 'error' in frames[0]
+    assert frames[0]['result']['finishReason'] == 'failed'  # type: ignore[index]
 
 
 class _Handle:
@@ -58,14 +71,13 @@ class _Handle:
 
 
 @pytest.mark.asyncio
-async def test_any_handle_with_a_failed_response_ends_in_an_error_frame() -> None:
+async def test_non_generate_handle_with_a_failed_response_sends_the_result() -> None:
     failed = ModelResponse(finish_reason=FinishReason.FAILED, finish_message='quota exceeded')
 
     frames = await _frames(_Handle(failed))
 
     assert frames[0] == {'message': 'chunk'}
-    assert 'error' in frames[-1]
-    assert 'result' not in frames[-1]
+    assert frames[-1]['result']['finishReason'] == 'failed'  # type: ignore[index]
 
 
 @pytest.mark.asyncio

@@ -359,7 +359,7 @@ def get_logger(name: str | None = None) -> GenkitLogger:
 
 
         # 2. Log inside a flow; lines attach to the flow's trace
-        @ai.flow()
+        @ai.flow
         async def lookup_menu(restaurant_id: str) -> int:
             logger.info('menu lookup', restaurant_id=restaurant_id, items=12)
             # => console: menu lookup  restaurant_id=r-42 items=12

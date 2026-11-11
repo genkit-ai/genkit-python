@@ -39,7 +39,7 @@ async def get_weather(location: str) -> str:
     return f'Sunny in {location}'
 
 
-@ai.flow()
+@ai.flow
 async def chat_flow(prompt: str) -> str:
     response = await ai.generate(
         prompt=prompt,
@@ -119,12 +119,14 @@ ai = Genkit(...)
 app = FastAPI()
 
 
-@ai.flow()
+@ai.flow
 async def ask_chef(prompt: str, ctx: FlowContext[str]) -> str:
-    stream = ai.generate_stream(prompt=prompt)
-    async for chunk in stream:
-        ctx.send_chunk(chunk.text)
-    return (await stream.response).text
+    result = ai.generate_stream(prompt=prompt)
+    # The context manager closes the model stream if the client disconnects.
+    async with result.stream as chunks:
+        async for chunk in chunks:
+            ctx.send_chunk(chunk.text)
+    return (await result.response).text
 
 
 @app.post('/chat/stream')
@@ -172,7 +174,7 @@ from genkit_fastapi import genkit_fastapi_handler
 
 @app.post('/custom-chat')
 @genkit_fastapi_handler(ai)
-@ai.flow()
+@ai.flow
 async def custom_chat(prompt: str) -> str:
     response = await ai.generate(
         prompt=prompt,

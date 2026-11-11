@@ -46,17 +46,18 @@ ai = Genkit(
     model='ollama/llama3.2',
 )
 
-response = await ai.generate(prompt='Write a haiku about local models.')
-print(response.text)
 
-embeddings = await ai.embed(embedder='ollama/nomic-embed-text', content='local inference')
-print(len(embeddings[0].embedding))
+async def main() -> None:
+    response = await ai.generate(prompt='Write a haiku about local models.')
+    print(response.text)
+
+    embeddings = await ai.embed(embedder='ollama/nomic-embed-text', content='local inference')
+    print(len(embeddings[0].embedding))
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
-
-These snippets assume an async context (`await` inside an `async def`); pasting
-them at module top level raises `SyntaxError: 'await' outside function`. See the
-[runnable sample](https://github.com/genkit-ai/genkit-python/tree/main/samples/ollama-sample)
-for a complete `async def main()` plus `ai.run_main(...)` entry point.
 
 ### Streaming
 
@@ -77,7 +78,7 @@ class WeatherInput(BaseModel):
     city: str = Field(description='City to look up')
 
 
-@ai.tool()
+@ai.tool
 async def current_weather(input: WeatherInput) -> str:
     return f'{input.city} is 18°C and partly cloudy.'
 

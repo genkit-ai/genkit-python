@@ -79,7 +79,7 @@ banking_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_banking_agent(text: str, ctx: FlowContext) -> dict[str, Any]:
     """Run a turn that pauses for approval, approve it, then let the transfer land."""
     chat = banking_agent.chat()

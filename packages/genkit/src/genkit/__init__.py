@@ -25,7 +25,7 @@ Example:
 
     ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
-    @ai.flow()
+    @ai.flow
     async def my_flow(prompt: str) -> str:
         res = await ai.generate(prompt=prompt)
         return res.text

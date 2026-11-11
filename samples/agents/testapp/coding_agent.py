@@ -61,7 +61,7 @@ coding_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_coding_agent(text: str, ctx: FlowContext) -> str:
     """Auto-approve every write so the agent can finish a task unattended."""
     chat = coding_agent.chat()
@@ -102,13 +102,13 @@ def _walk(directory: Path) -> list[dict[str, Any]]:
     return entries
 
 
-@ai.flow()
+@ai.flow
 async def list_workspace_files(_: Any = None) -> dict[str, Any]:
     """The file tree the web UI renders beside the chat."""
     return {'files': _walk(WORKSPACE_DIR)}
 
 
-@ai.flow()
+@ai.flow
 async def read_workspace_file(path: str) -> dict[str, str]:
     """Read one file, refusing anything that tries to climb out of the workspace."""
     full = (WORKSPACE_DIR / path).resolve()

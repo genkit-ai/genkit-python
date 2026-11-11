@@ -205,7 +205,7 @@ def genkit_fastapi_handler(
         ```python
         @app.post('/chat')
         @genkit_fastapi_handler(ai)
-        @ai.flow()
+        @ai.flow
         async def chat(prompt: str) -> str:
             response = await ai.generate(prompt=prompt)
             return response.text
@@ -219,7 +219,7 @@ def genkit_fastapi_handler(
             return my_flow
 
 
-        @ai.flow()
+        @ai.flow
         async def my_flow(prompt: str) -> str: ...
         ```
 

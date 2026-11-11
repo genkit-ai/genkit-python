@@ -1858,6 +1858,9 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
           values that already match a member (even if more digits may follow).
 
         ``(await stream.response).output`` is the only fully validated ``Recipe``.
+        The partial is built without validation, so a required ``title: str``
+        can read ``None`` here even though the type says ``str``. Guard each
+        field before you use it: ``if chunk.output and chunk.output.title:``.
 
         With no schema class, this is the JSON value so far (dict, list,
         or scalar). It's ``None`` before an object starts or while the text
@@ -1974,7 +1977,7 @@ class MultipartToolResponse(GenkitModel, Generic[OutputT]):
 
     Example:
         ```python
-        @ai.tool()
+        @ai.tool
         async def screenshot(label: str) -> MultipartToolResponse[Shot]:
             return MultipartToolResponse(output=Shot(label=label), content=[png])
         ```

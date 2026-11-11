@@ -1,6 +1,6 @@
 # Genkit Django Plugin
 
-`genkit-django` exposes Genkit flows as HTTP endpoints in a Django application. It mirrors `genkit-flask` and `genkit-fastapi`: one decorator turns a `@ai.flow()` into a Django view that speaks the Genkit HTTP protocol (JSON envelope, optional SSE streaming, structured error responses).
+`genkit-django` exposes Genkit flows as HTTP endpoints in a Django application. It mirrors `genkit-flask` and `genkit-fastapi`: one decorator turns a `@ai.flow` into a Django view that speaks the Genkit HTTP protocol (JSON envelope, optional SSE streaming, structured error responses).
 
 > **Building with a coding agent? Install the Genkit Python skill first.**
 >
@@ -29,7 +29,7 @@ ai = Genkit(plugins=[...])
 
 
 @genkit_django_handler(ai)
-@ai.flow()
+@ai.flow
 async def chat(prompt: str) -> str:
     response = await ai.generate(prompt=prompt)
     return response.text
@@ -68,7 +68,7 @@ async def auth(request_data: RequestData) -> dict[str, object]:
 
 
 @genkit_django_handler(ai, context_provider=auth)
-@ai.flow()
+@ai.flow
 async def chat(prompt, ctx):
     user = ctx.context.get('username')
     ...

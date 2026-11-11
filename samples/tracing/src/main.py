@@ -42,7 +42,7 @@ class Triage(BaseModel):
     reply: str
 
 
-@ai.flow()
+@ai.flow
 async def triage_ticket(ticket: Ticket) -> Triage:
     # The lookup is a real step on the ticket path, so it gets its own
     # span next to the model calls — that's what you inspect when a

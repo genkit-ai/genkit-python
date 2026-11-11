@@ -651,7 +651,9 @@ class GeminiConfig(ModelConfig):
         default=None,
         description=(
             'For Gemini 3 and later - the thinking level. A higher level is associated with more '
-            'detailed thinking, which is needed for solving more complex tasks. Not with thinking_budget.'
+            'detailed thinking, which is needed for solving more complex tasks. Not with thinking_budget. '
+            'Supported levels vary by model: gemini-3.8-flash and gemini-3.1-pro-preview reject MINIMAL '
+            'with INVALID_ARGUMENT. Gemini 2.5 models reject thinking_level; use thinking_budget.'
         ),
     )
     thinking_budget: int | None = Field(
@@ -778,7 +780,7 @@ class GeminiImageConfig(GeminiConfig):
 
         # 2. Generate architectural artwork with specified aspect ratio and size
         res = await ai.generate(
-            model=GoogleAI.gemini_image('gemini-2.5-flash-preview-image-generation'),
+            model=GoogleAI.gemini_image('gemini-3.1-flash-image'),
             prompt='A modern minimalist espresso bar with warm cedar accents.',
             config=GeminiImageConfig(
                 aspect_ratio='16:9',
@@ -1005,9 +1007,26 @@ GEMINI_3_1_FLASH_LITE = ModelInfo(
     ),
 )
 
+GEMINI_3_5_FLASH_LITE = ModelInfo(
+    label='Google AI - Gemini 3.5 Flash Lite',
+    supports=GEMINI_3_1_FLASH_LITE.supports,
+)
+
 GEMINI_FLASH_LITE_LATEST = ModelInfo(
     label='Google AI - Gemini Flash Lite Latest',
     supports=GEMINI_TEXT_SUPPORTS,
+)
+
+# The ``-latest`` aliases rotate server side, so their labels name the alias,
+# not a generation. Capabilities match the generation they point at today.
+GEMINI_FLASH_LATEST = ModelInfo(
+    label='Google AI - Gemini Flash Latest',
+    supports=GEMINI_3_5_FLASH.supports,
+)
+
+GEMINI_PRO_LATEST = ModelInfo(
+    label='Google AI - Gemini Pro Latest',
+    supports=GEMINI_3_PRO_PREVIEW.supports,
 )
 
 GEMINI_IMAGE_SUPPORTS = ModelSupports(
@@ -1146,8 +1165,6 @@ GENERIC_GEMMA_MODEL = ModelInfo(
 # Constructors take ``Known* | str``, so an unlisted id still type-checks
 # and routes.
 KnownSharedGemini: TypeAlias = Literal[
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
     'gemini-2.5-flash-lite',
     'gemini-3-flash-preview',
     'gemini-3.1-flash-lite',
@@ -1161,11 +1178,18 @@ KnownSharedGemini: TypeAlias = Literal[
 # Vertex AI does not serve the rotating ``-latest`` aliases.
 KnownGoogleAIGemini: TypeAlias = Literal[
     KnownSharedGemini,
+    'gemini-3.5-flash-lite',
     'gemini-flash-latest',
     'gemini-flash-lite-latest',
     'gemini-pro-latest',
 ]
-KnownVertexAIGemini: TypeAlias = KnownSharedGemini
+# The Gemini API (v1beta) returns 404 for the 2.5 Flash and Pro ids; Vertex AI
+# still lists them.
+KnownVertexAIGemini: TypeAlias = Literal[
+    KnownSharedGemini,
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+]
 KnownGeminiTts: TypeAlias = Literal[
     'gemini-2.5-flash-preview-tts',
     'gemini-2.5-pro-preview-tts',
@@ -1179,11 +1203,6 @@ KnownGeminiImage: TypeAlias = Literal[
     'gemini-3.1-flash-image',
 ]
 KnownGemma: TypeAlias = Literal[
-    'gemma-3-1b-it',
-    'gemma-3-4b-it',
-    'gemma-3-12b-it',
-    'gemma-3-27b-it',
-    'gemma-3n-e4b-it',
     'gemma-4-26b-a4b-it',
     'gemma-4-31b-it',
 ]
@@ -1209,8 +1228,11 @@ _add_model(GEMINI_2_5_FLASH, ['gemini-2.5-flash'])
 _add_model(GEMINI_2_5_FLASH_LITE, ['gemini-2.5-flash-lite'])
 _add_model(GEMINI_FLASH_LITE_LATEST, ['gemini-flash-lite-latest'])
 _add_model(GEMINI_3_FLASH_PREVIEW, ['gemini-3-flash-preview'])
-_add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview', 'gemini-pro-latest'])
-_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash', 'gemini-flash-latest'])
+_add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview'])
+_add_model(GEMINI_PRO_LATEST, ['gemini-pro-latest'])
+_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash'])
+_add_model(GEMINI_FLASH_LATEST, ['gemini-flash-latest'])
+_add_model(GEMINI_3_5_FLASH_LITE, ['gemini-3.5-flash-lite'])
 _add_model(GEMINI_3_6_FLASH, ['gemini-3.6-flash'])
 _add_model(GEMINI_3_7_FLASH, ['gemini-3.7-flash'])
 _add_model(GEMINI_3_8_FLASH, ['gemini-3.8-flash'])

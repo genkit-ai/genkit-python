@@ -41,7 +41,7 @@ branching_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_branching_agent(text: str, ctx: FlowContext) -> dict[str, Any]:
     """Establish a root turn, then fork two branches off the same snapshot."""
     root = branching_agent.chat()

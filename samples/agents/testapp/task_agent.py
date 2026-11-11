@@ -134,7 +134,7 @@ task_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_task_agent(text: str, ctx: FlowContext) -> dict[str, Any]:
     """Seed an empty list, run one turn, and hand back the live typed state."""
     chat = task_agent.chat(state={'custom': {'tasks': [], 'next_id': 1}, 'messages': [], 'artifacts': []})

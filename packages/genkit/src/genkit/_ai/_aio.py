@@ -174,7 +174,7 @@ class Genkit:
     Registers plugins, defines flows and tools, and runs generation. Both
     ``Genkit(model=...)`` and ``ai.generate(model=...)`` accept a typed
     ``ModelRef`` from a plugin constructor (recommended, e.g.
-    ``GoogleAI.gemini_model('gemini-flash-latest')``) or a plugin-prefixed
+    ``GoogleAI.gemini('gemini-flash-latest')``) or a plugin-prefixed
     string (``'googleai/gemini-flash-latest'``). Plugins resolve models lazily
     on demand when ``ai.generate()`` is called, without needing pre-registration
     or SDK updates.
@@ -185,11 +185,11 @@ class Genkit:
 
         ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
-        @ai.tool()
+        @ai.tool
         async def current_weather(city: str) -> str:
             return f'Sunny in {city}'
 
-        @ai.flow()
+        @ai.flow
         async def my_flow(prompt: str) -> str:
             res = await ai.generate(prompt=prompt, tools=['current_weather'])
             return res.text
@@ -232,7 +232,7 @@ class Genkit:
                 plugins: Plugins to register (e.g. ``[GoogleAI()]``). Plugins resolve
                     models lazily on demand when ``ai.generate()`` is called.
                 model: Default model for ``ai.generate()``. Accepts a typed ``ModelRef``
-                    (recommended, e.g. ``GoogleAI.gemini_model('gemini-flash-latest')``) or
+                    (recommended, e.g. ``GoogleAI.gemini('gemini-flash-latest')``) or
                     a plugin-prefixed string (``'googleai/gemini-flash-latest'``).
                 prompt_dir: Optional directory for loading ``.prompt`` files.
             """
@@ -402,7 +402,37 @@ class Genkit:
         return _FlowDecorator(self._registry, name, description)
 
     def define_helper(self, name: str, fn: Callable[..., Any]) -> None:
-        """Register a Handlebars helper function."""
+        """Register a Handlebars helper for prompt templates.
+
+        Dotprompt calls the helper as ``fn(params, options)``: ``params`` is a
+        list of the positional arguments from the template, and ``options``
+        carries the named arguments in ``options.hash``. A one-argument
+        function such as ``lambda s: s.upper()`` raises ``TypeError`` at
+        render time. Return a ``str``.
+
+        Example:
+            ```python
+            # 1. Register a helper that takes one positional and one named argument
+            def menu_item(params: list[Any], options: Any) -> str:
+                dish = str(params[0])
+                return dish.upper() if options.hash.get('loud') else dish
+
+
+            ai.define_helper('menu_item', menu_item)
+
+            # 2. Use it in a prompt template
+            special = ai.define_prompt(
+                name='special',
+                model='googleai/gemini-flash-latest',
+                prompt="Describe today's special, {{menu_item dish loud=true}}, in one line.",
+            )
+
+            # 3. Render to check the expanded text
+            request = await special.render(input={'dish': 'smoked salmon tartine'})
+            print(request.messages[0].content[0].text)
+            # => Describe today's special, SMOKED SALMON TARTINE, in one line.
+            ```
+        """
         define_helper(self._registry, name, fn)
 
     def define_partial(self, name: str, source: str) -> None:
@@ -685,14 +715,14 @@ class Genkit:
     async def lookup_tool(self, name: str) -> Tool | None:
         """Return the tool registered under ``name``, or None.
 
-        The same handle ``@ai.tool()`` returns, so a tool defined in one module
+        The same handle ``@ai.tool`` returns, so a tool defined in one module
         can be called or passed in ``tools=[...]`` from another without
         importing it.
 
         Example:
             ```python
             # 1. Define a tool in one module
-            @ai.tool()
+            @ai.tool
             async def menu_price(dish: str) -> float:
                 return 14.5
 
@@ -1270,7 +1300,7 @@ class Genkit:
             ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 
-            @ai.flow()
+            @ai.flow
             async def suggest_dish(cuisine: str) -> str:
                 response = await ai.generate(prompt=f'Suggest one {cuisine} dish.')
                 return response.text
@@ -1550,7 +1580,7 @@ class Genkit:
         """Generate text or structured data using a language model.
 
         ``model`` accepts a typed ``ModelRef`` from a plugin constructor
-        (recommended, e.g. ``GoogleAI.gemini_model('gemini-flash-latest')``,
+        (recommended, e.g. ``GoogleAI.gemini('gemini-flash-latest')``,
         which takes the bare model ID, stamps the ``'googleai/'`` namespace
         prefix, and type-checks ``config``), a plugin-prefixed string
         (``'googleai/gemini-flash-latest'``), a registered model ``Action``, or
@@ -1758,11 +1788,26 @@ class Genkit:
         ending at the last complete turn, so it's safe to send back. The
         chunks you already received are the record of what was shown.
 
+        Use ``async with result.stream as stream:`` so that leaving the loop
+        early (``break``, an exception, a disconnected client) closes the
+        stream and stops the model call.
+
         Example:
+            ```python
+            # 1. Start streaming
             result = ai.generate_stream(prompt='Write a haiku about rain.')
-            async for chunk in result.stream:
-                print(chunk.text)
+
+            # 2. Print chunks as they arrive; the context manager closes the stream
+            async with result.stream as stream:
+                async for chunk in stream:
+                    print(chunk.text, end='')
+            # => Soft rain on the roof...
+
+            # 3. Await the final response
             final = await result.response
+            print(final.finish_reason)
+            # => stop
+            ```
         """
         initial_msgs: list[Message] = []
         if not isinstance(messages, str):

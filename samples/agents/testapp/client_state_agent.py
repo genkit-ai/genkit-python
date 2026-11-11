@@ -49,7 +49,7 @@ class StatelessTurn(BaseModel):
     text: str = 'What is the weather in Tokyo?'
 
 
-@ai.flow()
+@ai.flow
 async def test_weather_agent_stateless(input: StatelessTurn, ctx: FlowContext) -> dict[str, Any]:
     """Resume from the client-held state (or start fresh), then hand it back."""
     chat = weather_agent_stateless.chat(state=input.state) if input.state else weather_agent_stateless.chat()

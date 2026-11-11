@@ -30,18 +30,25 @@ Import the middleware classes you need and pass instances directly into `use=[]`
 ```python
 from genkit import Genkit
 from genkit_google_genai import GoogleAI
-from genkit_middleware import Retry, Fallback, Middleware
+from genkit_middleware import Fallback, Middleware, Retry
 
 ai = Genkit(plugins=[GoogleAI(), Middleware()])
 
-response = await ai.generate(
-    model=GoogleAI.gemini('gemini-flash-latest'),
-    prompt='Hello!',
-    use=[
-        Retry(max_retries=5),
-        Fallback(models=['googleai/gemini-3.1-pro-preview']),
-    ],
-)
+
+async def main() -> None:
+    response = await ai.generate(
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        prompt='Hello!',
+        use=[
+            Retry(max_retries=5),
+            Fallback(models=['googleai/gemini-3.1-pro-preview']),
+        ],
+    )
+    print(response.text)
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 Every middleware works when you pass an instance in `use=[]`; no plugin
@@ -118,7 +125,7 @@ class DeleteInput(BaseModel):
     name: str = Field(description='Database name to delete')
 
 
-@ai.tool()
+@ai.tool
 async def delete_database(input: DeleteInput) -> str:
     return f'Deleted {input.name}'
 
@@ -136,18 +143,26 @@ first = await ai.generate(
 ```
 
 When a non-allowed tool is called, execution is interrupted. Approve and re-run the
-tool by restarting it with ``resumed_metadata`` that includes ``tool_approved``:
+tool by restarting it with `resumed_metadata` that includes `tool_approved`. Pass the
+history in `messages=` and leave out `prompt=`: a new prompt appends a user turn after
+the pending tool request, and the call returns a failed response
+(`finish_reason='failed'`, `response.error.status == 'FAILED_PRECONDITION'`) instead
+of running the tool.
 
 ```python
 response = await ai.generate(
     model=GoogleAI.gemini('gemini-flash-latest'),
-    prompt='Delete the database',
     messages=list(first.messages),
     tools=['delete_database'],
     use=[approval],
     resume_restart=first.interrupts[0].restart(resumed_metadata={'tool_approved': True}),
 )
+print(response.text)
+# => The database has been deleted.
 ```
+
+Inside the tool, `ctx.is_resumed()` is `True` on the approved re-run and
+`ctx.resumed_metadata` holds the dict you passed (`{'tool_approved': True}`).
 
 ### Skills
 

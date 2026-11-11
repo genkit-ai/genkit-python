@@ -33,7 +33,7 @@ Example:
 
     # 2. Define flow and decorate as Django view
     @genkit_django_handler(ai)
-    @ai.flow()
+    @ai.flow
     async def chat(prompt: str) -> str:
         res = await ai.generate(
             model=GoogleAI.gemini('gemini-flash-latest'),

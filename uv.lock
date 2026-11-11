@@ -40,6 +40,7 @@ members = [
     "google-genai-deep-research",
     "google-genai-media",
     "mcp-hello",
+    "mcp-server-hello",
     "middleware",
     "multipart-tools",
     "ollama-sample",
@@ -3710,6 +3711,25 @@ requires-dist = [
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
     { name = "genkit-mcp", editable = "packages/genkit-mcp" },
     { name = "mcp", specifier = ">=1.26.0,<2" },
+]
+
+[[package]]
+name = "mcp-server-hello"
+version = "0.2.0"
+source = { editable = "samples/mcp-server-hello" }
+dependencies = [
+    { name = "genkit" },
+    { name = "genkit-mcp" },
+    { name = "mcp" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "genkit", editable = "packages/genkit" },
+    { name = "genkit-mcp", editable = "packages/genkit-mcp" },
+    { name = "mcp", specifier = ">=1.26.0,<2" },
+    { name = "pydantic", specifier = ">=2.10.5" },
 ]
 
 [[package]]

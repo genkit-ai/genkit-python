@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, cast, overload
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -35,6 +35,7 @@ from genkit_middleware._streaming import watch_stream
 # Everything Retry would retry, plus failures another model may not have:
 # this model doesn't exist or can't do what the request asks.
 _DEFAULT_FALLBACK_STATUSES: list[str] = [*TRANSIENT_STATUSES, 'NOT_FOUND', 'UNIMPLEMENTED']
+_UNSET: Any = cast(Any, object())
 
 
 class FallbackModelEntry(GenkitConfig):
@@ -172,6 +173,28 @@ class Fallback(Middleware[FallbackConfig]):
 
     name = 'fallback'
     description = 'Falls back to alternative models on failure'
+
+    @overload
+    def __init__(
+        self,
+        *,
+        models: Sequence[str | ModelRef[Any] | FallbackModelEntry | dict[str, Any]] = ...,
+        statuses: Sequence[str] = ...,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, *, config: FallbackConfig) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        models: Sequence[str | ModelRef[Any] | FallbackModelEntry | dict[str, Any]] = _UNSET,
+        statuses: Sequence[str] = _UNSET,
+        config: FallbackConfig | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        fields = {k: v for k, v in (('models', models), ('statuses', statuses)) if v is not _UNSET}
+        super().__init__(config=config, **fields, **kwargs)
 
     async def _resolve_fallback_model(
         self,

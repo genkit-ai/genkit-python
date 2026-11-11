@@ -81,7 +81,9 @@ class Redact(Middleware[_CallableConfig]):
 
     async def wrap_model(self, params: ModelHookParams, ctx: MiddlewareContext, next_fn: Next) -> ModelResponse:
         response = await next_fn(params, ctx)
-        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text(self.config.redact(response.text))]))
+        return ModelResponse(
+            message=Message(role=Role.MODEL, content=[Part.from_text(self.config.redact(response.text))])
+        )
 
 
 @pytest.mark.asyncio

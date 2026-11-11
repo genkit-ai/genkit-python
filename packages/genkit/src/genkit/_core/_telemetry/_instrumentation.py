@@ -41,6 +41,7 @@ T_co = TypeVar('T_co', covariant=True)
 
 SpanAttributeValue = str | bool | int | float
 SpanState = Literal['success', 'error']
+"""Value written to ``genkit:state``. ``error`` marks a span whose action returned a failure."""
 
 
 class SpanNext(Protocol[T_co]):
@@ -112,8 +113,8 @@ class DisposableInstrumentation(Protocol):
 class FlushableInstrumentation(Protocol):
     """Optional: a provider that buffers exports.
 
-    ``flush_instrumentations`` calls ``flush`` so a trace is on the wire
-    before the Developer UI asks for it.
+    ``flush_instrumentations`` calls ``flush`` so buffered telemetry is on the
+    wire before a serverless process freezes (or in tests).
     """
 
     def flush(self) -> None: ...

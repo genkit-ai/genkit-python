@@ -55,15 +55,8 @@ ai = Genkit(plugins=[GoogleAI()])
 store = InMemorySessionStore()
 
 
-@ai.tool(name='slowWork', description='Simulate long background work.')
-async def slow_work(_: dict) -> dict:
-    for _i in range(10):
-        await asyncio.sleep(0.5)  # pretend each step is real work
-    return {'done': True}
-
-
 async def long_task_fn(sess: SessionRunner, _: AgentContext) -> AgentResult:
-    # Define tool inside turn handler closure so it can mutate custom session state on each step:
+    # Define the tool inside the agent fn so it can write this session's custom state on each step.
     @ai.tool(name='slowWork', description='Simulate long background work.')
     async def slow_work_closure(_: dict) -> dict:
         for i in range(1, 11):

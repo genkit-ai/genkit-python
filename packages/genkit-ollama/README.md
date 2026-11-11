@@ -48,11 +48,17 @@ ai = Genkit(
 
 
 async def main() -> None:
+    # 1. Generate on the local server
     response = await ai.generate(prompt='Write a haiku about local models.')
     print(response.text)
+    # => Weights on my own disk
+    #    no packet leaves the building
+    #    the fan hums along
 
+    # 2. Embed with a pulled embedding model
     embeddings = await ai.embed(embedder='ollama/nomic-embed-text', content='local inference')
     print(len(embeddings[0].embedding))
+    # => 768
 
 
 if __name__ == '__main__':
@@ -62,10 +68,17 @@ if __name__ == '__main__':
 ### Streaming
 
 ```python
-stream_response = ai.generate_stream(prompt='Stream a haiku about Ollama.')
-async for chunk in stream_response.stream:
-    print(chunk.text, end='', flush=True)
-final = await stream_response.response
+async def main() -> None:
+    # 1. Print chunks as they arrive
+    stream_response = ai.generate_stream(prompt='Stream a haiku about Ollama.')
+    async for chunk in stream_response.stream:
+        print(chunk.text, end='', flush=True)
+    # => Weights on my own disk ...
+
+    # 2. The final response arrives after the last chunk
+    final = await stream_response.response
+    print(final.finish_reason)
+    # => stop
 ```
 
 ### Tool calling
@@ -88,6 +101,7 @@ response = await ai.generate(
     tools=['current_weather'],
 )
 print(response.text)
+# => It's 18°C and partly cloudy in London.
 ```
 
 Ollama tool inputs are object schemas, so wrap primitive inputs in a Pydantic
@@ -110,7 +124,9 @@ response = await ai.generate(
     prompt='Write a haiku about local models.',
     output_schema=Haiku,
 )
-print(response.output)
+if response.output:
+    print(response.output.line_one)
+    # => Weights on my own disk
 ```
 
 ### Ollama-specific config (`OllamaConfig`)

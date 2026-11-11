@@ -47,7 +47,8 @@ Example:
     ```
 
 Requirements:
-    - Requires Google Cloud Application Default Credentials (ADC) or explicit credentials.
+    - Uses Google Cloud Application Default Credentials (ADC); there is no
+      explicit-credentials option.
     - Claude models need ``genkit-vertexai[anthropic]``; Llama, Mistral, and other
       OpenAI-compatible models need ``genkit-vertexai[openai]``.
 

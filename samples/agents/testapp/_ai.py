@@ -18,7 +18,7 @@
 
 Each agent file registers itself on this ``ai`` the moment it's imported, so the
 Dev UI (running a single file) and the FastAPI server (importing all of them)
-both see the same registry. Same idea as the JS testapp's ``genkit.ts``.
+both see the same registry.
 
 Requires GEMINI_API_KEY.
 """

@@ -21,11 +21,25 @@
 
     ```python
     from genkit.exp import Genkit
+    from genkit.exp.agent import InMemorySessionStore
+    from genkit_google_genai import GoogleAI
     from genkit_middleware import Middleware
     from genkit_middleware.exp import Artifacts
 
+    # 1. Register the plugin and pass Artifacts straight to the agent
     ai = Genkit(plugins=[GoogleAI(), Middleware()])
-    agent = ai.define_agent(name='workspaceAgent', model=..., use=[Artifacts()])
+    agent = ai.define_agent(
+        name='workspaceAgent',
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        use=[Artifacts()],
+        store=InMemorySessionStore(),
+    )
+
+    # 2. The model writes an artifact through write_artifact
+    chat = agent.chat()
+    await chat.send('Write poem.txt with a short poem about Python agents.')
+    print([a.name for a in chat.artifacts])
+    # => ['poem.txt']
     ```
 
 ``Artifacts`` isn't registered by the ``Middleware()`` plugin, so it doesn't

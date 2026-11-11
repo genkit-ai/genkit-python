@@ -78,7 +78,11 @@ config = AnthropicConfig(
 )
 
 # 2. Generate with it
-res = await ai.generate(model='anthropic/claude-opus-4-6', prompt='Plan a tasting menu.', config=config)
+await ai.generate(
+    model=Anthropic.claude('claude-opus-4-6'),
+    prompt='Plan a tasting menu.',
+    config=config,
+)
 # Sent as:
 #   thinking={'display': 'summarized', 'type': 'adaptive'}
 #   output_config={'effort': 'high', 'task_budget': {'type': 'tokens', 'total': 20000}}
@@ -105,11 +109,11 @@ claude = Anthropic.claude('claude-sonnet-4-6', config=AnthropicConfig(thinking='
 
 # 2. Turn it off for one call; the inherited budget isn't sent
 await ai.generate(model=claude, prompt='Is shellfish safe for this guest?', config={'thinking': 'disabled'})
-# => thinking={'type': 'disabled'}
+# Sent as: thinking={'type': 'disabled'}
 
 # 3. Raise the budget for another; the mode is inherited
 await ai.generate(model=claude, prompt='Plan a nut-free tasting menu.', config={'thinking_budget': 8192})
-# => thinking={'type': 'enabled', 'budget_tokens': 8192}
+# Sent as: thinking={'type': 'enabled', 'budget_tokens': 8192}
 ```
 
 A budget over an inherited `thinking='disabled'` stays disabled. Pass

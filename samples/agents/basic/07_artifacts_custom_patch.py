@@ -21,10 +21,9 @@ A Research Assistant custom agent streams live research state (topics explored, 
 insights count) via a typed model while continuously building an executive briefing
 artifact (`research_brief.md`).
 
-Declaring a ``state_schema`` means custom state comes back as a typed model — so
-``chat.state``, ``response.state``, and each streamed ``chunk.custom`` are a ``ResearchState``
-with typed attribute access. This demonstrates how live state patches and session
-artifacts work together in a real-world custom agent workflow. Requires GEMINI_API_KEY.
+Declaring a ``state_schema`` types the client view: ``chat.state``,
+``response.state``, and each streamed ``chunk.custom`` come back as
+``ResearchState``. Requires GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ async def research_agent_fn(sess: SessionRunner, ctx: AgentContext) -> AgentResu
                     prompt_text += p.text
         topic = prompt_text.strip() or 'General Overview'
 
-        # 1. Update custom state (typed ResearchState model)
+        # 1. Update custom state (a dict on the server; the client reads it back as ResearchState)
         await sess.update_custom(
             lambda c: {
                 'topics_explored': [*(c or {}).get('topics_explored', []), topic[:40]],

@@ -485,7 +485,7 @@ task = asyncio.create_task(ai.generate(prompt=p))
 task.cancel()
 ```
 
-To stop a stream early, use `async with` (or call `aclose()`). A bare `break` without it leaves the flow running.
+To stop a stream early, use `async with` (or call `aclose()`). After a bare `break`, the flow keeps running until the stream object is garbage-collected.
 
 ```python
 stream = my_flow.stream(x)

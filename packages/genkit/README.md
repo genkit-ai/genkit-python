@@ -55,6 +55,11 @@ async def review(code: str) -> Issue:
 
 async def main() -> None:
     print((await review('eval(user_input)')).model_dump_json(indent=2))
+    # => {
+    #      "title": "Arbitrary code execution via eval",
+    #      "severity": "critical",
+    #      "suggestion": "Parse input with ast.literal_eval or a schema instead of eval."
+    #    }
 
 
 if __name__ == '__main__':

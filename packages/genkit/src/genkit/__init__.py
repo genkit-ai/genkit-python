@@ -14,10 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Genkit — production-ready SDK for AI-powered applications.
+"""Genkit: generation, tools, structured output, flows and agents for Python.
 
-Build AI agents with structured generation, tool calling, streaming, and
-observability. Register plugins, define flows and tools, and run generation.
+Register plugins, define flows and tools, and run generation.
 
 Example:
     from genkit import Genkit
@@ -26,12 +25,16 @@ Example:
     ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
     @ai.flow
-    async def my_flow(prompt: str) -> str:
-        res = await ai.generate(prompt=prompt)
+    async def suggest_dish(cuisine: str) -> str:
+        res = await ai.generate(prompt=f'Suggest one {cuisine} dish.')
         return res.text
 
+    async def main() -> None:
+        print(await suggest_dish('Thai'))
+        # => Green curry with chicken
+
     if __name__ == '__main__':
-        ai.run_main(my_flow('Weather in Paris?'))
+        ai.run_main(main())
 """
 
 from genkit._ai._aio import Genkit

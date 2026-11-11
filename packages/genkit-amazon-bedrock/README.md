@@ -81,10 +81,10 @@ Anything the chain does not cover goes through `session=`, which takes a
 pre-configured `boto3.session.Session`. Region resolution is separate from
 credentials and is described under [Usage](#usage).
 
-Every call runs on these credentials. A per-request key in
-`context={'secrets': {'api_key': ...}}` is ignored, so a flow that carries
-another provider's key can still call Bedrock models. Reading that key as a
-per-request Bedrock API key is tracked in
+Every call runs on these credentials, `ai.generate` and `ai.embed` alike. A
+per-request key in `context={'secrets': {'api_key': ...}}` is ignored, so a
+flow that carries another provider's key can still call Bedrock models.
+Reading that key as a per-request Bedrock API key is tracked in
 [#6976](https://github.com/genkit-ai/genkit/issues/6976).
 
 ## Usage
@@ -238,14 +238,21 @@ from genkit import Part
 from genkit_amazon_bedrock import cache_point_part
 
 CLAUDE = 'bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+DELIVERY_POLICY = open('delivery_policy.md').read()  # well over 1,000 tokens
 
-# The cache point goes after the content it should cache.
-system = [Part.from_text(LONG_STATIC_PROMPT), cache_point_part()]
+# 1. The cache point goes after the content it should cache
+system = [Part.from_text(DELIVERY_POLICY), cache_point_part()]
 
-first = await ai.generate(model=CLAUDE, system=system, prompt='What are the delivery tiers?')
-second = await ai.generate(model=CLAUDE, system=system, prompt='Which tier needs a signature?')
 
-print(second.usage.cached_content_tokens)
+async def main() -> None:
+    # 2. The first call writes the cache, the second reads it
+    await ai.generate(model=CLAUDE, system=system, prompt='What are the delivery tiers?')
+    second = await ai.generate(model=CLAUDE, system=system, prompt='Which tier needs a signature?')
+
+    # 3. Cached tokens show up on the second call only
+    if second.usage:
+        print(second.usage.cached_content_tokens)
+        # => 1843
 ```
 
 Notes:
@@ -327,11 +334,22 @@ ai = Genkit(
     ]
 )
 
-response = await ai.generate(
-    model=Bedrock.stability('stability.sd3-5-large-v1:0'),
-    prompt='A tabby cat asleep on a sunlit windowsill, watercolour.',
-)
-image = response.media.url  # data:image/png;base64,...
+
+async def main() -> None:
+    # 1. Generate an image
+    response = await ai.generate(
+        model=Bedrock.stability('stability.sd3-5-large-v1:0'),
+        prompt='A tabby cat asleep on a sunlit windowsill, watercolour.',
+    )
+
+    # 2. Read the data URL off the first media part
+    if response.media:
+        print(response.media.url[:22])
+        # => data:image/png;base64,
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 The plugin infers the route from the ID: the image IDs below take the
@@ -368,8 +386,9 @@ response = await ai.generate(
 #           'aspect_ratio': '16:9', 'seed': 42, 'negative_prompt': 'blurry'}
 
 # 2. The media part's MIME type follows output_format
-print(response.media.content_type)
-# => image/jpeg
+if response.media:
+    print(response.media.content_type)
+    # => image/jpeg
 ```
 
 `StabilityImageConfig` extends `GenkitConfig`, like the Veo config, not

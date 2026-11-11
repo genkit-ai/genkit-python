@@ -29,6 +29,8 @@ To use Google AI models, obtain an API key from [Google AI Studio](https://aistu
 export GEMINI_API_KEY='<your-api-key>'
 ```
 
+`GOOGLE_API_KEY` and `GOOGLE_GENAI_API_KEY` are read next, in that order. For a per-tenant key, start `GoogleAI()` with no key and pass `context={'secrets': {'api_key': tenant_key}}` on each `generate`, `generate_operation`, `check_operation`, `embed`, or `embed_many` call. With no key from any of these, `GoogleAI()` logs one warning when it's constructed (to stderr unless your app configures `logging`), and a call with no plugin key and no secret fails with `FAILED_PRECONDITION`. A key the API rejects fails with `UNAUTHENTICATED` and `reason=ErrorReason.INVALID_CREDENTIALS`, carrying the API's message.
+
 ### Vertex AI (Google Cloud)
 
 To use Vertex AI models, ensure you have a Google Cloud project and Application Default Credentials (ADC) set up:
@@ -54,10 +56,14 @@ async def greet(name: str) -> str:
     return res.text
 
 
-# 3. Run the flow from the script entry point
-if __name__ == '__main__':
-    print(ai.run_main(greet('Grace')))
+# 3. Call the flow from main and run it
+async def main() -> None:
+    print(await greet('Grace'))
     # => Hello Grace! How can I help you today?
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 ## Features
@@ -135,12 +141,14 @@ async def main() -> None:
     )
 
     print(res.media.url if res.media else '')
-    # => data:audio/wav;base64,UklGRiQAAABXQVZFZ...
+    # => data:audio/L16;codec=pcm;rate=24000;base64,AAAAAP7/AQD+/w...
 
 
 if __name__ == '__main__':
     ai.run_main(main())
 ```
+
+Gemini returns raw 16-bit PCM at 24 kHz. Wrap it in a WAV header (stdlib `wave`) before saving to `.wav`.
 
 #### Image generation with GeminiImageConfig
 
@@ -231,6 +239,45 @@ config = GeminiTtsConfig(
 )
 ```
 
+### Search grounding and candidate metadata
+
+Gemini attaches per-candidate metadata (search sources, citations, URL context,
+logprobs, safety ratings) to the reply. Genkit keeps it on `response.custom`
+under the wire names: `custom['candidates'][i]` holds `groundingMetadata`,
+`urlContextMetadata`, `citationMetadata`, `logprobsResult`, `safetyRatings`,
+`avgLogprobs`, `finishMessage` and `tokenCount` for candidate `i`, and
+`custom['promptFeedback']` explains a blocked prompt. `custom` is `None` when
+Gemini sent neither. Streamed replies merge the chunks' metadata into the same
+shape.
+
+```python
+from genkit import Genkit
+from genkit_google_genai import GeminiConfig, GoogleAI
+
+# 1. Initialize Genkit with GoogleAI
+ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
+
+
+async def main() -> None:
+    # 2. Ground the answer in Google Search
+    response = await ai.generate(
+        prompt='Which Chicago restaurants earned a new Michelin star this year?',
+        config=GeminiConfig(google_search=True),
+    )
+    print(response.text)
+    # => Two Chicago restaurants earned their first star this year: ...
+
+    # 3. List the pages Gemini grounded the answer in
+    candidates = (response.custom or {}).get('candidates') or [{}]
+    for chunk in candidates[0].get('groundingMetadata', {}).get('groundingChunks', []):
+        print(chunk['web']['uri'])
+    # => https://guide.michelin.com/us/en/illinois/chicago/restaurants
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
+```
+
 ### Provider fields the plugin doesn't declare
 
 Gemini, Gemini image, and Veo configs reject keys they don't declare, so a
@@ -275,8 +322,7 @@ function tools (`generate(tools=...)` raises). Blocks with defaults, such as
 `agent_config` and `environment`, merge key by key.
 
 `timeout` on these three configs (and in Deep Research's `check_operation` /
-`cancel_operation` `config`) is the HTTP timeout in seconds. It used to be
-milliseconds: `config={'timeout': 30000}` becomes `config={'timeout': 30}`.
+`cancel_operation` `config`) is the HTTP timeout in seconds.
 
 ```python
 op = await ai.generate_operation(
@@ -355,16 +401,17 @@ ai = Genkit(plugins=[GoogleAI()])
 # 2. Launch background video generation and poll until it finishes
 async def main() -> None:
     operation = await ai.generate_operation(
-        model=GoogleAI.veo('veo-3.1-lite-generate-001'),
+        model=GoogleAI.veo('veo-3.1-lite-generate-preview'),
         prompt='A paper airplane gliding through a bright classroom',
     )
     while not operation.done:
         await asyncio.sleep(5)
         operation = await ai.check_operation(operation)
 
-    # 3. Access output media artifact
-    print(operation.output.message.content[0].media.url)
-    # => https://generativelanguage.googleapis.com/v1beta/files/preview.mp4
+    # 3. Read the finished video off the response
+    if operation.output and operation.output.media:
+        print(operation.output.media.url)
+        # => https://generativelanguage.googleapis.com/v1beta/files/preview.mp4
 
 
 if __name__ == '__main__':
@@ -392,9 +439,10 @@ async def main() -> None:
         await asyncio.sleep(5)
         operation = await ai.check_operation(operation)
 
-    # 3. Access output media artifact
-    print(operation.output.message.content[0].media.url)
-    # => gs://my-bucket/videos/output.mp4
+    # 3. Read the finished video off the response
+    if operation.output and operation.output.media:
+        print(operation.output.media.url)
+        # => data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y...
 
 
 if __name__ == '__main__':

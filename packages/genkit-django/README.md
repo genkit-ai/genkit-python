@@ -15,7 +15,7 @@
 ## Install
 
 ```bash
-uv add genkit-django
+uv add genkit-django genkit-google-genai
 ```
 
 ## Usage
@@ -24,8 +24,9 @@ uv add genkit-django
 # myapp/views.py
 from genkit import Genkit
 from genkit_django import genkit_django_handler
+from genkit_google_genai import GoogleAI
 
-ai = Genkit(plugins=[...])
+ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 
 @genkit_django_handler(ai)
@@ -60,6 +61,7 @@ uvicorn myproject.asgi:application
 ## Context provider
 
 ```python
+from genkit import FlowContext
 from genkit.web import RequestData
 
 
@@ -69,7 +71,8 @@ async def auth(request_data: RequestData) -> dict[str, object]:
 
 @genkit_django_handler(ai, context_provider=auth)
 @ai.flow
-async def chat(prompt, ctx):
-    user = ctx.context.get('username')
-    ...
+async def chat(prompt: str, ctx: FlowContext) -> str:
+    user = ctx.context.get('username')  # what auth returned
+    response = await ai.generate(prompt=prompt)
+    return response.text
 ```

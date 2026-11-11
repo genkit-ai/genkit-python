@@ -42,16 +42,18 @@ class PrepProgress(BaseModel):
     percent: int
 
 
-# A tool takes one input; several fields go on one model the model fills in.
+# A tool takes one input. For several fields, wrap them in one Pydantic model.
+# A bare return is wrapped as output-only.
 @ai.tool
 async def weather(input: WeatherInput) -> str:
-    """Look up the weather. A bare return is wrapped as output-only."""
+    """Look up the current weather for a city."""
     return f'Sunny and 22{input.unit} in {input.city}'
 
 
+# Return MultipartToolResponse to send the PNG next to the output.
 @ai.tool
 async def screenshot(label: str) -> MultipartToolResponse:
-    """Take a screenshot. Return ``MultipartToolResponse`` to send the PNG with the output."""
+    """Take a screenshot of the lab camera."""
     return MultipartToolResponse(output={'ok': True, 'label': label}, content=[_PNG], metadata={'src': 'lab-cam'})
 
 

@@ -78,7 +78,8 @@ weather_agent = ai.define_agent(
     tools=[get_weather],
 )
 
-# Mount agent turn route at POST /api/weatherAgent (plus /getSnapshot and /abort companion endpoints)
+# Mount agent turn route at POST /api/weatherAgent
+# (/getSnapshot and /abort are added only when the agent has a store=)
 app.include_router(serve_agent(weather_agent), prefix='/api')
 ```
 
@@ -87,7 +88,7 @@ app.include_router(serve_agent(weather_agent), prefix='/api')
 Customize the base path or resolve request context using FastAPI's dependency injection system:
 
 ```python
-from fastapi import Depends, Header
+from fastapi import Header
 from genkit_fastapi import serve_flow
 
 
@@ -141,8 +142,8 @@ async def chat_stream(prompt: str, user: User = Depends(current_user)):
     #    data: {"result":"Pad thai, no peanuts."}
 ```
 
-> [!WARNING]
-> The `result` frame is whatever the run returns, over SSE and JSON alike. Return `response.text` or `response.output` from a served flow, not the `ModelResponse`: its `request` field carries the system prompt, tool definitions, retrieved documents and history. The same goes for `to_sse(ai.generate_stream(...))`, whose result is the whole `ModelResponse`.
+> [!NOTE]
+> The `result` frame is whatever the run returns, over SSE and JSON alike. A `ModelResponse` result (a flow returning one, or `to_sse(ai.generate_stream(...))`) goes out without its `request` field, so the system prompt, tool definitions, retrieved documents and history stay on the server. Return `response.text` or `response.output` when the client only needs the answer.
 
 `to_sse(chat.send_stream(...))` frames agent turns the same way `serve_agent` does (`AgentStreamChunk` messages, then the `AgentOutput` result). Failures are logged with Python's logging module (5xx with a traceback, 4xx as a warning), so they show up wherever your app's logging config sends them.
 

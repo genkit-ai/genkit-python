@@ -190,12 +190,16 @@ class Genkit:
             return f'Sunny in {city}'
 
         @ai.flow
-        async def my_flow(prompt: str) -> str:
-            res = await ai.generate(prompt=prompt, tools=['current_weather'])
+        async def weather_report(prompt: str) -> str:
+            res = await ai.generate(prompt=prompt, tools=[current_weather])
             return res.text
 
+        async def main() -> None:
+            print(await weather_report('Weather in Paris?'))
+            # => It's sunny in Paris.
+
         if __name__ == '__main__':
-            ai.run_main(my_flow('Weather in Paris?'))
+            ai.run_main(main())
     """
 
     _registry: Registry
@@ -730,6 +734,7 @@ class Genkit:
             # 2. Find it by name somewhere else
             price_tool = await ai.lookup_tool('menu_price')
             response = await ai.generate(prompt='How much is the ramen?', tools=[price_tool])
+            print(response.text)
             # => The ramen is $14.50.
             ```
         """
@@ -1007,6 +1012,7 @@ class Genkit:
             joke = ai.define_prompt(name='joke', prompt='Tell a joke about {{topic}}.')
             res = await joke(input={'topic': 'cats'})
             print(res.text)
+            # => Why did the cat sit on the keyboard? To keep an eye on the mouse.
         """
         executable_prompt = Prompt(
             self,
@@ -1605,19 +1611,18 @@ class Genkit:
 
             res = await ai.generate(
                 prompt='Weather in Paris?',
-                tools=['current_weather'],
+                tools=[current_weather],
                 output_schema=Weather,
             )
-            print(res.text)
-            print(res.output)
+            if res.output:
+                print(res.output)
+            # => city='Paris' forecast='Sunny'
 
         ``prompt`` and ``system`` strings are sent exactly as written. Braces
-        are content (JSON, code, or another template), not Handlebars. If a
-        generate string used to rely on a registered partial (``{{> persona}}``),
-        a ``define_helper`` helper, or ``{{media url=...}}``, move it into
-        ``define_prompt`` (or a ``.prompt`` file), or build the text /
-        ``Part.from_media(...)`` yourself. ``{{role}}`` in a generate string
-        already raised; it now goes to the model as written too.
+        are content (JSON, code, or another template), not Handlebars.
+        Partials (``{{> persona}}``), ``define_helper`` helpers and
+        ``{{media url=...}}`` only render in ``define_prompt`` or a ``.prompt``
+        file; otherwise build the text or ``Part.from_media(...)`` yourself.
         """
         return await self._generate(
             model=model,
@@ -1951,6 +1956,13 @@ class Genkit:
         ``metadata`` is attached to a string ``content``. A ``Document``
         already carries its own metadata, so passing both raises ``TypeError``.
 
+        ``context`` reaches the embedder as ``ctx.context``, as on
+        ``generate``. Omitted, the embedder sees the enclosing action's
+        context. The GoogleAI, VertexAI and OpenAI embedders read a
+        per-request key from ``context={'secrets': {'api_key': ...}}``, so
+        the tenant, not the plugin key, is billed. Ollama and Bedrock
+        embedders always use the plugin's client.
+
         Example:
             from genkit_google_genai import GoogleAI
 
@@ -2016,7 +2028,21 @@ class Genkit:
         fn: Callable[[], Awaitable[T]],
         metadata: dict[str, Any] | None = None,
     ) -> T:
-        """Run a function as a discrete traced step within a flow."""
+        """Run a function as a discrete traced step within a flow.
+
+        ``fn`` takes no arguments and returns an awaitable, so ``async def``
+        functions, ``lambda: fetch(i)``, and callables with an ``async def
+        __call__`` all work. Same shape as JS ``ai.run('step', fn)``.
+
+        Example:
+            ```python
+            # 1. Each fan-out step gets its own span in the trace
+            menus = await asyncio.gather(*[ai.run(f'fetch-{i}', lambda i=i: fetch_menu(i)) for i in range(3)])
+
+            # 2. Keyword form
+            total = await ai.run(name='sum', fn=lambda: sum_prices(menus))
+            ```
+        """
         if not inspect.iscoroutinefunction(fn):
             raise TypeError('fn must be a coroutine function')
 
@@ -2081,7 +2107,8 @@ class Genkit:
             # 3. Poll until done; output is a ModelResponse
             while not op.done:
                 op = await ai.check_operation(op)
-            print(op.output.media.url)
+            if op.output and op.output.media:
+                print(op.output.media.url)
             # => https://storage.googleapis.com/.../risotto.mp4
             ```
         """

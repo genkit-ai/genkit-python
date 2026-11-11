@@ -9,7 +9,8 @@ uv run src/main.py
 ```
 
 ```bash
-curl -X POST http://localhost:8080/say_hi \
+curl -N -X POST http://localhost:8080/say_hi \
   -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
   -d '{"data":"Mittens"}'
 ```

@@ -34,7 +34,7 @@ from typing import Any
 from _ai import ai, reply_text
 from genkit_middleware import Filesystem, ToolApproval
 
-from genkit import FlowContext
+from genkit import FlowContext, PublicError
 from genkit.exp.agent import FileSessionStore
 
 WORKSPACE_DIR = Path(__file__).resolve().parent / 'workspace'
@@ -113,7 +113,9 @@ async def read_workspace_file(path: str) -> dict[str, str]:
     """Read one file, refusing anything that tries to climb out of the workspace."""
     full = (WORKSPACE_DIR / path).resolve()
     if os.path.commonpath([str(full), str(WORKSPACE_DIR)]) != str(WORKSPACE_DIR):
-        raise ValueError('Path outside workspace')
+        raise PublicError('INVALID_ARGUMENT', 'Path outside workspace')
+    if not full.is_file():
+        raise PublicError('NOT_FOUND', f'No such file: {path}')
     return {'path': path, 'content': full.read_text()}
 
 

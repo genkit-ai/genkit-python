@@ -26,16 +26,24 @@ from genkit_google_genai import GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])
 
-# Stream text responses in real-time
-stream = ai.generate_stream(
-    model="googleai/gemini-flash-latest",
-    prompt="Stream a 2-line poem about space.",
-)
-async for chunk in stream:
-    print(chunk.text, end="")
 
-# Access final response metadata
-response = await stream.response
+async def main() -> None:
+    # 1. Stream text as the model writes it
+    stream = ai.generate_stream(
+        model="googleai/gemini-flash-latest",
+        prompt="Stream a 2-line poem about space.",
+    )
+    async for chunk in stream:
+        print(chunk.text, end="")
+
+    # 2. Await the final response for usage and finish reason
+    response = await stream.response
+    print(response.finish_reason)
+    # => stop
+
+
+if __name__ == "__main__":
+    ai.run_main(main())
 ```
 
 ### 2. Streaming Tool Calling & Structured Output
@@ -47,50 +55,69 @@ from genkit_google_genai import GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])
 
-# Define a tool with Pydantic type annotations
+
+# 1. Define a tool with a Pydantic input
 class WeatherInput(BaseModel):
     city: str = Field(description="Target city name")
+
 
 @ai.tool(description="Get current weather for a location")
 async def get_weather(input: WeatherInput) -> str:
     return f"Sunny, 72°F in {input.city}"
 
-# Define structured output schema
+
+# 2. Define the structured output schema
 class ActivityPlan(BaseModel):
     activities: list[str]
     outfit: str
 
-# Stream response with automatic tool execution and structured output
-stream = ai.generate_stream(
-    model="googleai/gemini-flash-latest",
-    prompt="Suggest activities for Seattle today.",
-    tools=[get_weather],
-    output_schema=ActivityPlan,
-)
-async for chunk in stream:
-    if chunk.text:
-        print(chunk.text, end="")
 
-# Access validated Pydantic output object
-response = await stream.response
-print(response.output)
-# => ActivityPlan(activities=['Kayak on Lake Union', 'Discovery Park'], outfit='Light jacket')
+async def main() -> None:
+    # 3. Stream; Genkit runs the tool calls and parses the output
+    stream = ai.generate_stream(
+        model="googleai/gemini-flash-latest",
+        prompt="Suggest activities for Seattle today.",
+        tools=[get_weather],
+        output_schema=ActivityPlan,
+    )
+    async for chunk in stream:
+        if chunk.text:
+            print(chunk.text, end="")
+
+    # 4. Read the validated Pydantic object
+    response = await stream.response
+    print(response.output)
+    # => activities=['Kayak on Lake Union', 'Discovery Park'] outfit='Light jacket'
+
+
+if __name__ == "__main__":
+    ai.run_main(main())
 ```
 
 ### 3. Tool Approval Middleware & Restarts
 
 ```python
-from genkit import Genkit
+from pydantic import BaseModel
+from genkit.exp import Genkit
 from genkit_google_genai import GoogleAI
 from genkit_middleware import Middleware, ToolApproval
 
 ai = Genkit(plugins=[GoogleAI(), Middleware()])
 tool_approval = ToolApproval(allowed_tools=[])
 
-@ai.tool(description="Transfer money to an account")
-async def transfer_money(amount: float, to_account: str) -> str:
-    return f"Transferred ${amount} to {to_account}"
 
+# 1. A tool takes one input, so group the fields in a model
+class Transfer(BaseModel):
+    amount: float
+    to_account: str
+
+
+@ai.tool(description="Transfer money to an account")
+async def transfer_money(transfer: Transfer) -> str:
+    return f"Transferred ${transfer.amount} to {transfer.to_account}"
+
+
+# 2. Every tool call pauses for approval (allowed_tools=[])
 agent = ai.define_agent(
     name="bankingAgent",
     model="googleai/gemini-flash-latest",
@@ -99,15 +126,23 @@ agent = ai.define_agent(
     use=[tool_approval],
 )
 
-chat = agent.chat()
-out1 = await chat.send("Transfer $100 to account 999.")
-# => Returns INTERRUPTED status because transfer_money requires approval
 
-# Approve pending tool interrupts and resume execution
-restarts = [intr.restart(resumed_metadata={"tool_approved": True}) for intr in out1.interrupts]
-out2 = await chat.resume(restart=restarts)
-print(out2.text)
-# => "$100 has been successfully transferred to account 999."
+async def main() -> None:
+    # 3. The turn stops at the pending transfer
+    chat = agent.chat()
+    out1 = await chat.send("Transfer $100 to account 999.")
+    print(out1.finish_reason)
+    # => interrupted
+
+    # 4. Approve the pending calls and resume
+    restarts = [intr.restart(resumed_metadata={"tool_approved": True}) for intr in out1.interrupts]
+    out2 = await chat.resume(restart=restarts)
+    print(out2.text)
+    # => $100 has been transferred to account 999.
+
+
+if __name__ == "__main__":
+    ai.run_main(main())
 ```
 
 ### 4. Agent Loops & Persistent Sessions
@@ -119,10 +154,10 @@ from genkit_google_genai import GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])
 
-# Persist multi-turn session history in Cloud Firestore
+# 1. Persist multi-turn session history in Cloud Firestore
 store = FirestoreSessionStore()
 
-# Define an agent with persistent session memory
+# 2. Define an agent backed by the store
 agent = ai.define_agent(
     name="supportAgent",
     model="googleai/gemini-flash-latest",
@@ -130,12 +165,18 @@ agent = ai.define_agent(
     store=store,
 )
 
-# Multi-turn chat with automatic persistent session state
-chat = agent.chat()
-res1 = await chat.send("Hi, my name is Alex.")
-res2 = await chat.send("What was my name again?")
-print(res2.text)
-# => "Your name is Alex!"
+
+async def main() -> None:
+    # 3. Each turn is saved; the next one sees the history
+    chat = agent.chat()
+    await chat.send("Hi, my name is Alex.")
+    res = await chat.send("What was my name again?")
+    print(res.text)
+    # => Your name is Alex.
+
+
+if __name__ == "__main__":
+    ai.run_main(main())
 ```
 
 ---
@@ -145,11 +186,11 @@ print(res2.text)
 <table>
   <tr>
     <td><strong>Type-Safe by Design</strong></td>
-    <td>Leverage native Python type annotations and Pydantic models for structured inputs, outputs, and automatic tool schema generation.</td>
+    <td>Native Python type annotations and Pydantic models drive structured inputs, outputs, and tool schemas.</td>
   </tr>
   <tr>
     <td><strong>Unified Model API</strong></td>
-    <td>Switch effortlessly between Google Gemini, Anthropic Claude, OpenAI, Ollama, and Vertex AI using a single consistent interface.</td>
+    <td>Switch between Google Gemini, Anthropic Claude, OpenAI, Ollama, and Vertex AI with one interface.</td>
   </tr>
   <tr>
     <td><strong>Integrated Observability</strong></td>
@@ -165,7 +206,7 @@ print(res2.text)
 
 ## Developer Tools & Dev UI
 
-Accelerate AI development with the local Genkit Developer UI and CLI.
+Run flows, prompts and tools locally with the Genkit Developer UI and CLI.
 
 ```bash
 genkit start -- uv run main.py
@@ -174,7 +215,6 @@ genkit start -- uv run main.py
 Key features:
 - **Playground**: Run and experiment with Genkit flows, prompts, and tools in dedicated playgrounds.
 - **Trace Inspector**: Analyze detailed execution traces, including step-by-step breakdowns of complex flows.
-- **Evaluations**: Review performance metrics and evaluate model outputs over time.
 
 <img src="docs/resources/readme-ui-traces-screenshot.png" width="700" alt="Screenshot of Genkit Developer UI showing traces">
 
@@ -182,12 +222,12 @@ Key features:
 
 ## Exploring Samples & Onboarding
 
-Jumpstart your app with copy-pasteable reference implementations in [`samples/`](samples/):
+Reference implementations live in [`samples/`](samples/):
 
 - **[Basic Flows](samples/basic-flows)**: Text generation, real-time streaming, structured Pydantic schemas, and type-safe tools
 - **[Agents](samples/agents)**: Autonomous multi-turn agents, session state persistence, and memory
 - **[Multimodal & Advanced Gemini](samples/google-genai-media)**: Multimodal media processing, context caching, and code execution
-- **[Model Evaluation](samples/evaluators)**: Automated quality evaluation, scoring metrics, and assertion suites
+- **[Tool Interrupts](samples/tool-interrupts)**: Pausing tool calls for human approval and resuming the turn
 
 ### Running Samples Locally
 

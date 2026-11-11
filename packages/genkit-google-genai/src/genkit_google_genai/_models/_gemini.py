@@ -741,7 +741,7 @@ class GeminiTtsConfig(GeminiConfig):
 
         # 3. Access synthesized audio parts
         print(res.media.url if res.media else '')
-        # => data:audio/wav;base64,UklGRiQAAABXQVZFZ...
+        # => data:audio/L16;codec=pcm;rate=24000;base64,AAAAAP7/AQD+/w...
         ```
     """
 

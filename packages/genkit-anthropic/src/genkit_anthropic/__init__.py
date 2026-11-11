@@ -16,31 +16,39 @@
 
 """Anthropic plugin for Genkit.
 
-This plugin provides integration with Anthropic's Claude models for the
-Genkit framework. It registers Claude models as Genkit actions, enabling
-text generation operations.
+Registers Claude models as Genkit model actions under ``anthropic/``. Any
+Claude id resolves on demand; ``Anthropic.claude()`` returns a typed ref bound
+to ``AnthropicConfig``.
 
 Example:
     ```python
     from genkit import Genkit
-    from genkit_anthropic import Anthropic, AnthropicConfig
+    from genkit_anthropic import Anthropic
 
     # 1. Initialize Genkit with the Anthropic plugin
     ai = Genkit(plugins=[Anthropic()])
 
-    # 2. Generate content using Claude Sonnet 4.6
-    res = await ai.generate(
-        model=Anthropic.claude('claude-sonnet-4-6'),
-        prompt='Explain recursion in 10 words.',
-    )
 
-    # 3. Inspect output shapes directly
-    print(res.text)
-    # => A function calling itself until reaching a base stopping condition.
+    async def main() -> None:
+        # 2. Generate with Claude Sonnet 4.6
+        res = await ai.generate(
+            model=Anthropic.claude('claude-sonnet-4-6'),
+            prompt='Explain recursion in 10 words.',
+        )
+
+        # 3. Read the text
+        print(res.text)
+        # => A function that solves a problem by calling itself repeatedly.
+
+
+    if __name__ == '__main__':
+        ai.run_main(main())
     ```
 
-Requirements:
-    - Requires the ``ANTHROPIC_API_KEY`` environment variable or explicit ``api_key``.
+Credentials:
+    The plugin key comes from ``api_key=`` or ``ANTHROPIC_API_KEY``. A call
+    can bring its own key as ``context={'secrets': {'api_key': ...}}``; a
+    plugin with no key of its own serves only those calls.
 
 See Also:
     - Anthropic documentation: https://docs.anthropic.com/

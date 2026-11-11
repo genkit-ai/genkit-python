@@ -45,12 +45,14 @@ async def main() -> None:
     )
     print(cat.output)
 
-    # thinking= is how you see the model's reasoning stream.
+    # thinking= streams the model's reasoning on chunk.reasoning, ahead of the answer.
     stream = ai.generate_stream(
         prompt='What is 17 * 23? Think it through, then state the answer.',
-        config={'thinking': 'enabled', 'thinkingBudget': 1024},
+        config={'thinking': 'enabled', 'thinking_budget': 1024},
     )
     async for chunk in stream.stream:
+        if chunk.reasoning:
+            print(chunk.reasoning, end='', flush=True)
         if chunk.text:
             print(chunk.text, end='', flush=True)
     print()

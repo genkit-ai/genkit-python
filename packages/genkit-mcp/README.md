@@ -10,8 +10,6 @@ Tracking issue: <https://github.com/genkit-ai/genkit/issues/6194>
 The example uses Gemini through `genkit-google-genai` and needs `GEMINI_API_KEY` set. Any model plugin works.
 
 ```python
-import asyncio
-
 from genkit import Genkit
 from genkit_google_genai import GoogleAI
 from genkit_mcp import define_mcp_client
@@ -27,28 +25,32 @@ client = define_mcp_client(
 
 
 async def main() -> None:
-    try:
-        # What the server offers, under the names a model is shown.
-        tools = await client.get_active_tools()
-        for tool in tools:
-            print(tool.name, tool.description)
+    # 1. What the server offers, under the names a model sees
+    tools = await client.get_active_tools()
+    for tool in tools:
+        print(tool.name)
+    # => everything_echo
+    #    everything_add
+    #    ...
 
-        # Every tool of this server, or just one.
-        result = await ai.generate(prompt='Echo "hello".', tools=['everything:tool/*'])
-        one = f'{client.name}:tool/{client.tool_name("echo")}'
-        result = await ai.generate(prompt='Echo "hello".', tools=[one])
+    # 2. Bind every tool of this server, or just one
+    result = await ai.generate(prompt='Echo "hello".', tools=['everything:tool/*'])
+    one = f'{client.name}:tool/{client.tool_name("echo")}'
+    print(one)
+    # => everything:tool/everything_echo
+    result = await ai.generate(prompt='Echo "hello".', tools=[one])
+    print(result.text)
+    # => Echo: hello
 
-        # The listing itself is a list of Genkit tools, so it can be handed to a
-        # generate call or called directly.
-        result = await ai.generate(prompt='Echo "hello".', tools=tools)
-        print(result.text)
-        echoed = (await tools[0]({'message': 'hello'})).output
-        print(echoed)
-    finally:
-        await client.close()
+    # 3. The listing is a list of Genkit tools: hand it to generate or call one directly
+    result = await ai.generate(prompt='Echo "hello".', tools=tools)
+    echoed = (await tools[0]({'message': 'hello'})).output
+    print(echoed)
+    # => Echo: hello
 
 
-asyncio.run(main())
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 ## Tool names
@@ -118,6 +120,8 @@ host = define_mcp_host(
 
 result = await ai.generate(prompt='Echo "hello".', tools=['hosted:tool/*'])
 one = f'{host.name}:tool/{host.tool_name("everything", "echo")}'
+print(one)
+# => hosted:tool/everything_echo
 result = await ai.generate(prompt='Echo "hello".', tools=[one])
 ```
 

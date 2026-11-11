@@ -23,13 +23,14 @@ from collections.abc import Mapping
 from typing import ClassVar, Protocol, TypeVar
 
 from opentelemetry import metrics as metrics_api, trace as trace_api
-from opentelemetry._logs import get_logger as get_otel_logger
+from opentelemetry._logs import get_logger as get_otel_logger, get_logger_provider
 from opentelemetry.metrics import Meter
 from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
-from genkit import Interrupt, ModelResponse, get_logger as get_genkit_logger
+from genkit import FinishReason, Interrupt, ModelResponse, get_logger as get_genkit_logger
 from genkit.model import ModelRequest
 from genkit.telemetry import Instrumentation, SpanContext, SpanMetadata, SpanNext
 from genkit_otel._gen_ai_attributes import (
@@ -167,6 +168,19 @@ class GenAiInstrumentation(Instrumentation):
             self._cached_logger = get_otel_logger(self.scope_name)
         return self._cached_logger
 
+    def flush(self) -> None:
+        """Force-flush the global OTel tracer, meter, and logger providers.
+
+        ``genkit.telemetry.flush_instrumentations()`` calls this, so a
+        serverless handler can drain buffered spans before the process
+        freezes. Providers without ``force_flush`` (the API's proxy
+        defaults) are skipped. Providers behind an injected ``tracer``,
+        ``meter``, or ``otel_logger`` aren't reachable from here; flush
+        those on the provider you built.
+        """
+        for provider in (trace_api.get_tracer_provider(), metrics_api.get_meter_provider(), get_logger_provider()):
+            _force_flush(provider)
+
     async def run_in_new_span(
         self,
         metadata: SpanMetadata,
@@ -211,13 +225,19 @@ class GenAiInstrumentation(Instrumentation):
             try:
                 output = await next(GenAiSpanContext(span))
                 response = output if isinstance(output, ModelResponse) else None
+                # A model can return its failure (finish_reason=failed / error)
+                # instead of raising; the span still reports it as an error.
+                error_type = _response_error_type(response) if response is not None else None
+                failed = error_type is not None
                 if response is not None:
-                    self._add_response_attributes(span, response)
+                    self._add_response_attributes(span, response, failed=failed)
+                if response is not None and error_type is not None:
+                    self._record_response_failure(span, response, error_type)
                 if self.content_capturing_mode != 'NO_CONTENT':
-                    self._record_content(span, request, response)
+                    self._record_content(span, request, response, failed=failed)
                 self._maybe_capture_action_io(span, metadata.input, output)
                 if self.emit_metrics:
-                    self._record_model_metrics(started, metric_attrs, response=response)
+                    self._record_model_metrics(started, metric_attrs, response=response, error_type=error_type)
                 return output
             except Interrupt:
                 span.set_attribute('genkit.interrupted', True)
@@ -318,8 +338,8 @@ class GenAiInstrumentation(Instrumentation):
             _set_json_attribute(span, GenAiAttr.TOOL_CALL_RESULT, output)
         if self._capture_on_event:
             event_attrs: dict[str, AttributeValue] = {
-                GenAiAttr.TOOL_CALL_ARGUMENTS: _encode_json_value(input),
-                GenAiAttr.TOOL_CALL_RESULT: _encode_json_value(output),
+                GenAiAttr.TOOL_CALL_ARGUMENTS: _safe_encode_json(input),
+                GenAiAttr.TOOL_CALL_RESULT: _safe_encode_json(output),
             }
             _emit_operation_details(self._otel_logger, event_attrs)
 
@@ -329,8 +349,8 @@ class GenAiInstrumentation(Instrumentation):
         _set_json_attribute(span, GenkitAttr.INPUT, input)
         _set_json_attribute(span, GenkitAttr.OUTPUT, output)
 
-    def _add_response_attributes(self, span: Span, response: ModelResponse) -> None:
-        finish_reasons = _resolve_finish_reasons(response)
+    def _add_response_attributes(self, span: Span, response: ModelResponse, *, failed: bool) -> None:
+        finish_reasons = _resolve_finish_reasons(response, failed=failed)
         if finish_reasons:
             span.set_attribute(GenAiAttr.RESPONSE_FINISH_REASONS, finish_reasons)
         usage = response.usage
@@ -354,6 +374,8 @@ class GenAiInstrumentation(Instrumentation):
         span: Span,
         request: ModelRequest | None,
         response: ModelResponse | None,
+        *,
+        failed: bool,
     ) -> None:
         input_messages = (
             normalize_messages(request.messages) if request is not None and request.messages is not None else None
@@ -361,7 +383,7 @@ class GenAiInstrumentation(Instrumentation):
         output_messages: list[dict[str, object]] = []
         output_message = resolve_response_message(response) if response is not None else None
         if output_message is not None and response is not None:
-            reason = _resolve_finish_reasons(response)[0]
+            reason = _resolve_finish_reasons(response, failed=failed)[0]
             output_messages.append(map_output_message(output_message, reason))
 
         if self._capture_on_span:
@@ -379,12 +401,17 @@ class GenAiInstrumentation(Instrumentation):
         if self._capture_on_event:
             event_attrs: dict[str, AttributeValue] = {}
             if input_messages is not None:
-                event_attrs[GenAiAttr.INPUT_MESSAGES] = json.dumps(input_messages.messages)
+                event_attrs[GenAiAttr.INPUT_MESSAGES] = _safe_encode_json(input_messages.messages)
                 if input_messages.system_instructions:
-                    event_attrs[GenAiAttr.SYSTEM_INSTRUCTIONS] = json.dumps(input_messages.system_instructions)
+                    event_attrs[GenAiAttr.SYSTEM_INSTRUCTIONS] = _safe_encode_json(input_messages.system_instructions)
             if output_messages:
-                event_attrs[GenAiAttr.OUTPUT_MESSAGES] = json.dumps(output_messages)
+                event_attrs[GenAiAttr.OUTPUT_MESSAGES] = _safe_encode_json(output_messages)
             _emit_operation_details(self._otel_logger, event_attrs)
+
+    def _record_response_failure(self, span: Span, response: ModelResponse, error_type: str) -> None:
+        message = response.error.message if response.error is not None else response.finish_message
+        span.set_status(StatusCode.ERROR, message or None)
+        span.set_attribute(GenAiAttr.ERROR_TYPE, error_type)
 
     def _record_error(self, span: Span, exc: BaseException) -> None:
         span.set_status(StatusCode.ERROR, str(exc))
@@ -424,10 +451,7 @@ class GenAiSpanContext(SpanContext):
 
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         for key, value in metadata.items():
-            try:
-                value_string = value if isinstance(value, str) else json.dumps(value)
-            except (TypeError, ValueError) as exc:
-                value_string = f'Error encoding metadata: {exc}'
+            value_string = value if isinstance(value, str) else _safe_encode_json(value)
             # Keep ad-hoc metadata out of the reserved gen_ai.* namespace.
             self._span.set_attribute(f'genkit:metadata:{key}', value_string)
 
@@ -488,7 +512,20 @@ def _add_request_config_attributes(attrs: dict[str, AttributeValue], request: Mo
             attrs[GenAiAttr.OUTPUT_TYPE] = output_type
 
 
-def _resolve_finish_reasons(response: ModelResponse) -> list[str]:
+def _response_error_type(response: ModelResponse) -> str | None:
+    """``error.type`` for a response that carries its failure, else ``None``.
+
+    The Genkit status (``UNAVAILABLE``...) keeps cardinality low; ``_OTHER``
+    is the semconv fallback when the failure has no status.
+    """
+    if response.error is not None:
+        return response.error.status or '_OTHER'
+    if response.finish_reason == FinishReason.FAILED:
+        return '_OTHER'
+    return None
+
+
+def _resolve_finish_reasons(response: ModelResponse, *, failed: bool) -> list[str]:
     message = resolve_response_message(response)
     has_tool_request = any(is_tool_request_part(part) for part in (message.content if message else []))
     if has_tool_request:
@@ -496,7 +533,7 @@ def _resolve_finish_reasons(response: ModelResponse) -> list[str]:
         # own stop reason is less specific.
         return ['tool_calls']
     reason = response.finish_reason.value if response.finish_reason is not None else None
-    return [map_finish_reason(reason, failed=False)]
+    return [map_finish_reason(reason, failed=failed)]
 
 
 def _config_map(config: object) -> dict[str, object]:
@@ -523,26 +560,39 @@ def _encode_json_value(value: object) -> str:
     """Encode an object as a JSON string, dumping Pydantic models to dicts first.
 
     Strings are encoded too (``'ORD-555'`` -> ``'"ORD-555"'``), so every JSON
-    attribute round-trips through ``json.loads``. Same shape as JS ``JSON.stringify``
-    for JSON-safe values.
+    attribute round-trips through ``json.loads``.
     """
 
     def _json_default(obj: object) -> object:
-        if isinstance(obj, BaseModel):
-            return obj.model_dump(mode='json', by_alias=True, exclude_none=True)
-        return str(obj)
+        # datetime -> ISO 8601, UUID/Decimal -> str, dataclass -> dict, bytes -> URL-safe base64.
+        return to_jsonable_python(obj, by_alias=True, exclude_none=True, bytes_mode='base64', fallback=str)
 
     return json.dumps(value, default=_json_default)
+
+
+def _safe_encode_json(value: object) -> str:
+    """``_encode_json_value`` that never raises: telemetry must not fail the action."""
+    try:
+        return _encode_json_value(value)
+    except Exception as exc:  # noqa: BLE001 - any encode failure becomes a placeholder.
+        return f'Unable to encode: {exc}'
+
+
+def _force_flush(provider: object) -> None:
+    """``provider.force_flush()``; skip proxies without it, log instead of raising."""
+    force_flush = getattr(provider, 'force_flush', None)
+    if not callable(force_flush):
+        return
+    try:
+        force_flush()
+    except Exception:  # noqa: BLE001 - a failed flush must not raise into the app.
+        logger.warning('OpenTelemetry %s.force_flush() failed', type(provider).__name__, exc_info=True)
 
 
 def _set_json_attribute(span: Span, key: str, value: object) -> None:
     if value is None:
         return
-    try:
-        encoded = _encode_json_value(value)
-    except (TypeError, ValueError) as exc:
-        encoded = f'Unable to encode: {exc}'
-    span.set_attribute(key, encoded)
+    span.set_attribute(key, _safe_encode_json(value))
 
 
 def _emit_operation_details(otel_logger: OtelEventLogger, attributes: Mapping[str, AttributeValue]) -> None:

@@ -5,7 +5,7 @@ exposes that server's tools as Genkit `tool` actions through a dynamic action pr
 serves a Genkit app's own tools to MCP clients.
 
 Tracking issues: <https://github.com/genkit-ai/genkit/issues/6194> (client),
-<https://github.com/genkit-ai/genkit/issues/6397> (server)
+<https://github.com/genkit-ai/genkit-python/issues/91> (server)
 
 ## Usage
 

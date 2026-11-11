@@ -170,8 +170,9 @@ async def main() -> None:
         ),
     )
 
-    print(res.media.url if res.media else '')
-    # => data:image/png;base64,iVBORw0KGgoAAAANSU...
+    if res.media:
+        print(res.media.url[:40])
+        # => data:image/jpeg;base64,/9j/4AAQSkZJRgABA
 
 
 if __name__ == '__main__':
@@ -237,45 +238,6 @@ config = GeminiTtsConfig(
         'consentAudio': consent_b64,
     }}}}},
 )
-```
-
-### Search grounding and candidate metadata
-
-Gemini attaches per-candidate metadata (search sources, citations, URL context,
-logprobs, safety ratings) to the reply. Genkit keeps it on `response.custom`
-under the wire names: `custom['candidates'][i]` holds `groundingMetadata`,
-`urlContextMetadata`, `citationMetadata`, `logprobsResult`, `safetyRatings`,
-`avgLogprobs`, `finishMessage` and `tokenCount` for candidate `i`, and
-`custom['promptFeedback']` explains a blocked prompt. `custom` is `None` when
-Gemini sent neither. Streamed replies merge the chunks' metadata into the same
-shape.
-
-```python
-from genkit import Genkit
-from genkit_google_genai import GeminiConfig, GoogleAI
-
-# 1. Initialize Genkit with GoogleAI
-ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
-
-
-async def main() -> None:
-    # 2. Ground the answer in Google Search
-    response = await ai.generate(
-        prompt='Which Chicago restaurants earned a new Michelin star this year?',
-        config=GeminiConfig(google_search=True),
-    )
-    print(response.text)
-    # => Two Chicago restaurants earned their first star this year: ...
-
-    # 3. List the pages Gemini grounded the answer in
-    candidates = (response.custom or {}).get('candidates') or [{}]
-    for chunk in candidates[0].get('groundingMetadata', {}).get('groundingChunks', []):
-        print(chunk['web']['uri'])
-    # => https://guide.michelin.com/us/en/illinois/chicago/restaurants
-
-
-if __name__ == '__main__':
-    ai.run_main(main())
 ```
 
 ### Provider fields the plugin doesn't declare

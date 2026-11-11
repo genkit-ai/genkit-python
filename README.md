@@ -35,6 +35,7 @@ async def main() -> None:
     )
     async for chunk in stream:
         print(chunk.text, end="")
+    print()
 
     # 2. Await the final response for usage and finish reason
     response = await stream.response
@@ -83,6 +84,7 @@ async def main() -> None:
     async for chunk in stream:
         if chunk.text:
             print(chunk.text, end="")
+    print()
 
     # 4. Read the validated Pydantic object
     response = await stream.response

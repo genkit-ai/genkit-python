@@ -66,8 +66,7 @@ uv add genkit-middleware genkit-google-genai
 ### Retry
 
 Retries a failed model call with exponential backoff. A `GenkitError` is retried only
-when its status is in `statuses`; any other exception is retried. A call that already
-streamed chunks is not retried:
+when its status is in `statuses`; any other exception is retried:
 
 ```python
 from genkit_google_genai import GoogleAI

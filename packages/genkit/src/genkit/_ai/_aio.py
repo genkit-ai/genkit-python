@@ -1806,6 +1806,7 @@ class Genkit:
             async with result.stream as stream:
                 async for chunk in stream:
                     print(chunk.text, end='')
+            print()
             # => Soft rain on the roof...
 
             # 3. Await the final response
@@ -2028,19 +2029,19 @@ class Genkit:
         fn: Callable[[], Awaitable[T]],
         metadata: dict[str, Any] | None = None,
     ) -> T:
-        """Run a function as a discrete traced step within a flow.
+        """Run a coroutine function as a discrete traced step within a flow.
 
-        ``fn`` takes no arguments and returns an awaitable, so ``async def``
-        functions, ``lambda: fetch(i)``, and callables with an ``async def
-        __call__`` all work. Same shape as JS ``ai.run('step', fn)``.
+        ``fn`` is a zero-argument ``async def`` function; each call creates its
+        own ``flowStep`` span in the trace.
 
         Example:
             ```python
-            # 1. Each fan-out step gets its own span in the trace
-            menus = await asyncio.gather(*[ai.run(f'fetch-{i}', lambda i=i: fetch_menu(i)) for i in range(3)])
+            # 1. Wrap a step in an async def and pass it with name= and fn=
+            async def fetch_menu() -> list[str]:
+                return await load_daily_specials()
 
-            # 2. Keyword form
-            total = await ai.run(name='sum', fn=lambda: sum_prices(menus))
+
+            menu = await ai.run(name='fetch-menu', fn=fetch_menu)
             ```
         """
         if not inspect.iscoroutinefunction(fn):

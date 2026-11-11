@@ -73,6 +73,7 @@ async def main() -> None:
     stream_response = ai.generate_stream(prompt='Stream a haiku about Ollama.')
     async for chunk in stream_response.stream:
         print(chunk.text, end='', flush=True)
+    print()
     # => Weights on my own disk ...
 
     # 2. The final response arrives after the last chunk

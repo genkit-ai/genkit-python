@@ -789,8 +789,9 @@ class GeminiImageConfig(GeminiConfig):
         )
 
         # 3. Access generated image media
-        print(res.media.url if res.media else '')
-        # => data:image/png;base64,iVBORw0KGgoAAAANSU...
+        if res.media:
+            print(res.media.url[:40])
+            # => data:image/jpeg;base64,/9j/4AAQSkZJRgABA
         ```
     """
 

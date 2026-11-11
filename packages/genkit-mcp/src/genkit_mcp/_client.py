@@ -37,7 +37,6 @@ from genkit_mcp._errors import _ConnectionClosedError, _ConnectionFailedError
 from genkit_mcp._tools import (
     mcp_tool_name,
     mcp_tools_to_actions,
-    mcp_tools_to_handles,
     validate_provider_name,
     validate_tool_prefix,
 )
@@ -169,7 +168,7 @@ class McpClient:
                 JSON-RPC error code it answers the listing with.
         """
         tools = await self._on_connection(McpConnection.list_tools)
-        return mcp_tools_to_handles(tools, self._name, self._call_tool)
+        return mcp_tools_to_actions(tools, self._name, self._call_tool)
 
     async def _list_actions(self) -> list[Action[Any, Any]]:
         """List the server's tools as unregistered actions, for a provider to hand out."""

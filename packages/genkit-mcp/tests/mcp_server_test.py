@@ -110,8 +110,8 @@ async def test_the_server_advertises_its_name_and_version() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capabilities_offer_tools_and_nothing_else() -> None:
-    """Prompts and resources are not served, so they are not advertised."""
+async def test_capabilities_offer_tools_and_prompts_and_nothing_else() -> None:
+    """Resources are not served, so they are not advertised."""
     ai = app()
     server = create_mcp_server(ai, 'bookshop')
 
@@ -119,7 +119,7 @@ async def test_capabilities_offer_tools_and_nothing_else() -> None:
         result = await session.initialize()
 
     assert result.capabilities.tools is not None
-    assert result.capabilities.prompts is None
+    assert result.capabilities.prompts is not None
     assert result.capabilities.resources is None
 
 

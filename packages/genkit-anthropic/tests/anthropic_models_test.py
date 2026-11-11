@@ -541,11 +541,12 @@ async def test_cache_token_tracking_in_usage() -> None:
     response = await model.generate(request)
 
     assert response.usage is not None
-    assert response.usage.input_tokens == 100
+    assert response.usage.input_tokens == 200
     assert response.usage.output_tokens == 50
-    assert response.usage.custom is not None
-    assert response.usage.custom['cache_creation_input_tokens'] == 80
-    assert response.usage.custom['cache_read_input_tokens'] == 20
+    assert response.usage.total_tokens == 250
+    assert response.usage.cached_content_tokens == 20
+    assert response.usage.cache_write_tokens == 80
+    assert response.usage.custom == {'cache_creation_input_tokens': 80, 'cache_read_input_tokens': 20}
 
 
 @pytest.mark.asyncio

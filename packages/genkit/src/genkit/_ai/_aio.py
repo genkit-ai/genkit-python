@@ -711,7 +711,7 @@ class Genkit:
     async def list_tools(self) -> list[Tool]:
         """Return every tool registered on this app, sorted by name.
 
-        Each is the same handle ``lookup_tool`` returns. Every plugin is initialized
+        Each is the kind of handle ``lookup_tool`` returns. Every plugin is initialized
         first, so tools a plugin registers in ``init()`` are included, and a plugin
         whose ``init()`` fails makes this raise. Tools a plugin only lists in
         ``list_actions()`` are registered, and so included, once something has

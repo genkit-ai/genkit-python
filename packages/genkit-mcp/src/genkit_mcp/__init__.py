@@ -14,12 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Model Context Protocol client for Genkit.
+"""Model Context Protocol for Genkit.
 
-Exposes the tools of one or more stdio MCP servers as Genkit ``tool`` actions.
+Exposes the tools of one or more stdio MCP servers as Genkit ``tool`` actions,
+and serves a Genkit app's own tools to MCP clients.
 """
 
 from genkit_mcp._client import McpClient, define_mcp_client
 from genkit_mcp._host import McpHost, define_mcp_host
+from genkit_mcp._server import McpServer, create_mcp_server
 
-__all__ = ['McpClient', 'McpHost', 'define_mcp_client', 'define_mcp_host']
+__all__ = ['McpClient', 'McpHost', 'McpServer', 'create_mcp_server', 'define_mcp_client', 'define_mcp_host']

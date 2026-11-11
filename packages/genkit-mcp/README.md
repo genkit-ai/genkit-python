@@ -1,9 +1,11 @@
-# Genkit MCP Client
+# Genkit MCP
 
 Connects Genkit to a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio and
-exposes that server's tools as Genkit `tool` actions through a dynamic action provider.
+exposes that server's tools as Genkit `tool` actions through a dynamic action provider. It also
+serves a Genkit app's own tools to MCP clients.
 
-Tracking issue: <https://github.com/genkit-ai/genkit/issues/6194>
+Tracking issues: <https://github.com/genkit-ai/genkit/issues/6194> (client),
+<https://github.com/genkit-ai/genkit-python/issues/91> (server)
 
 ## Usage
 
@@ -160,3 +162,89 @@ status `FAILED_PRECONDITION`, so define a new host to use those servers again.
 
 One provider means one listing. A tool call that fails on one server drops the listing for all of
 them, so the next `generate` lists every server again.
+
+## Serving your app as an MCP server
+
+`create_mcp_server` wraps a `Genkit` instance and registers nothing, so the tools it serves are the
+ones the app already has:
+
+```python
+import asyncio
+
+from genkit import Genkit
+from genkit_mcp import create_mcp_server
+from pydantic import BaseModel
+
+HOURS = {'saturday': '9am to 6pm', 'sunday': 'closed'}
+
+ai = Genkit()
+
+
+class Day(BaseModel):
+    name: str
+
+
+@ai.tool()
+async def opening_hours(day: Day) -> str:
+    """Report the shop's opening hours for a day of the week."""
+    return HOURS.get(day.name.lower(), '10am to 7pm')
+
+
+server = create_mcp_server(ai, 'bookshop', instructions='Ask about the shop.')
+
+if __name__ == '__main__':
+    asyncio.run(server.start())
+```
+
+The app's tools are read with `ai.list_tools()` on every `tools/list`, so a tool defined after the
+server was built is still served. A tool whose input is not an object, such as a single scalar or an
+optional model, is skipped: MCP arguments are always an object, and such a tool is not callable by
+name either, rather than being listed and then failing. A model that refers to itself is served.
+An output schema is advertised only for a tool built as a `Tool`, as `@ai.tool()` builds one, that
+returns an object itself, such as `-> Shelf`. A client rejects a result that lacks the structured
+content a schema promised, and a tool returning `MultipartToolResponse[Shelf]` may leave its output
+out. Tools a dynamic action provider supplies, from `define_mcp_client` for instance, are not
+defined on the app and are not served.
+
+Arguments that do not match a tool's input schema are rejected by the MCP SDK before the tool runs,
+with an error that quotes them. A tool that raises answers with an error result, worded as a served
+flow's error body is. A `PublicError` sends its status and message, and arguments the input model's
+own validators reject send the failing fields without their values. Any other `GenkitError` sends
+`Tool '<name>' failed: <status>`, and any other exception `Tool '<name>' failed`, since a provider's
+error text can name a project, a resource path or a URL. So raise a `PublicError` for a failure the
+model should read and retry. Such an error, like rejected arguments, is logged on the server as one
+warning line. Any other failure is logged with its traceback. A tool that interrupts for the user's
+input answers with an error result saying so, since MCP cannot pause a call. A result that cannot
+be encoded as UTF-8 answers with `Tool '<name>' failed`. A plugin that
+fails to start fails the listing, and the client is told only that the server could not list its
+tools.
+
+### stdio
+
+`await server.start()` serves on this process's stdin and stdout until stdin closes. They are the
+wire, so `start()` gives the transport copies of file descriptors 0 and 1, whatever `sys.stdin` and
+`sys.stdout` are at the time. It then points descriptor 1 and `sys.stdout` at stderr, and descriptor
+0 at the null device, for the rest of the process's life. One stray line corrupts a JSON-RPC frame,
+and structlog's builtin default writes to stdout, so `print`, loggers, child processes and C
+extensions all write to stderr from then on, and a child process cannot read the client's requests.
+Text still buffered for stdout is flushed ahead of the first frame. Pass `redirect_stdout=False` to
+leave both as they are, for an app that keeps them clear itself.
+
+`await server.serve(read_stream, write_stream)` serves on any SDK stream pair instead, and touches
+nothing.
+
+### Known gaps
+
+Scalar outputs and strings that look like JSON do not round-trip exactly. Clients join every text
+block into the output, so a text or data content part is sent only beside no output or an object
+output, and is dropped with a warning otherwise. A Genkit client reading a result with structured
+content keeps that object and drops the text beside it. A media part whose URL is not absolute is
+dropped with a warning, and one sent as a resource link is dropped by a Genkit client. A tool whose
+input is not an object is not served at all, and an output schema is advertised only as described
+above, so a client is told less about such a tool than Genkit knows. The advertised schema is the
+one Genkit validates input against, so an output model whose dumped JSON differs from it, through a
+`serialization_alias` or a `computed_field` on a model that forbids extra fields, fails the client's
+check of the result. Nothing sends `notifications/tools/list_changed`; the list is re-read per
+request instead. A client's `notifications/cancelled` cancels the tool call. Progress, sampling and
+elicitation are not supported. A plugin-namespaced tool name carries a `/`, which the MCP SDK warns
+about. stdio reads and writes UTF-8 whatever the locale, but is untested on Windows.

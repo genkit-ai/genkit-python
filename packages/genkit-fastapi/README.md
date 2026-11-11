@@ -15,8 +15,10 @@ Expose Genkit flows and agents as HTTP endpoints in a FastAPI application.
 ## Installation
 
 ```bash
-uv add genkit-fastapi genkit-google-genai
+uv add genkit-fastapi genkit-google-genai uvicorn
 ```
+
+`uvicorn` runs the examples below. Any ASGI server works; the adapter doesn't depend on one.
 
 ## Usage
 

@@ -224,7 +224,7 @@ Key features:
 
 Reference implementations live in [`samples/`](samples/):
 
-- **[Basic Flows](samples/basic-flows)**: Text generation, real-time streaming, structured Pydantic schemas, and type-safe tools
+- **[Basic Flows](samples/basic-flows)**: Typed flows, named `ai.run` steps, streaming, and serving over FastAPI. No model or API key needed
 - **[Agents](samples/agents)**: Autonomous multi-turn agents, session state persistence, and memory
 - **[Multimodal & Advanced Gemini](samples/google-genai-media)**: Multimodal media processing, context caching, and code execution
 - **[Tool Interrupts](samples/tool-interrupts)**: Pausing tool calls for human approval and resuming the turn
@@ -235,7 +235,7 @@ Clone the repository and launch any sample with the interactive Dev UI:
 
 ```bash
 cd samples/<sample-name>
-genkit start -- uv run main.py
+genkit start -- uv run src/main.py
 ```
 
 ---

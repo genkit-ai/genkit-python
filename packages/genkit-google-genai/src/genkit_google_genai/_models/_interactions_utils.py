@@ -28,6 +28,7 @@ from genkit_google_genai._interactions._converters import (
     to_interaction_steps,
 )
 from genkit_google_genai._interactions._options import ClientOptions
+from genkit_google_genai._interactions._types import Step, UserInputStep
 from genkit_google_genai._models._routing import strip_ref_prefixes
 from genkit_google_genai._models._sdk_config import check_timeout_seconds, timeout_seconds_to_ms
 from genkit_google_genai._models._secrets import context_api_key
@@ -219,7 +220,7 @@ def partition_keys(
     return (*parts, remainder)
 
 
-def require_interaction_steps(steps: list[Any]) -> list[Any]:
+def require_interaction_steps(steps: list[Step]) -> list[Step]:
     """Reject an empty Interactions input before we pay for a round trip."""
     if not steps:
         raise GenkitError(
@@ -229,18 +230,16 @@ def require_interaction_steps(steps: list[Any]) -> list[Any]:
     return steps
 
 
-def steps_with_folded_system_instruction(messages: list[Message] | None) -> list[dict[str, Any]]:
+def steps_with_folded_system_instruction(messages: list[Message] | None) -> list[Step]:
     """Convert messages to interaction steps, folding system prompt into a leading user turn."""
     system_instruction, turns = split_system_instruction(messages or [])
     steps = to_interaction_steps(ensure_tool_ids(turns))
     if system_instruction:
-        steps.insert(
-            0,
-            {
-                'type': 'user_input',
-                'content': [{'type': 'text', 'text': system_instruction}],
-            },
-        )
+        instruction: UserInputStep = {
+            'type': 'user_input',
+            'content': [{'type': 'text', 'text': system_instruction}],
+        }
+        steps.insert(0, instruction)
     return require_interaction_steps(steps)
 
 

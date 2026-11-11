@@ -36,7 +36,6 @@ from genkit_google_genai._interactions._client import (
     timeout_seconds,
 )
 from genkit_google_genai._interactions._options import ClientOptions
-from google.genai.interactions import Interaction
 
 from genkit import GenkitError
 from genkit.plugin_api import GENKIT_USER_AGENT
@@ -128,8 +127,7 @@ async def test_create_interaction_posts_body(http_client: MagicMock) -> None:
             ClientOptions(base_url='https://example.test'),
         )
 
-    assert isinstance(result, Interaction)
-    assert result.id == 'ix-1'
+    assert result == {'id': 'ix-1', 'status': 'in_progress'}
     method, url = http_client.request.call_args.args[:2]
     assert method == 'POST'
     assert url == 'https://example.test/v1beta/interactions'
@@ -148,7 +146,7 @@ async def test_get_interaction_gets_by_id(http_client: MagicMock) -> None:
     with patch.object(interactions_client, '_http_client', return_value=http_client):
         result = await get_interaction('key', 'ix-9')
 
-    assert result.id == 'ix-9'
+    assert result.get('id') == 'ix-9'
     method, url = http_client.request.call_args.args[:2]
     assert method == 'GET'
     assert url.endswith('/interactions/ix-9')
@@ -163,8 +161,7 @@ async def test_cancel_interaction_normalizes_http_cancelled(http_client: MagicMo
     with patch.object(interactions_client, '_http_client', return_value=http_client):
         result = await cancel_interaction('key', 'ix-cancel')
 
-    assert result.id == 'ix-cancel'
-    assert result.status == 'cancelled'
+    assert result == {'id': 'ix-cancel', 'status': 'cancelled'}
 
 
 @pytest.mark.asyncio
@@ -175,7 +172,7 @@ async def test_cancel_interaction_normalizes_success_as_cancelled(http_client: M
     with patch.object(interactions_client, '_http_client', return_value=http_client):
         result = await cancel_interaction('key', 'ix-cancel')
 
-    assert result.status == 'cancelled'
+    assert result == {'id': 'ix-cancel', 'status': 'cancelled'}
 
 
 @pytest.mark.asyncio
@@ -184,8 +181,7 @@ async def test_cancel_interaction_empty_success_body_is_cancelled(http_client: M
     with patch.object(interactions_client, '_http_client', return_value=http_client):
         result = await cancel_interaction('key', 'ix-cancel')
 
-    assert result.id == 'ix-cancel'
-    assert result.status == 'cancelled'
+    assert result == {'id': 'ix-cancel', 'status': 'cancelled'}
     http_client.request.return_value = mock_response(
         status_code=404,
         json_body={'error': {'message': 'missing'}},
@@ -285,7 +281,7 @@ async def test_traces_create_interaction_with_experimental_debug_traces(http_cli
     ):
         result = await create_interaction('secret-key12', request_body, ClientOptions(experimental_debug_traces=True))
 
-    assert result.id == 'ix-1'
+    assert result.get('id') == 'ix-1'
     assert len(recorder.calls) == 1
     span = recorder.calls[0]
     assert span['name'] == 'httpRequest'
@@ -341,7 +337,7 @@ async def test_cancel_is_not_traced(http_client: MagicMock) -> None:
         patch.object(interactions_client, 'run_in_new_span', recorder),
     ):
         result = await cancel_interaction('key', 'ix-1', ClientOptions(experimental_debug_traces=True))
-    assert result.status == 'cancelled'
+    assert result.get('status') == 'cancelled'
     assert recorder.calls == []
 
 

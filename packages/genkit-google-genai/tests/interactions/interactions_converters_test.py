@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from genkit_google_genai._interactions._converters import (
@@ -38,7 +38,7 @@ from genkit_google_genai._interactions._converters import (
     usage_from_interaction,
     with_basic_usage_stats,
 )
-from google.genai.interactions import Content, Interaction, Step, ThoughtStep, Usage
+from genkit_google_genai._interactions._types import Content, Step, ThoughtStep, Usage, parse_interaction
 from pydantic import BaseModel, TypeAdapter
 
 from genkit import GenkitError, Media, Message, Part
@@ -46,6 +46,8 @@ from genkit.model import ToolDefinition, ToolRequest, ToolResponse
 
 ContentAdapter: TypeAdapter[Content] = TypeAdapter(Content)
 StepAdapter: TypeAdapter[Step] = TypeAdapter(Step)
+ThoughtStepAdapter: TypeAdapter[ThoughtStep] = TypeAdapter(ThoughtStep)
+UsageAdapter: TypeAdapter[Usage] = TypeAdapter(Usage)
 
 
 def part_dict(part: Part) -> dict:
@@ -521,11 +523,7 @@ class TestToInteractionSteps:
         assert to_interaction_steps(messages) == [blob]
 
     def test_unknown_step_inbound_then_outbound(self) -> None:
-        class FutureStep(BaseModel):
-            type: str = 'future_step'
-            payload: dict
-
-        parts = from_interaction_step(cast(Any, FutureStep(payload={'x': 1})))
+        parts = from_interaction_step(StepAdapter.validate_python({'type': 'future_step', 'payload': {'x': 1}}))
         root = parts[0]
         assert root.custom is not None
         assert (root.custom or {})['unknownStep']['type'] == 'future_step'
@@ -552,7 +550,7 @@ class TestToInteractionSteps:
 
     def test_thought_with_image_replays_the_original_step(self) -> None:
         """A thought whose summary has an image comes back as that same step."""
-        step = ThoughtStep.model_validate({
+        step = ThoughtStepAdapter.validate_python({
             'type': 'thought',
             'signature': 'sig-img',
             'summary': [
@@ -561,7 +559,7 @@ class TestToInteractionSteps:
             ],
         })
         part = from_thought_step(step)
-        assert to_thought_step(part) == step.model_dump(mode='python')
+        assert to_thought_step(part) == step
 
     def test_json_array_function_result_is_boxed(self) -> None:
         messages = [
@@ -681,7 +679,7 @@ class TestFromInteractionContent:
             ContentAdapter.validate_python({
                 'type': 'text',
                 'text': 'Hello world',
-                'annotations': [{'start_index': 0, 'end_index': 5, 'source': 'source'}],
+                'annotations': [{'type': 'file_citation', 'start_index': 0, 'end_index': 5, 'source': 'source'}],
             })
         )
         assert part_dict(result) == {
@@ -750,7 +748,7 @@ class TestFromInteractionContent:
         assert part_dict(result) == {'media': {'url': 'gs://bucket/clip.mp3'}}
 
     def test_thought(self) -> None:
-        step = ThoughtStep.model_validate({
+        step = ThoughtStepAdapter.validate_python({
             'type': 'thought',
             'signature': 'SIG',
             'summary': [{'type': 'text', 'text': 'Thinking...'}],
@@ -761,6 +759,16 @@ class TestFromInteractionContent:
         assert dumped['metadata'] == {'thoughtSignature': 'SIG'}
         assert dumped['custom']['thought']['type'] == 'thought'
         assert dumped['custom']['thought']['summary'] == [{'type': 'text', 'text': 'Thinking...'}]
+
+    def test_thought_without_a_signature_has_no_signature_metadata(self) -> None:
+        # Seen live on Antigravity: summary steps without a signature, and the
+        # signature in a separate step of its own.
+        summary_only = from_thought_step(
+            ThoughtStepAdapter.validate_python({'type': 'thought', 'summary': [{'type': 'text', 'text': 'Plan'}]})
+        )
+        assert summary_only.metadata is None
+        signature_only = from_thought_step(ThoughtStepAdapter.validate_python({'type': 'thought', 'signature': 'SIG'}))
+        assert signature_only.metadata == {'thoughtSignature': 'SIG'}
 
 
 class TestFromInteractionStep:
@@ -839,6 +847,22 @@ class TestFromInteractionStep:
         assert stash['call_id'] == 'c1'
         assert stash['is_error'] is False
 
+    def test_function_result_resends_is_error_as_received(self) -> None:
+        # Antigravity sandbox results come with `is_error: false` (seen live);
+        # it's sent back as false, and left out when the server didn't send it.
+        with_false = parts_of({
+            'type': 'function_result',
+            'call_id': 'c1',
+            'name': 'list_dir',
+            'result': 'app/',
+            'is_error': False,
+        })
+        without = parts_of({'type': 'function_result', 'call_id': 'c2', 'name': 'list_dir', 'result': ''})
+        assert to_interaction_steps([Message(role='model', content=[*with_false, *without])]) == [
+            {'type': 'function_result', 'name': 'list_dir', 'call_id': 'c1', 'result': 'app/', 'is_error': False},
+            {'type': 'function_result', 'name': 'list_dir', 'call_id': 'c2', 'result': ''},
+        ]
+
     def test_failed_function_result_keeps_is_error_on_stash(self) -> None:
         result = from_interaction_step(
             StepAdapter.validate_python({
@@ -896,7 +920,7 @@ class TestInboundFlattensToSingleModelMessage:
     """Every Interaction response becomes one role=model Message of flattened parts."""
 
     def test_mixed_tape_drops_user_input_and_keeps_order(self) -> None:
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': 'ix-1',
             'status': 'completed',
             'environment_id': 'env-1',
@@ -1039,14 +1063,14 @@ class TestFunctionCallRoundTrip:
 
 
 def test_operation_does_not_persist_client_options() -> None:
-    op = from_interaction(Interaction.model_validate({'id': '123', 'status': 'in_progress'}))
+    op = from_interaction(parse_interaction({'id': '123', 'status': 'in_progress'}))
 
     assert not op.metadata
 
 
 class TestFromInteractionStatusMapping:
     def test_cancelled(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'cancelled'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'cancelled'}))
         assert result.done is True
         assert result.output is not None
         assert result.output.finish_reason == 'aborted'
@@ -1055,7 +1079,7 @@ class TestFromInteractionStatusMapping:
 
     def test_failed_exits_poll_loop(self) -> None:
         result = from_interaction(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'failed',
                 'steps': [{'type': 'model_output', 'error': {'code': 3, 'message': 'boom'}}],
@@ -1066,14 +1090,14 @@ class TestFromInteractionStatusMapping:
         assert result.error.message == 'boom'
 
     def test_failed_without_step_error_falls_back(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'failed'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'failed'}))
         assert result.done is True
         assert result.error is not None
         assert result.error.message == 'Interaction failed'
 
     def test_failed_uses_top_level_errors(self) -> None:
         result = from_interaction(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'failed',
                 'errors': [{'code': '400', 'message': 'Invalid prompt format'}],
@@ -1085,7 +1109,7 @@ class TestFromInteractionStatusMapping:
 
     def test_failed_content_block_is_a_blocked_output(self) -> None:
         result = from_interaction(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'failed',
                 'errors': [{'code': 'recitation', 'message': 'Recitation detected.'}],
@@ -1098,7 +1122,7 @@ class TestFromInteractionStatusMapping:
         assert result.output.finish_message == 'Recitation detected.'
 
     def test_requires_action_exits_poll_loop(self) -> None:
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': '123',
             'status': 'requires_action',
             'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': 'approve plan'}]}],
@@ -1111,15 +1135,15 @@ class TestFromInteractionStatusMapping:
         assert result.error.message == 'Background models do not support interrupts'
 
     def test_in_progress(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'in_progress'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'in_progress'}))
         assert result.done is False
 
     def test_queued_keeps_polling(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'queued'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'queued'}))
         assert result.done is False
 
     def test_completed_empty_steps_still_has_output(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'completed', 'steps': []}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'completed', 'steps': []}))
         assert result.done is True
         assert result.error is None
         assert result.output is not None
@@ -1128,7 +1152,7 @@ class TestFromInteractionStatusMapping:
         assert result.output.message.content == []
 
     def test_unknown_status_exits_poll_loop(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'expired'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'expired'}))
         assert result.done is True
         assert result.output is None
         assert result.error is not None
@@ -1136,7 +1160,7 @@ class TestFromInteractionStatusMapping:
 
     def test_incomplete_surfaces_partial_steps(self) -> None:
         result = from_interaction(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'incomplete',
                 'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': 'partial'}]}],
@@ -1153,14 +1177,14 @@ class TestFromInteractionStatusMapping:
         assert result.output.message.metadata.get('interactionStatus') == 'incomplete'
 
     def test_incomplete_without_steps_errors(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'incomplete'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'incomplete'}))
         assert result.done is True
         assert result.output is None
         assert result.error is not None
 
     def test_budget_exceeded_surfaces_partial_steps(self) -> None:
         result = from_interaction(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'budget_exceeded',
                 'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': 'draft'}]}],
@@ -1177,7 +1201,7 @@ class TestFromInteractionStatusMapping:
         assert result.output.message.metadata.get('interactionStatus') == 'budget_exceeded'
 
     def test_budget_exceeded_without_steps_errors(self) -> None:
-        result = from_interaction(Interaction.model_validate({'id': '123', 'status': 'budget_exceeded'}))
+        result = from_interaction(parse_interaction({'id': '123', 'status': 'budget_exceeded'}))
         assert result.done is True
         assert result.output is None
         assert result.error is not None
@@ -1187,7 +1211,7 @@ class TestFromInteractionStatusMapping:
 class TestFromInteractionSync:
     def test_failed_raises(self) -> None:
         with pytest.raises(GenkitError, match='Interaction failed') as raised:
-            from_interaction_sync(Interaction.model_validate({'status': 'failed'}))
+            from_interaction_sync(parse_interaction({'status': 'failed'}))
         assert raised.value.status == 'UNKNOWN'
         assert str(raised.value) == 'UNKNOWN: Interaction failed'
 
@@ -1203,7 +1227,7 @@ class TestFromInteractionSync:
     )
     def test_failed_with_provider_code_is_classified(self, code: str, status: str) -> None:
         """A quota failure the server reported keeps its status so retry and fallback can act on it."""
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': 'ix-1',
             'status': 'failed',
             'errors': [{'code': code, 'message': 'Quota exceeded for lyria'}],
@@ -1214,7 +1238,7 @@ class TestFromInteractionSync:
         assert isinstance(raised.value.__cause__, ValueError)
 
     def test_failed_step_error_grpc_code_is_classified(self) -> None:
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': 'ix-1',
             'status': 'failed',
             'steps': [{'type': 'model_output', 'error': {'code': 8, 'message': 'out of quota'}}],
@@ -1226,7 +1250,7 @@ class TestFromInteractionSync:
     @pytest.mark.parametrize('code', ['UNKNOWN', 'OK', '0', '2', '200', '999', 'SOMETHING_NEW', ''])
     def test_failed_with_unusable_code_is_unknown(self, code: str) -> None:
         """No real status from the server: UNKNOWN, which default Retry and Fallback leave alone."""
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': 'ix-1',
             'status': 'failed',
             'errors': [{'code': code, 'message': 'model crashed'}],
@@ -1238,7 +1262,7 @@ class TestFromInteractionSync:
 
     def test_returns_finish_reason_blocked_for_a_post_execution_safety_block(self) -> None:
         result = from_interaction_sync(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': 'int-1',
                 'status': 'failed',
                 'errors': [{'code': 'safety', 'message': 'Response blocked due to safety violations.'}],
@@ -1271,13 +1295,13 @@ class TestFromInteractionSync:
     )
     def test_returns_finish_reason_blocked_for_every_content_block_code(self, code: str) -> None:
         result = from_interaction_sync(
-            Interaction.model_validate({'status': 'failed', 'errors': [{'code': code, 'message': 'blocked'}]})
+            parse_interaction({'status': 'failed', 'errors': [{'code': code, 'message': 'blocked'}]})
         )
         assert result.finish_reason == 'blocked'
 
     def test_carries_usage_on_a_blocked_response(self) -> None:
         result = from_interaction_sync(
-            Interaction.model_validate({
+            parse_interaction({
                 'status': 'failed',
                 'errors': [{'code': 'safety', 'message': 'blocked'}],
                 'usage': {
@@ -1304,7 +1328,7 @@ class TestFromInteractionSync:
         advice = 'Model generated invalid JSON syntax and the output could not be parsed. Please retry the request.'
         with pytest.raises(GenkitError) as raised:
             from_interaction_sync(
-                Interaction.model_validate({
+                parse_interaction({
                     'status': 'failed',
                     'errors': [{'code': 'malformed_function_call', 'message': advice}],
                 })
@@ -1325,18 +1349,16 @@ class TestFromInteractionSync:
     )
     def test_raises_the_status_for_an_interactions_error_code(self, code: str, status: str) -> None:
         with pytest.raises(GenkitError) as raised:
-            from_interaction_sync(
-                Interaction.model_validate({'status': 'failed', 'errors': [{'code': code, 'message': 'x'}]})
-            )
+            from_interaction_sync(parse_interaction({'status': 'failed', 'errors': [{'code': code, 'message': 'x'}]}))
         assert raised.value.status == status
 
     def test_queued_is_failed_precondition(self) -> None:
         with pytest.raises(GenkitError, match='still running') as raised:
-            from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'queued'}))
+            from_interaction_sync(parse_interaction({'id': '123', 'status': 'queued'}))
         assert raised.value.status == 'FAILED_PRECONDITION'
 
     def test_requires_action_returns_pending_tool_requests_and_skips_resolved_sandbox_calls(self) -> None:
-        interaction = Interaction.model_validate({
+        interaction = parse_interaction({
             'id': 'v1_abc123',
             'status': 'requires_action',
             'environment_id': 'env-123',
@@ -1380,13 +1402,13 @@ class TestFromInteractionSync:
         assert result.message.content[2].tool_request.input == {'dish': 'ramen'}
 
     def test_cancelled(self) -> None:
-        result = from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'cancelled'}))
+        result = from_interaction_sync(parse_interaction({'id': '123', 'status': 'cancelled'}))
         assert result.finish_reason == 'aborted'
         assert result.finish_message == 'Operation cancelled'
 
     def test_incomplete_surfaces_partial_steps(self) -> None:
         result = from_interaction_sync(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'incomplete',
                 'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': 'partial'}]}],
@@ -1399,11 +1421,11 @@ class TestFromInteractionSync:
 
     def test_incomplete_without_steps_raises(self) -> None:
         with pytest.raises(ValueError, match='incomplete'):
-            from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'incomplete'}))
+            from_interaction_sync(parse_interaction({'id': '123', 'status': 'incomplete'}))
 
     def test_budget_exceeded_surfaces_partial_steps(self) -> None:
         result = from_interaction_sync(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': '123',
                 'status': 'budget_exceeded',
                 'steps': [{'type': 'model_output', 'content': [{'type': 'text', 'text': 'draft'}]}],
@@ -1414,12 +1436,12 @@ class TestFromInteractionSync:
 
     def test_in_progress_raises(self) -> None:
         with pytest.raises(GenkitError, match='still running') as raised:
-            from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'in_progress'}))
+            from_interaction_sync(parse_interaction({'id': '123', 'status': 'in_progress'}))
         assert raised.value.status == 'FAILED_PRECONDITION'
 
     def test_unknown_status_raises(self) -> None:
         with pytest.raises(ValueError, match='Unknown interaction status'):
-            from_interaction_sync(Interaction.model_validate({'id': '123', 'status': 'expired'}))
+            from_interaction_sync(parse_interaction({'id': '123', 'status': 'expired'}))
 
 
 class TestSplitSystemInstruction:
@@ -1443,7 +1465,7 @@ class TestSplitSystemInstruction:
 
 class TestUsageFromInteraction:
     def test_maps_totals_and_puts_modality_tokens_in_custom(self) -> None:
-        usage = Usage.model_validate({
+        usage = UsageAdapter.validate_python({
             'total_input_tokens': 10,
             'total_output_tokens': 4,
             'total_tokens': 14,
@@ -1465,7 +1487,7 @@ class TestUsageFromInteraction:
 
     def test_text_and_image_tokens_are_not_characters_or_images(self) -> None:
         mapped = usage_from_interaction(
-            Usage.model_validate({
+            UsageAdapter.validate_python({
                 'total_input_tokens': 10,
                 'total_output_tokens': 0,
                 'total_tokens': 10,
@@ -1481,7 +1503,7 @@ class TestUsageFromInteraction:
 
     def test_reports_tool_use_tokens_in_custom(self) -> None:
         mapped = usage_from_interaction(
-            Usage.model_validate({
+            UsageAdapter.validate_python({
                 'total_input_tokens': 416,
                 'total_output_tokens': 393,
                 'total_tool_use_tokens': 2054,
@@ -1494,7 +1516,7 @@ class TestUsageFromInteraction:
     def test_reports_grounding_tool_counts_in_custom(self) -> None:
         # `grounding_tool_count` as seen live (googleAI, Google Search).
         mapped = usage_from_interaction(
-            Usage.model_validate({
+            UsageAdapter.validate_python({
                 'total_tokens': 1011,
                 'total_tool_use_tokens': 0,
                 'grounding_tool_count': [
@@ -1506,7 +1528,7 @@ class TestUsageFromInteraction:
         assert mapped.custom == {'googleSearchCount': 2, 'googleMapsCount': 1}
 
     def test_leaves_custom_unset_without_breakdowns(self) -> None:
-        mapped = usage_from_interaction(Usage.model_validate({'total_input_tokens': 4, 'total_tokens': 4}))
+        mapped = usage_from_interaction(UsageAdapter.validate_python({'total_input_tokens': 4, 'total_tokens': 4}))
         assert mapped.custom is None
 
 
@@ -1523,7 +1545,7 @@ class TestWithBasicUsageStats:
 
     def test_adds_character_and_media_counts_next_to_the_token_counts(self) -> None:
         response = from_interaction_sync(
-            Interaction.model_validate({
+            parse_interaction({
                 'id': 'int-1',
                 'status': 'completed',
                 'steps': [
@@ -1565,10 +1587,276 @@ class TestWithBasicUsageStats:
         }
 
     def test_counts_the_request_even_when_the_api_sent_no_usage(self) -> None:
-        response = from_interaction_sync(Interaction.model_validate({'id': 'int-1', 'status': 'completed'}))
+        response = from_interaction_sync(parse_interaction({'id': 'int-1', 'status': 'completed'}))
         result = with_basic_usage_stats(response, self.request)
         assert result.usage is not None
         assert result.usage.input_characters == len('Describe this')
         assert result.usage.input_images == 1
         assert result.usage.output_characters == 0
         assert result.usage.input_tokens is None
+
+
+def steps_of(*raw: dict[str, Any]) -> list[Step]:
+    """Validate wire steps the way a response is parsed."""
+    return [StepAdapter.validate_python(step) for step in raw]
+
+
+def parts_of(*raw: dict[str, Any], is_pending: bool = False) -> list[Part]:
+    """The Genkit parts for wire steps, in order."""
+    return [part for step in steps_of(*raw) for part in from_interaction_step(step, is_pending=is_pending)]
+
+
+class TestAgenticVideoProcessingSteps:
+    """Ported from the JS tests 'agentic video understanding' (shapes seen live on gemini-4-argon)."""
+
+    processing_call: dict[str, Any] = {'type': 'processing_call', 'id': 'call_598332', 'signature': 'sig_call'}
+    processing_result: dict[str, Any] = {
+        'type': 'processing_result',
+        'call_id': 'call_598332',
+        'signature': 'sig_result',
+    }
+
+    def test_returns_processing_steps_as_custom_parts_with_their_signatures(self) -> None:
+        assert [part_dict(part) for part in parts_of(self.processing_call, self.processing_result)] == [
+            {'custom': {'processingCall': {'id': 'call_598332'}}, 'metadata': {'thoughtSignature': 'sig_call'}},
+            {'custom': {'processingResult': {'callId': 'call_598332'}}, 'metadata': {'thoughtSignature': 'sig_result'}},
+        ]
+
+    def test_resends_processing_steps_unchanged_in_the_history(self) -> None:
+        steps = to_interaction_steps([
+            Message(
+                role='user',
+                content=[
+                    Part(
+                        media=Media(url='https://www.youtube.com/watch?v=abc123'),
+                        metadata={'processing': 'agentic'},
+                    ),
+                    Part.from_text('What happens in this video?'),
+                ],
+            ),
+            Message(
+                role='model',
+                content=[
+                    *parts_of(self.processing_call, self.processing_result),
+                    Part.from_text('The main moments are...'),
+                ],
+            ),
+            Message(role='user', content=[Part.from_text('What happens at the end?')]),
+        ])
+        assert steps == [
+            {
+                'type': 'user_input',
+                'content': [
+                    {'type': 'video', 'uri': 'https://www.youtube.com/watch?v=abc123', 'processing': 'agentic'},
+                    {'type': 'text', 'text': 'What happens in this video?'},
+                ],
+            },
+            self.processing_call,
+            self.processing_result,
+            {'type': 'model_output', 'content': [{'type': 'text', 'text': 'The main moments are...'}]},
+            {'type': 'user_input', 'content': [{'type': 'text', 'text': 'What happens at the end?'}]},
+        ]
+
+
+CHANGELOG = 'https://ai.google.dev/gemini-api/docs/changelog'
+PLACE = {
+    'place_id': 'ChIJefTaTQZD04kRzuh2lpwlV-A',
+    'name': 'Queen Victoria Park - Google Maps',
+    'url': 'https://maps.google.com/maps?cid=16165430741939185870',
+}
+# Shapes seen live (Oct 2026): Google Maps on vertexAI gemini-3.8-flash (no
+# arguments, no signature) and URL context on googleAI gemini-3.8-flash (with
+# signatures). The other built-in tools are from the spec's examples.
+MAPS_CALL: dict[str, Any] = {'type': 'google_maps_call', 'id': 'qpo3tzzp'}
+MAPS_RESULT: dict[str, Any] = {'type': 'google_maps_result', 'call_id': 'qpo3tzzp', 'result': [{'places': [PLACE]}]}
+URL_CALL: dict[str, Any] = {
+    'type': 'url_context_call',
+    'id': 'call_178104',
+    'signature': 'sig_url_call',
+    'arguments': {'urls': [CHANGELOG]},
+}
+URL_RESULT: dict[str, Any] = {
+    'type': 'url_context_result',
+    'call_id': 'call_178104',
+    'signature': 'sig_url_result',
+    'result': [{'url': CHANGELOG, 'status': 'success'}],
+    'is_error': False,
+}
+OTHER_BUILT_IN_STEPS: list[dict[str, Any]] = [
+    {'type': 'file_search_call', 'id': 'file_call_1', 'signature': 'sig_f1'},
+    {'type': 'file_search_result', 'call_id': 'file_call_1', 'signature': 'sig_f2'},
+    {
+        'type': 'mcp_server_tool_call',
+        'id': 'mcp_call_1',
+        'name': 'calculate_tax',
+        'server_name': 'financial_mcp_server',
+        'arguments': {'income': 120000, 'state': 'CA'},
+    },
+    {
+        'type': 'mcp_server_tool_result',
+        'call_id': 'mcp_call_1',
+        'name': 'calculate_tax',
+        'server_name': 'financial_mcp_server',
+        'result': {'tax_due': 32400},
+    },
+]
+ALL_BUILT_IN_STEPS = [MAPS_CALL, MAPS_RESULT, URL_CALL, URL_RESULT, *OTHER_BUILT_IN_STEPS]
+
+
+class TestServerSideBuiltInToolSteps:
+    """Ported from the JS tests 'server-side built-in tool steps'."""
+
+    def test_converts_google_maps_steps_into_custom_parts(self) -> None:
+        assert [part_dict(part) for part in parts_of(MAPS_CALL, MAPS_RESULT)] == [
+            {'custom': {'googleMapsCall': {'id': 'qpo3tzzp'}}},
+            {'custom': {'googleMapsResult': {'callId': 'qpo3tzzp', 'result': [{'places': [PLACE]}]}}},
+        ]
+
+    def test_converts_url_context_steps_into_custom_parts_with_their_signatures(self) -> None:
+        assert [part_dict(part) for part in parts_of(URL_CALL, URL_RESULT)] == [
+            {
+                'custom': {'urlContextCall': {'id': 'call_178104', 'arguments': {'urls': [CHANGELOG]}}},
+                'metadata': {'thoughtSignature': 'sig_url_call'},
+            },
+            {
+                'custom': {
+                    'urlContextResult': {
+                        'callId': 'call_178104',
+                        'result': [{'url': CHANGELOG, 'status': 'success'}],
+                        'isError': False,
+                    }
+                },
+                'metadata': {'thoughtSignature': 'sig_url_result'},
+            },
+        ]
+
+    def test_never_produces_tool_requests(self) -> None:
+        # Even with is_pending, which turns client function calls into tool
+        # requests: the server already ran these tools.
+        parts = parts_of(*ALL_BUILT_IN_STEPS, is_pending=True)
+        assert len(parts) == len(ALL_BUILT_IN_STEPS)
+        assert all(part.tool_request is None for part in parts)
+        assert all('unknownStep' not in (part.custom or {}) for part in parts)
+
+    def test_sends_every_built_in_tool_step_back_unchanged_in_the_history(self) -> None:
+        history = [
+            Message(role='user', content=[Part.from_text('Name two sights near me.')]),
+            Message(
+                role='model',
+                content=[*parts_of(*ALL_BUILT_IN_STEPS), Part.from_text('Queen Victoria Park.')],
+            ),
+            Message(role='user', content=[Part.from_text('Which one is closer?')]),
+        ]
+        assert to_interaction_steps(history) == [
+            {'type': 'user_input', 'content': [{'type': 'text', 'text': 'Name two sights near me.'}]},
+            *ALL_BUILT_IN_STEPS,
+            {'type': 'model_output', 'content': [{'type': 'text', 'text': 'Queen Victoria Park.'}]},
+            {'type': 'user_input', 'content': [{'type': 'text', 'text': 'Which one is closer?'}]},
+        ]
+
+    def test_keeps_the_custom_parts_in_the_final_response(self) -> None:
+        result = from_interaction_sync(
+            parse_interaction({
+                'status': 'completed',
+                'steps': [
+                    MAPS_CALL,
+                    MAPS_RESULT,
+                    {'type': 'model_output', 'content': [{'type': 'text', 'text': 'Queen Victoria Park.'}]},
+                ],
+            })
+        )
+        assert result.message is not None
+        custom_keys = [key for part in result.message.content for key in (part.custom or {})]
+        assert custom_keys == ['googleMapsCall', 'googleMapsResult']
+
+    def test_round_trips_google_search_steps_without_arguments_or_result(self) -> None:
+        # Seen live on vertexAI (gemini-3.8-flash): the platform sent these
+        # steps without `arguments` / `result`.
+        search_call = {'type': 'google_search_call', 'id': 'ssg39wjg', 'search_type': 'web_search'}
+        search_result = {'type': 'google_search_result', 'call_id': 'ssg39wjg', 'is_error': False}
+        assert [part_dict(part) for part in parts_of(search_call, search_result)] == [
+            {'custom': {'googleSearchCall': {'id': 'ssg39wjg', 'searchType': 'web_search'}}},
+            {'custom': {'googleSearchResult': {'callId': 'ssg39wjg', 'isError': False}}},
+        ]
+        history = [
+            Message(role='user', content=[Part.from_text('Read the changelog.')]),
+            Message(
+                role='model',
+                content=[*parts_of(search_call, search_result), Part.from_text('October 13, 2026.')],
+            ),
+            Message(role='user', content=[Part.from_text('And the entry before?')]),
+        ]
+        steps = to_interaction_steps(history)
+        # Sent back as received: no empty arguments or result added.
+        assert steps[1] == search_call
+        assert steps[2] == search_result
+
+    def test_round_trips_built_in_tool_steps_with_only_their_ids(self) -> None:
+        # The platform can omit fields the spec marks as required; only the
+        # ids are needed to round-trip (the SDK types used to fill in
+        # `arguments: {}` / `result: {}` here).
+        bare_steps: list[dict[str, Any]] = [
+            {'type': 'url_context_call', 'id': 'u1'},
+            {'type': 'url_context_result', 'call_id': 'u1'},
+            {'type': 'google_maps_call', 'id': 'm1'},
+            {'type': 'google_maps_result', 'call_id': 'm1'},
+            {'type': 'mcp_server_tool_call', 'id': 'p1'},
+            {'type': 'mcp_server_tool_result', 'call_id': 'p1'},
+        ]
+        history = [Message(role='model', content=parts_of(*bare_steps))]
+        assert to_interaction_steps(history) == bare_steps
+
+    def test_accepts_an_empty_trailing_model_output_step(self) -> None:
+        # Seen live on vertexAI (Google Maps, store: true).
+        result = from_interaction_sync(
+            parse_interaction({
+                'status': 'completed',
+                'steps': [
+                    {'type': 'thought', 'signature': 'sig_thought'},
+                    {'type': 'model_output', 'content': [{'type': 'text', 'text': 'Queen Victoria Park.'}]},
+                    MAPS_CALL,
+                    MAPS_RESULT,
+                    {'type': 'model_output'},
+                ],
+            })
+        )
+        assert result.message is not None
+        content = result.message.content
+        assert len(content) == 4
+        assert content[1].text == 'Queen Victoria Park.'
+        assert 'googleMapsCall' in (content[2].custom or {})
+        assert 'googleMapsResult' in (content[3].custom or {})
+
+
+class TestSavedUnknownSteps:
+    """Steps stored as ``unknownStep`` by older plugin versions are still resent."""
+
+    def test_resends_an_old_built_in_tool_step_without_the_none_fields_the_sdk_added(self) -> None:
+        # Older versions stored the SDK's model_dump(): `result: None` was
+        # never sent by the server.
+        saved = {'type': 'url_context_result', 'call_id': 'u1', 'result': None, 'signature': 'sig'}
+        history = [Message(role='model', content=[Part.from_custom({'unknownStep': saved})])]
+        assert to_interaction_steps(history) == [{'type': 'url_context_result', 'call_id': 'u1', 'signature': 'sig'}]
+
+    def test_drops_none_fields_at_every_level(self) -> None:
+        saved = {'type': 'future_step', 'data': {'kept': 1, 'gone': None}, 'top': None}
+        history = [Message(role='model', content=[Part.from_custom({'unknownStep': saved})])]
+        assert to_interaction_steps(history) == [{'type': 'future_step', 'data': {'kept': 1}}]
+
+
+class TestResponseKeepsTheInteractionAsSent:
+    def test_raw_is_the_interaction_as_received_and_custom_is_not_set(self) -> None:
+        body = {
+            'id': 'v1_abc123',
+            'status': 'completed',
+            'steps': [
+                {'type': 'url_context_call', 'id': 'u1'},
+                {'type': 'model_output', 'content': [{'type': 'text', 'text': 'Done.'}]},
+            ],
+        }
+        result = from_interaction_sync(parse_interaction(body))
+        # Nothing filled in (the SDK types added `arguments: {}` and nulls).
+        assert result.raw == body
+        # Genkit deprecates the response-level `custom` in favor of `raw`, so
+        # the interaction isn't copied there (Genkit core defaults it to {}).
+        assert not result.custom

@@ -72,7 +72,9 @@ def _frame_value(obj: object) -> object:
     # sees it. Apply the same rule here: only a PublicError's text leaves.
     if isinstance(obj, (AgentOutput, SessionSnapshot)) and obj.error is not None:
         obj = obj.model_copy(update={'error': client_safe_failure(obj.error)})
-    return to_jsonable_python(obj, by_alias=True, exclude_none=True)
+    # NaN/Infinity go out as null, the same as tool outputs and model
+    # messages (mode='json'), instead of crashing allow_nan=False with a 500.
+    return to_jsonable_python(obj, by_alias=True, exclude_none=True, inf_nan_mode='null')
 
 
 def _dumps(value: object) -> str:
@@ -159,13 +161,11 @@ async def to_sse(handle: StreamHandle) -> AsyncGenerator[str, None]:
             if aclose is not None:
                 await aclose()
         result = await handle.response
-        # ModelStreamResponse boxes turn failures onto .response instead of raising
-        # from .stream; re-raise here so SSE callers get the error frame and log.
-        if (
-            isinstance(handle, ModelStreamResponse)
-            and isinstance(result, ModelResponse)
-            and result.finish_reason == FinishReason.FAILED
-        ):
+        # Generate boxes turn failures onto the response instead of raising.
+        # Whatever handle carried it (generate_stream, prompt.stream, or a flow
+        # that returns the whole ModelResponse), re-raise here so SSE callers
+        # get the error frame and log instead of {"result": ...} with no text.
+        if isinstance(result, ModelResponse) and result.finish_reason == FinishReason.FAILED:
             raise (
                 result._failure.to_exception()
                 if result._failure is not None

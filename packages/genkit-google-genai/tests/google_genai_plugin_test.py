@@ -1194,25 +1194,25 @@ async def test_generate_googleai_model_resolves_unchanged(mock_list_models: Magi
 async def test_googleai_init_and_resolve_build_the_same_action_name(
     mock_list_models: MagicMock, mock_client: MagicMock
 ) -> None:
-    """`googleai/gemini-2.5-flash` from init and resolve is the same name and sends the bare id."""
+    """`googleai/gemini-flash-latest` from init and resolve is the same name and sends the bare id."""
     listed = GenaiModels()
-    listed.gemini = ['gemini-2.5-flash']
+    listed.gemini = ['gemini-flash-latest']
     mock_list_models.return_value = listed
     mock_client.return_value.aio.models.generate_content = AsyncMock(return_value=_gemini_reply('hello'))
     plugin = GoogleAI(api_key='test-key')
 
-    init_action = next(a for a in await plugin.init() if a.name == 'googleai/gemini-2.5-flash')
-    resolved = await plugin.resolve(ActionKind.MODEL, 'gemini-2.5-flash')
+    init_action = next(a for a in await plugin.init() if a.name == 'googleai/gemini-flash-latest')
+    resolved = await plugin.resolve(ActionKind.MODEL, 'gemini-flash-latest')
     ai = Genkit(plugins=[GoogleAI(api_key='test-key')])
-    response = await ai.generate(model='googleai/gemini-2.5-flash', prompt='hi')
+    response = await ai.generate(model='googleai/gemini-flash-latest', prompt='hi')
 
-    assert init_action.name == 'googleai/gemini-2.5-flash'
+    assert init_action.name == 'googleai/gemini-flash-latest'
     assert resolved is not None
-    assert resolved.name == 'googleai/gemini-2.5-flash'
+    assert resolved.name == 'googleai/gemini-flash-latest'
     assert response.text == 'hello'
     sent = mock_client.return_value.aio.models.generate_content.await_args
     assert sent is not None
-    assert sent.kwargs['model'] == 'gemini-2.5-flash'
+    assert sent.kwargs['model'] == 'gemini-flash-latest'
 
 
 @patch('genkit_google_genai._google.genai.client.Client')

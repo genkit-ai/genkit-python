@@ -340,6 +340,34 @@ async def test_a_public_error_sends_its_status_and_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_error_for_the_caller_logs_one_line_and_a_crash_logs_its_traceback() -> None:
+    """A deliberate error is the tool answering, so only a real failure keeps its traceback."""
+    ai = app()
+
+    @ai.tool()
+    async def find_book() -> str:
+        """Find a book."""
+        raise PublicError(status='NOT_FOUND', message='no such book')
+
+    @ai.tool()
+    async def explode() -> str:
+        """Fail."""
+        raise ValueError('shelf collapsed')
+
+    async with connected(create_mcp_server(ai, 'bookshop')) as session:
+        with capture_logs() as logs:
+            await session.call_tool('find_book', {})
+            await session.call_tool('explode', {})
+
+    failures = [
+        (entry['tool'], entry['log_level'], entry.get('exc_info', False))
+        for entry in logs
+        if entry['event'] == 'an MCP tool call failed'
+    ]
+    assert failures == [('find_book', 'warning', False), ('explode', 'error', True)]
+
+
+@pytest.mark.asyncio
 async def test_a_provider_error_sends_only_its_status() -> None:
     """A provider's error text can name a project or a resource path, so it stays on the server."""
     ai = app()

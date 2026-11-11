@@ -179,8 +179,12 @@ class McpServer:
             logger.warning('an MCP tool call paused for input, which MCP cannot ask for', tool=name)
             return error_result(f'Tool {name!r} paused for input from the user, which this server cannot ask for')
         except Exception as error:
-            logger.exception('an MCP tool call failed', tool=name)
-            return error_result(_client_message(name, error))
+            message = _client_message(name, error)
+            if _for_the_caller(error):
+                logger.warning('an MCP tool call failed', tool=name, error=message)
+            else:
+                logger.exception('an MCP tool call failed', tool=name)
+            return error_result(message)
 
     def _request_context(self) -> dict[str, Any] | None:
         """Pass the request's MCP ``_meta`` in the shape the client's handler reads."""
@@ -276,12 +280,22 @@ def _client_message(tool_name: str, error: Exception) -> str:
     status, since a provider's error text can name a project, a resource path
     or a URL.
     """
-    if isinstance(error, PublicError) or error_status(error) < 500:
+    if _for_the_caller(error):
         body = error_body(error)
         return f'{body["status"]}: {body["message"]}'
     if isinstance(error, GenkitError):
         return f'Tool {tool_name!r} failed: {error.status}'
     return f'Tool {tool_name!r} failed'
+
+
+def _for_the_caller(error: Exception) -> bool:
+    """Whether the error is the tool answering the caller rather than failing.
+
+    A ``PublicError`` and arguments the tool's input model rejects are both
+    meant for the model to read, so a log line is enough and no traceback is
+    kept for them.
+    """
+    return isinstance(error, PublicError) or error_status(error) < 500
 
 
 def _wire_files() -> tuple[TextIO, TextIO]:

@@ -212,9 +212,10 @@ flow's error body is. A `PublicError` sends its status and message, and argument
 own validators reject send the failing fields without their values. Any other `GenkitError` sends
 `Tool '<name>' failed: <status>`, and any other exception `Tool '<name>' failed`, since a provider's
 error text can name a project, a resource path or a URL. So raise a `PublicError` for a failure the
-model should read and retry. The full error is logged on the server either way. A tool that
-interrupts for the user's input answers with an error result saying so, since MCP cannot pause a
-call. A result that cannot be encoded as UTF-8 answers with `Tool '<name>' failed`. A plugin that
+model should read and retry. Such an error, like rejected arguments, is logged on the server as one
+warning line. Any other failure is logged with its traceback. A tool that interrupts for the user's
+input answers with an error result saying so, since MCP cannot pause a call. A result that cannot
+be encoded as UTF-8 answers with `Tool '<name>' failed`. A plugin that
 fails to start fails the listing, and the client is told only that the server could not list its
 tools.
 

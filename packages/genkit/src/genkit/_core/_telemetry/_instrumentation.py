@@ -82,20 +82,9 @@ class SpanContext(Protocol):
         """Attach custom metadata. Safe to call multiple times."""
         ...
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         """Override genkit:state. ``error`` marks a failed generate that returned."""
         ...
-
-
-@runtime_checkable
-class StatusMessageSpanContext(Protocol):
-    """Optional: a span that can say why it failed.
-
-    After ``set_state('error')`` on a generate that returned a failure, genkit
-    passes the cause here so the trace reads "tool exploded", not just red.
-    """
-
-    def set_status_message(self, message: str) -> None: ...
 
 
 @runtime_checkable
@@ -269,11 +258,8 @@ def set_custom_metadata_attributes(attributes: Mapping[str, object]) -> None:
 def set_span_state(state: SpanState, *, message: str | None = None) -> None:
     """Write genkit:state (and an error's status text) on the active span. No-op outside a span."""
     span = current_span.get()
-    if span is None:
-        return
-    span.set_state(state)
-    if message and isinstance(span, StatusMessageSpanContext):
-        span.set_status_message(message)
+    if span is not None:
+        span.set_state(state, message=message)
 
 
 async def run_in_new_span(
@@ -350,7 +336,7 @@ class NoopSpanContext:
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         return
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         return
 
 
@@ -373,16 +359,10 @@ class CompositeSpanContext:
             with contextlib.suppress(Exception):
                 span.set_metadata(metadata)
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         for span in self._spans:
             with contextlib.suppress(Exception):
-                span.set_state(state)
-
-    def set_status_message(self, message: str) -> None:
-        for span in self._spans:
-            if isinstance(span, StatusMessageSpanContext):
-                with contextlib.suppress(Exception):
-                    span.set_status_message(message)
+                span.set_state(state, message=message)
 
     def _first_non_empty(self, get: Callable[[SpanContext], str]) -> str:
         for span in self._spans:

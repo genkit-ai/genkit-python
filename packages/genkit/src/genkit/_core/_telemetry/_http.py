@@ -114,17 +114,16 @@ class DirectSpanContext:
                 encoded = f'Error encoding metadata: {e}'
             self._span.attributes[metadata_key(str(key))] = encoded
 
-    def set_state(self, state: Literal['success', 'error']) -> None:
+    def set_state(self, state: Literal['success', 'error'], *, message: str | None = None) -> None:
         self._span.attributes[Attr.STATE] = state
         if state == State.ERROR:
             self._span.status_code = 2
+            if message:
+                self._span.attributes[Attr.ERROR] = message
+                self._span.status_message = message
             if not self._span.has_failed_child:
                 self._span.attributes[Attr.IS_FAILURE_SOURCE] = True
             note_child_failed(self._span)
-
-    def set_status_message(self, message: str) -> None:
-        self._span.attributes[Attr.ERROR] = message
-        self._span.status_message = message
 
 
 def now_unix_nano() -> int:

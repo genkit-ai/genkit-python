@@ -32,7 +32,7 @@ from pydantic_core import to_jsonable_python
 
 from genkit import FinishReason, Interrupt, ModelResponse, get_logger as get_genkit_logger
 from genkit.model import ModelRequest
-from genkit.telemetry import Instrumentation, SpanContext, SpanMetadata, SpanNext, StatusMessageSpanContext
+from genkit.telemetry import Instrumentation, SpanContext, SpanMetadata, SpanNext
 from genkit_otel._gen_ai_attributes import (
     CAPTURE_CONTENT_ENV_VAR,
     CONTENT_ATTRIBUTES,
@@ -429,7 +429,7 @@ class GenAiInstrumentation(Instrumentation):
         )
 
 
-class GenAiSpanContext(SpanContext, StatusMessageSpanContext):
+class GenAiSpanContext(SpanContext):
     """SpanContext backed by an OpenTelemetry span."""
 
     def __init__(self, span: Span) -> None:
@@ -455,13 +455,10 @@ class GenAiSpanContext(SpanContext, StatusMessageSpanContext):
             # Keep ad-hoc metadata out of the reserved gen_ai.* namespace.
             self._span.set_attribute(f'genkit:metadata:{key}', value_string)
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, message: str | None = None) -> None:
         self._span.set_attribute('genkit:state', state)
         if state == 'error':
-            self._span.set_status(StatusCode.ERROR)
-
-    def set_status_message(self, message: str) -> None:
-        self._span.set_status(StatusCode.ERROR, message)
+            self._span.set_status(StatusCode.ERROR, message or None)
 
 
 def _content_capturing_mode_from_env() -> ContentCapturingMode:

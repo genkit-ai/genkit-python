@@ -53,7 +53,7 @@ class HexSpanContext:
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         return
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, message: str | None = None) -> None:
         return
 
 

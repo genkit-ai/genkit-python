@@ -1400,13 +1400,26 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     span = current_span.get()
     if span is not None and span.trace_id:
         fields['trace_id'] = span.trace_id
+    message = str(exc)
+    fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        fields['at'] = f'{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
         culprit = f'model {model!r}'
     else:
         culprit = 'generate'
-    logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+    # one line, no traceback: a pretty-printed traceback with locals costs
+    # hundreds of ms per failed turn and dumps frame locals into the logs.
+    logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
+    # The box hides the cause and no span keeps the stack, so a bug in Genkit
+    # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug
+    # brings it back.
+    logger.debug('%s failure details', culprit, exc_info=exc, **fields)
 
 
 def stamp_cancelled_error(

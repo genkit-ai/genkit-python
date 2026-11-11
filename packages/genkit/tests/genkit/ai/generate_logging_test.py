@@ -3,14 +3,17 @@
 
 """Unit tests for the debug-log records emitted by genkit._ai._generate."""
 
-from collections.abc import Iterator
+import inspect
+import io
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any
 
 import pytest
 import structlog
 from structlog.testing import capture_logs
 
 from genkit import ErrorReason, Genkit, Message, ModelResponse, ModelResponseChunk, Part, PublicError
-from genkit._ai._generate import CallScope, generate_action
+from genkit._ai._generate import CallScope, generate_action, log_dropped_failure
 from genkit._ai._model import resolve_model_arg
 from genkit._ai._tools import Interrupt
 from genkit._core._environment import GENKIT_ENV
@@ -519,7 +522,7 @@ async def test_resumed_tool_stream_callback_failure_returns_closed_history() -> 
     assert [message.role for message in response.messages] == [Role.USER, Role.MODEL, Role.TOOL]
 
 
-def _errors(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+def _errors(entries: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [e for e in entries if e['log_level'] == 'error']
 
 
@@ -530,16 +533,61 @@ def _tool_turn(name: str) -> ModelResponse:
     )
 
 
-@pytest.mark.asyncio
-async def test_crashing_model_logs_the_hidden_cause_once() -> None:
-    """A model that raises returns 'internal error'; the cause is logged once at ERROR."""
-    structlog.reset_defaults()
-    ai = Genkit()
+def _define_exploding_tool(ai: Genkit) -> int:
+    frame = inspect.currentframe()
+    assert frame is not None
+    raise_line = frame.f_lineno + 4
+
+    @ai.tool(name='explode')
+    async def explode(_: dict) -> str:  # noqa: ARG001
+        raise RuntimeError('tool exploded')
+
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_tool_turn('explode')]
+    return raise_line
+
+
+def _define_crashing_model(ai: Genkit) -> int:
+    frame = inspect.currentframe()
+    assert frame is not None
+    raise_line = frame.f_lineno + 3
 
     async def crashing(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
         raise RuntimeError('model backend exploded')
 
     ai.define_model(name='crash', fn=crashing)
+    return raise_line
+
+
+@pytest.mark.asyncio
+async def test_tool_raises_in_generate_logs_one_line_naming_the_tool_and_error() -> None:
+    """A tool that raises leaves one error line naming the tool, location, and error, with no traceback."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    raise_line = _define_exploding_tool(ai)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='scriptedModel', prompt='hi', tools=['explode'])
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert response.error is not None
+    assert response.error.message == 'internal error'
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['event'] == "tool 'explode' raised, returning finish_reason=failed"
+    assert errors[0]['tool'] == 'explode'
+    assert errors[0]['error'] == 'RuntimeError: tool exploded'
+    assert errors[0]['at'] == f'{__file__}:{raise_line}'
+    assert 'model' not in errors[0]
+    assert 'exc_info' not in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_model_raises_in_generate_logs_one_line_naming_the_model_and_error() -> None:
+    """A model that raises leaves one error line naming the model, location, and error, with no traceback."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    raise_line = _define_crashing_model(ai)
 
     with capture_logs() as entries:
         response = await ai.generate(model='crash', prompt='hi')
@@ -551,20 +599,116 @@ async def test_crashing_model_logs_the_hidden_cause_once() -> None:
     assert len(errors) == 1
     assert errors[0]['event'] == "model 'crash' raised, returning finish_reason=failed"
     assert errors[0]['model'] == 'crash'
-    assert isinstance(errors[0]['exc_info'], RuntimeError)
-    assert str(errors[0]['exc_info']) == 'model backend exploded'
+    assert errors[0]['error'] == 'RuntimeError: model backend exploded'
+    assert errors[0]['at'] == f'{__file__}:{raise_line}'
+    assert 'exc_info' not in errors[0]
+
+
+def test_unraised_exception_omits_at_field() -> None:
+    """An exception with no traceback logs cleanly without an ``at`` field."""
+    structlog.reset_defaults()
+    with capture_logs() as entries:
+        log_dropped_failure(RuntimeError('unraised'), tool='explode')
+
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['error'] == 'RuntimeError: unraised'
+    assert 'at' not in errors[0]
 
 
 @pytest.mark.asyncio
-async def test_crashing_tool_is_named_and_logged_once() -> None:
-    """The tool site names the tool; the generate-level box does not log it again."""
+async def test_failed_turn_log_does_not_dump_frame_locals() -> None:
+    """A failed turn logs one console line with no frame locals, so the prompt shows only if the error quotes it."""
+    buf = io.StringIO()
+    structlog.reset_defaults()
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=buf))
+    ai = Genkit()
+    _define_crashing_model(ai)
+
+    response = await ai.generate(model='crash', prompt='secret-prompt-text')
+
+    assert response.finish_reason == FinishReason.FAILED
+    rendered = buf.getvalue()
+    assert "model 'crash' raised, returning finish_reason=failed" in rendered
+    assert 'RuntimeError: model backend exploded' in rendered
+    assert 'secret-prompt-text' not in rendered
+    assert len(rendered.strip().splitlines()) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_traceback_is_kept_at_debug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GENKIT_LOG=debug adds the traceback, so a boxed bug in Genkit or a plugin is still debuggable."""
+    monkeypatch.setenv(GENKIT_LOG, 'debug')
+    structlog.reset_defaults()
+    ai = Genkit()
+    _define_crashing_model(ai)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='crash', prompt='hi')
+
+    assert response.finish_reason == FinishReason.FAILED
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert 'exc_info' not in errors[0]
+    details = [e for e in entries if e['event'] == "model 'crash' failure details"]
+    assert len(details) == 1
+    assert details[0]['log_level'] == 'debug'
+    assert isinstance(details[0]['exc_info'], RuntimeError)
+    assert str(details[0]['exc_info']) == 'model backend exploded'
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_log_carries_the_trace_id_when_traced(exporter: Any) -> None:  # noqa: ANN401
+    """Under tracing, the failed-turn line carries the trace id so you can jump to the trace."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    _define_crashing_model(ai)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='crash', prompt='hi')
+
+    assert response.finish_reason == FinishReason.FAILED
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['model'] == 'crash'
+    assert errors[0]['error'] == 'RuntimeError: model backend exploded'
+    assert 'exc_info' not in errors[0]
+    trace_ids = {span.trace_id for span in exporter.get_finished_spans()}
+    assert len(trace_ids) == 1
+    assert errors[0]['trace_id'] in trace_ids
+
+
+@pytest.mark.asyncio
+async def test_bare_exception_without_message_logs_type_name_only() -> None:
+    """An exception raised with no message logs `TypeName`, not `TypeName: `."""
+    structlog.reset_defaults()
+    ai = Genkit()
+
+    async def silent_crash(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise RuntimeError
+
+    ai.define_model(name='silent_crash', fn=silent_crash)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='silent_crash', prompt='hi')
+
+    assert response.finish_reason == FinishReason.FAILED
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['error'] == 'RuntimeError'
+    assert 'exc_info' not in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_public_error_from_a_tool_is_not_logged() -> None:
+    """A PublicError message is already on response.error, so nothing is logged."""
     structlog.reset_defaults()
     ai = Genkit()
     pm, _ = define_scripted_model(ai)
 
     @ai.tool(name='check_allergens')
     async def check_allergens(_: dict) -> str:  # noqa: ARG001
-        raise RuntimeError('allergen db down')
+        raise PublicError('INVALID_ARGUMENT', 'we do not serve peanuts')
 
     pm.responses = [_tool_turn('check_allergens')]
 
@@ -573,11 +717,8 @@ async def test_crashing_tool_is_named_and_logged_once() -> None:
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.error is not None
-    assert response.error.message == 'internal error'
-    errors = _errors(entries)
-    assert len(errors) == 1
-    assert errors[0]['tool'] == 'check_allergens'
-    assert str(errors[0]['exc_info']) == 'allergen db down'
+    assert response.error.message == 'we do not serve peanuts'
+    assert _errors(entries) == []
 
 
 @pytest.mark.asyncio
@@ -613,28 +754,7 @@ async def test_crashing_restarted_tool_is_logged_once() -> None:
     errors = _errors(entries)
     assert len(errors) == 1
     assert errors[0]['tool'] == 'hold'
-    assert str(errors[0]['exc_info']) == 'kitchen printer jammed'
-
-
-@pytest.mark.asyncio
-async def test_published_tool_error_is_not_logged() -> None:
-    """A PublicError message is already on response.error, so nothing is logged."""
-    structlog.reset_defaults()
-    ai = Genkit()
-    pm, _ = define_scripted_model(ai)
-
-    @ai.tool(name='check_allergens')
-    async def check_allergens(_: dict) -> str:  # noqa: ARG001
-        raise PublicError('INVALID_ARGUMENT', 'we do not serve peanuts')
-
-    pm.responses = [_tool_turn('check_allergens')]
-
-    with capture_logs() as entries:
-        response = await ai.generate(model='scriptedModel', prompt='hi', tools=['check_allergens'])
-
-    assert response.error is not None
-    assert response.error.message == 'we do not serve peanuts'
-    assert _errors(entries) == []
+    assert errors[0]['error'] == 'RuntimeError: kitchen printer jammed'
 
 
 @pytest.mark.asyncio
@@ -663,6 +783,4 @@ async def test_readonly_exception_still_boxes_and_logs() -> None:
     assert response.error.message == 'internal error'
     errors = _errors(entries)
     assert len(errors) == 1
-    assert isinstance(errors[0]['exc_info'], ReadOnlyError)
-    assert str(errors[0]['exc_info']) == 'immutable provider failure'
-    assert not hasattr(errors[0]['exc_info'], '_genkit_failure_logged')
+    assert errors[0]['error'] == 'ReadOnlyError: immutable provider failure'

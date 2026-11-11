@@ -18,8 +18,9 @@
 """Google AI and Vertex AI plugin implementations for Genkit.
 
 This module provides the GoogleAI and VertexAI plugins that enable Genkit to use
-Google's generative AI models. Both plugins use dynamic model discovery via the
-Google GenAI SDK to detect and register available models at runtime.
+Google's generative AI models. Both plugins register a static catalog of known
+models at init with no network call, resolve any other model id by name on first
+use, and list the live catalog only when the Dev UI asks for it.
 
 Supported capabilities include text generation (Gemini/Gemma), text embeddings,
 image generation (Gemini native image), and video generation (Veo).
@@ -29,10 +30,10 @@ Example:
     from genkit import Genkit
     from genkit_google_genai import GoogleAI
 
-    # 1. Initialize Genkit with dynamic model discovery
+    # 1. Initialize Genkit; no model listing happens at startup
     ai = Genkit(plugins=[GoogleAI()])
 
-    # 2. Generate content using any discovered Gemini model
+    # 2. Generate with any Gemini model id the API serves
     response = await ai.generate(
         model=GoogleAI.gemini('gemini-flash-latest'),
         prompt='Suggest 3 names for a space-themed coffee shop.',
@@ -48,6 +49,7 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn
@@ -89,13 +91,16 @@ from genkit_google_genai._models._deep_research import (
     deep_research_model,
 )
 from genkit_google_genai._models._embedder import (
+    GOOGLEAI_KNOWN_EMBEDDERS,
     VERTEX_KNOWN_EMBEDDERS,
     Embedder as GoogleEmbedder,
     EmbeddingConfig,
     get_embedder_info,
 )
 from genkit_google_genai._models._gemini import (
+    GOOGLEAI_KNOWN_MODELS,
     SUPPORTED_MODELS,
+    VERTEX_KNOWN_MODELS,
     GeminiConfig,
     GeminiImageConfig,
     GeminiModel,
@@ -137,6 +142,8 @@ from genkit_google_genai._models._routing import (
 )
 from genkit_google_genai._models._sdk_config import check_timeout_seconds, timeout_seconds_to_ms
 from genkit_google_genai._models._veo import (
+    GOOGLEAI_KNOWN_VEO,
+    VERTEX_KNOWN_VEO,
     KnownGoogleAIVeo,
     KnownVertexAIVeo,
     VeoConfig,
@@ -447,11 +454,13 @@ class GoogleFamilyRefs:
 
 
 class GoogleAI(GoogleFamilyRefs, Plugin):
-    """GoogleAI plugin for Genkit with dynamic model discovery.
+    """GoogleAI plugin for Genkit.
 
     This plugin provides access to Google AI models (Gemini, embedders, Veo)
-    through the Google AI Studio API. Models are discovered dynamically at
-    initialization time, ensuring new models are available without SDK updates.
+    through the Google AI Studio API. Known models register at init with no
+    network call. Any other model id resolves by name on first use, so new
+    models work without an SDK update. The live catalog is listed only when
+    the Dev UI asks for it, then cached.
 
     Model Types:
         | Type | Action Kind | Example |
@@ -465,7 +474,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         from genkit import Genkit
         from genkit_google_genai import GoogleAI
 
-        # 1. Initialize Genkit with dynamic model discovery
+        # 1. Initialize Genkit; no model listing happens at startup
         ai = Genkit(plugins=[GoogleAI()])
 
         # 2. Generate text using Gemini Flash
@@ -696,6 +705,10 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         # One client per event loop, used everywhere in plugin runtime paths.
         return _plugin_client(self._loop_client_kwargs())
 
+    @loop_local_client
+    def _list_actions_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
     def _loop_client_kwargs(self) -> dict[str, Any]:
         """Client kwargs carrying this loop's client from ``http_client_factory``, if one was given."""
         return _with_loop_http_client(self._client_kwargs, self._http_client_factory)
@@ -722,21 +735,29 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         return raw if isinstance(raw, str) else None
 
     async def init(self) -> list[Action | BackgroundAction[Any, Any]]:
-        """Initialize the plugin.
+        """Initialize the plugin with static known models and embedders.
+
+        Registration is static-first and requires no network requests,
+        preventing startup rate limits (429) on unbilled/free-tier projects.
+        Unknown or dynamic models resolve lazily on-demand.
 
         Returns:
             Actions and background models for known/supported models.
         """
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=False)
+        # Build this loop's http client now so a factory that returns the wrong
+        # type raises TypeError here, at setup, not inside the first model run.
+        if self._http_client_factory is not None:
+            self._http_client_factory()
 
         actions: list[Action | BackgroundAction[Any, Any]] = []
-        # Gemini Models
-        for name in genai_models.gemini:
+
+        # Gemini / Gemma Models
+        for name in GOOGLEAI_KNOWN_MODELS:
             if action := self._resolve_model(name):
                 actions.append(action)
 
         # Veo Models (background models)
-        for name in genai_models.veo:
+        for name in GOOGLEAI_KNOWN_VEO:
             actions.append(self._resolve_veo_model(name))
 
         client_options = self._interactions_client_options()
@@ -767,7 +788,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
             )
 
         # Embedders
-        for name in genai_models.embedders:
+        for name in GOOGLEAI_KNOWN_EMBEDDERS:
             actions.append(self._resolve_embedder(name))
 
         return actions
@@ -891,56 +912,58 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
     async def list_actions(self) -> list[Action | BackgroundAction[Any, Any]]:
         """Generate a list of available actions or models.
 
+        Dynamic discovery is performed lazily and cached across calls.
+
         Returns:
             list[Action | BackgroundAction[Any, Any]]: Actions and background models.
         """
         if self._list_actions_cache is not None:
             return self._list_actions_cache
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=False)
-        actions_list: list[Action | BackgroundAction[Any, Any]] = []
 
-        for name in genai_models.gemini:
-            if (model_action := self._resolve_model(name)) is not None:
-                actions_list.append(model_action)
+        async with self._list_actions_lock():
+            if self._list_actions_cache is not None:
+                return self._list_actions_cache
 
-        for name in genai_models.veo:
-            actions_list.append(
-                _create_veo_background_model(
+            actions_list = list(await self.init())
+            seen_names = {a.name for a in actions_list}
+
+            genai_models = await _list_genai_models(self._runtime_client(), is_vertex=False)
+
+            for name in genai_models.gemini:
+                if (model_action := self._resolve_model(name)) is not None:
+                    if model_action.name not in seen_names:
+                        actions_list.append(model_action)
+                        seen_names.add(model_action.name)
+
+            for name in genai_models.veo:
+                veo_action = _create_veo_background_model(
                     name,
                     self._runtime_client,
                     GOOGLEAI_PLUGIN_NAME,
                     client_kwargs=self._loop_client_kwargs,
                 )
-            )
+                if veo_action.name not in seen_names:
+                    actions_list.append(veo_action)
+                    seen_names.add(veo_action.name)
 
-        for name in list_known_deep_research_models():
-            actions_list.append(
-                create_deep_research_background_model(
-                    googleai_name(name),
-                    plugin_api_key=self._plugin_api_key(),
-                    client_options=self._interactions_client_options(),
-                )
-            )
-        for name in list_known_antigravity_models():
-            if (model_action := self._resolve_model(name)) is not None:
-                actions_list.append(model_action)
-        for name in list_known_lyria_models():
-            if (model_action := self._resolve_model(name)) is not None:
-                actions_list.append(model_action)
+            for name in genai_models.embedders:
+                embedder_action = _create_embedder_action(name, self._runtime_client, GOOGLEAI_PLUGIN_NAME)
+                if embedder_action.name not in seen_names:
+                    actions_list.append(embedder_action)
+                    seen_names.add(embedder_action.name)
 
-        for name in genai_models.embedders:
-            actions_list.append(_create_embedder_action(name, self._runtime_client, GOOGLEAI_PLUGIN_NAME))
-
-        self._list_actions_cache = actions_list
-        return actions_list
+            self._list_actions_cache = actions_list
+            return actions_list
 
 
 class VertexAI(GoogleFamilyRefs, Plugin):
-    """Vertex AI plugin for Genkit with dynamic model discovery.
+    """Vertex AI plugin for Genkit.
 
     This plugin provides access to Google Cloud Vertex AI models including
-    Gemini, Veo, and embedders. Models are discovered dynamically,
-    ensuring new models are available without SDK updates.
+    Gemini, Veo, and embedders. Known models register at init with no network
+    call. Any other model id resolves by name on first use, so new models work
+    without an SDK update. The live catalog is listed only when the Dev UI asks
+    for it, then cached.
 
     Vertex AI vs Google AI:
         Vertex AI provides enterprise features including:
@@ -1190,25 +1213,38 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         # One client per event loop, used everywhere in plugin runtime paths.
         return _plugin_client(self._loop_client_kwargs())
 
+    @loop_local_client
+    def _list_actions_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
     def _loop_client_kwargs(self) -> dict[str, Any]:
         """Client kwargs carrying this loop's client from ``http_client_factory``, if one was given."""
         return _with_loop_http_client(self._client_kwargs, self._http_client_factory)
 
     async def init(self) -> list[Action | BackgroundAction[Any, Any]]:
-        """Initialize the plugin.
+        """Initialize the plugin with static known models and embedders.
+
+        Registration is static-first and requires no network requests,
+        preventing startup rate limits (429) on unbilled/free-tier projects.
+        Unknown or dynamic models resolve lazily on-demand.
 
         Returns:
             Actions and background models for known/supported models.
         """
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=True)
+        # Build this loop's http client now so a factory that returns the wrong
+        # type raises TypeError here, at setup, not inside the first model run.
+        if self._http_client_factory is not None:
+            self._http_client_factory()
+
         actions: list[Action | BackgroundAction[Any, Any]] = []
 
-        for name in genai_models.gemini:
+        # Gemini Models (Vertex does not serve rotating -latest aliases or Gemma via generate_content)
+        for name in VERTEX_KNOWN_MODELS:
             if action := self._resolve_model(name):
                 actions.append(action)
 
         # Veo Models (background models)
-        for name in genai_models.veo:
+        for name in VERTEX_KNOWN_VEO:
             actions.append(self._resolve_veo_model(name))
 
         for name in VERTEX_KNOWN_VIRTUAL_TRY_ON:
@@ -1353,37 +1389,42 @@ class VertexAI(GoogleFamilyRefs, Plugin):
     async def list_actions(self) -> list[Action | BackgroundAction[Any, Any]]:
         """Generate a list of available actions or models.
 
+        Dynamic discovery is performed lazily and cached across calls.
+
         Returns:
             list[Action | BackgroundAction[Any, Any]]: Actions and background models.
         """
         if self._list_actions_cache is not None:
             return self._list_actions_cache
-        genai_models = await _list_genai_models(self._runtime_client(), is_vertex=True)
-        actions_list: list[Action | BackgroundAction[Any, Any]] = []
 
-        for name in genai_models.gemini:
-            if (model_action := self._resolve_model(name)) is not None:
-                actions_list.append(model_action)
+        async with self._list_actions_lock():
+            if self._list_actions_cache is not None:
+                return self._list_actions_cache
 
-        for name in genai_models.veo:
-            actions_list.append(
-                _create_veo_background_model(
+            actions_list = list(await self.init())
+            seen_names = {a.name for a in actions_list}
+
+            genai_models = await _list_genai_models(self._runtime_client(), is_vertex=True)
+
+            for name in genai_models.gemini:
+                if (model_action := self._resolve_model(name)) is not None:
+                    if model_action.name not in seen_names:
+                        actions_list.append(model_action)
+                        seen_names.add(model_action.name)
+
+            for name in genai_models.veo:
+                veo_action = _create_veo_background_model(
                     name,
                     self._runtime_client,
                     VERTEXAI_PLUGIN_NAME,
                     client_kwargs=self._loop_client_kwargs,
                 )
-            )
+                if veo_action.name not in seen_names:
+                    actions_list.append(veo_action)
+                    seen_names.add(veo_action.name)
 
-        for name in VERTEX_KNOWN_VIRTUAL_TRY_ON:
-            if (action := self._resolve_model(name)) is not None:
-                actions_list.append(action)
-
-        for name in VERTEX_KNOWN_EMBEDDERS:
-            actions_list.append(_create_embedder_action(name, self._runtime_client, VERTEXAI_PLUGIN_NAME))
-
-        self._list_actions_cache = actions_list
-        return actions_list
+            self._list_actions_cache = actions_list
+            return actions_list
 
 
 def _loop_local_http_client(

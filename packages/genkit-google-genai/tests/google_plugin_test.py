@@ -935,8 +935,8 @@ def test_vertexai_positional_project_raises_type_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_googleai_init_rejected_key_is_unauthenticated(googleai_plugin_instance: GoogleAI) -> None:
-    """A bad API key fails the model listing in init with UNAUTHENTICATED, not a raw SDK error."""
+async def test_googleai_list_actions_rejected_key_is_unauthenticated(googleai_plugin_instance: GoogleAI) -> None:
+    """A bad API key fails model listing in list_actions with UNAUTHENTICATED, not a raw SDK error."""
     message = 'API key not valid. Please pass a valid API key.'
     error_info = {
         '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
@@ -954,7 +954,7 @@ async def test_googleai_init_rejected_key_is_unauthenticated(googleai_plugin_ins
     googleai_plugin_instance._runtime_client = lambda: mock_client
 
     with pytest.raises(GenkitError) as raised:
-        await googleai_plugin_instance.init()
+        await googleai_plugin_instance.list_actions()
 
     assert raised.value.status == 'UNAUTHENTICATED'
     assert raised.value.__cause__ is rejected
@@ -969,23 +969,23 @@ async def test_googleai_init_rejected_key_is_unauthenticated(googleai_plugin_ins
         (httpx.ConnectError('[Errno 61] Connection refused'), 'UNAVAILABLE'),
     ],
 )
-async def test_vertexai_init_classifies_model_listing_failure(
+async def test_vertexai_list_actions_classifies_model_listing_failure(
     vertexai_plugin_instance: VertexAI, failure: Exception, status: str
 ) -> None:
-    """Model listing in init maps provider, credential, and connection failures like a generate call."""
+    """Model listing in list_actions maps provider, credential, and connection failures like a generate call."""
     mock_client = MagicMock()
     mock_client.aio.models.list = AsyncMock(side_effect=failure)
     vertexai_plugin_instance._runtime_client = lambda: mock_client
 
     with pytest.raises(GenkitError) as raised:
-        await vertexai_plugin_instance.init()
+        await vertexai_plugin_instance.list_actions()
 
     assert raised.value.status == status
     assert raised.value.__cause__ is failure
 
 
 @pytest.mark.asyncio
-async def test_vertexai_init_listing_unknown_failure_stays_raw(vertexai_plugin_instance: VertexAI) -> None:
+async def test_vertexai_list_actions_listing_unknown_failure_stays_raw(vertexai_plugin_instance: VertexAI) -> None:
     """A listing failure that is not a provider, credential, or connection error keeps its own type."""
     boom = RuntimeError('SDK bug')
     mock_client = MagicMock()
@@ -993,7 +993,7 @@ async def test_vertexai_init_listing_unknown_failure_stays_raw(vertexai_plugin_i
     vertexai_plugin_instance._runtime_client = lambda: mock_client
 
     with pytest.raises(RuntimeError) as raised:
-        await vertexai_plugin_instance.init()
+        await vertexai_plugin_instance.list_actions()
 
     assert raised.value is boom
 
@@ -1004,7 +1004,7 @@ async def _pager_failing_after(first: Any, failure: BaseException) -> AsyncItera
 
 
 @pytest.mark.asyncio
-async def test_googleai_init_classifies_failure_while_paging_models(googleai_plugin_instance: GoogleAI) -> None:
+async def test_googleai_list_actions_classifies_failure_while_paging_models(googleai_plugin_instance: GoogleAI) -> None:
     """An API error the pager raises after the first page is classified too."""
     first = MagicMock()
     first.name = 'models/gemini-2.5-flash'
@@ -1015,7 +1015,195 @@ async def test_googleai_init_classifies_failure_while_paging_models(googleai_plu
     googleai_plugin_instance._runtime_client = lambda: mock_client
 
     with pytest.raises(GenkitError) as raised:
-        await googleai_plugin_instance.init()
+        await googleai_plugin_instance.list_actions()
 
     assert raised.value.status == 'PERMISSION_DENIED'
     assert raised.value.__cause__ is denied
+
+
+@pytest.mark.asyncio
+async def test_googleai_init_is_static_first_with_zero_network_calls(googleai_plugin_instance: GoogleAI) -> None:
+    """Plugin init is static-first and never calls models.list(), avoiding startup 429s."""
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=AssertionError('models.list should not be called in init()'))
+    googleai_plugin_instance._runtime_client = lambda: mock_client
+
+    actions = await googleai_plugin_instance.init()
+    assert len(actions) > 0
+    mock_client.aio.models.list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_vertexai_init_is_static_first_with_zero_network_calls(vertexai_plugin_instance: VertexAI) -> None:
+    """Vertex init is static-first and never calls models.list(), avoiding startup 429s."""
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=AssertionError('models.list should not be called in init()'))
+    vertexai_plugin_instance._runtime_client = lambda: mock_client
+
+    actions = await vertexai_plugin_instance.init()
+    assert len(actions) > 0
+    mock_client.aio.models.list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_googleai_list_actions_caches_dynamic_discovery(googleai_plugin_instance: GoogleAI) -> None:
+    """Dynamic discovery in list_actions is cached across subsequent calls."""
+    mock_client = MagicMock()
+    mock_model = MagicMock()
+    mock_model.name = 'models/gemini-custom-experiment'
+    mock_model.supported_actions = ['generateContent']
+    mock_client.aio.models.list = AsyncMock(return_value=_single_page_iter([mock_model]))
+    googleai_plugin_instance._runtime_client = lambda: mock_client
+
+    first_actions = await googleai_plugin_instance.list_actions()
+    assert any('gemini-custom-experiment' in a.name for a in first_actions)
+    assert mock_client.aio.models.list.call_count == 1
+
+    second_actions = await googleai_plugin_instance.list_actions()
+    assert second_actions is first_actions
+    assert mock_client.aio.models.list.call_count == 1
+
+
+async def _single_page_iter(items: list[Any]) -> AsyncIterator[Any]:
+    for item in items:
+        yield item
+
+
+@pytest.mark.asyncio
+async def test_googleai_init_registers_known_embedders_and_veo(googleai_plugin_instance: GoogleAI) -> None:
+    """Init registers the live Gemini embedders and known Veo ids, never the retired text-embedding-004."""
+    names = {a.name for a in await googleai_plugin_instance.init()}
+
+    assert {'googleai/gemini-embedding-001', 'googleai/gemini-embedding-2'} <= names
+    assert 'googleai/text-embedding-004' not in names
+    assert 'googleai/veo-3.1-generate-preview' in names
+
+
+@pytest.mark.asyncio
+async def test_vertexai_init_registers_known_veo(vertexai_plugin_instance: VertexAI) -> None:
+    """Vertex init registers known Veo ids as background models without listing the catalog."""
+    actions = await vertexai_plugin_instance.init()
+
+    veo = [a for a in actions if a.name == 'vertexai/veo-3.1-generate-001']
+    assert len(veo) == 1
+    assert isinstance(veo[0], BackgroundModel)
+
+
+@pytest.mark.asyncio
+async def test_googleai_resolves_unlisted_model_without_listing(googleai_plugin_instance: GoogleAI) -> None:
+    """A model id missing from the static catalog resolves by name with no models.list() call."""
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=AssertionError('resolve must not list models'))
+    googleai_plugin_instance._runtime_client = lambda: mock_client
+
+    action = await googleai_plugin_instance.resolve(ActionKind.MODEL, 'gemini-custom-experiment')
+
+    assert action is not None
+    assert action.name == 'googleai/gemini-custom-experiment'
+    mock_client.aio.models.list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_listing_keeps_static_catalog_and_retries() -> None:
+    """With no network, the Dev UI catalog still shows static models, and the next listing tries again."""
+    plugin = GoogleAI(api_key='k')
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=httpx.ConnectError('[Errno 61] Connection refused'))
+    plugin._runtime_client = lambda: mock_client
+    ai = Genkit(plugins=[plugin])
+
+    catalog = await ai._registry.list_actions()
+    await ai._registry.list_actions()
+
+    assert '/model/googleai/gemini-2.5-flash' in catalog
+    assert '/embedder/googleai/gemini-embedding-001' in catalog
+    assert mock_client.aio.models.list.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_vertexai_list_actions_caches_dynamic_discovery(vertexai_plugin_instance: VertexAI) -> None:
+    """Vertex list_actions caches discovered models across subsequent calls."""
+    mock_client = MagicMock()
+    mock_model = MagicMock()
+    mock_model.name = 'publishers/google/models/gemini-custom-experiment'
+    mock_model.supported_actions = None
+    mock_model.description = ''
+    mock_client.aio.models.list = AsyncMock(return_value=_single_page_iter([mock_model]))
+    vertexai_plugin_instance._runtime_client = lambda: mock_client
+
+    first_actions = await vertexai_plugin_instance.list_actions()
+    assert any(a.name == 'vertexai/gemini-custom-experiment' for a in first_actions)
+    assert mock_client.aio.models.list.call_count == 1
+
+    second_actions = await vertexai_plugin_instance.list_actions()
+    assert second_actions is first_actions
+    assert mock_client.aio.models.list.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_actions_deduplicates_concurrent_cold_calls(
+    googleai_plugin_instance: GoogleAI, vertexai_plugin_instance: VertexAI
+) -> None:
+    """Concurrent cold list_actions calls share one models.list() request instead of racing."""
+    for plugin, prefix in (
+        (googleai_plugin_instance, 'models/'),
+        (vertexai_plugin_instance, 'publishers/google/models/'),
+    ):
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+        mock_model = MagicMock()
+        mock_model.name = f'{prefix}gemini-concurrent-exp'
+        mock_model.supported_actions = ['generateContent']
+        mock_model.description = ''
+
+        async def slow_list(
+            item: Any = mock_model, enter: asyncio.Event = entered, wait: asyncio.Event = gate
+        ) -> AsyncIterator[Any]:
+            enter.set()
+            await wait.wait()
+            return _single_page_iter([item])
+
+        mock_client = MagicMock()
+        mock_client.aio.models.list = AsyncMock(side_effect=slow_list)
+        plugin._runtime_client = lambda c=mock_client: c  # type: ignore[misc]
+
+        t1 = asyncio.create_task(plugin.list_actions())
+        t2 = asyncio.create_task(plugin.list_actions())
+        await entered.wait()
+        gate.set()
+        r1, r2 = await asyncio.gather(t1, t2)
+
+        assert r1 is r2
+        assert mock_client.aio.models.list.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_vertexai_resolves_unlisted_and_tuned_models_without_listing(vertexai_plugin_instance: VertexAI) -> None:
+    """Vertex resolve builds unlisted Gemini and tuned endpoint actions with no models.list() call."""
+    mock_client = MagicMock()
+    mock_client.aio.models.list = AsyncMock(side_effect=AssertionError('resolve must not list models'))
+    vertexai_plugin_instance._runtime_client = lambda: mock_client
+
+    unlisted = await vertexai_plugin_instance.resolve(ActionKind.MODEL, 'gemini-custom-experiment')
+    tuned = await vertexai_plugin_instance.resolve(ActionKind.MODEL, 'endpoints/1234567890')
+
+    assert unlisted is not None and unlisted.name == 'vertexai/gemini-custom-experiment'
+    assert tuned is not None and tuned.name == 'vertexai/endpoints/1234567890'
+    mock_client.aio.models.list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_static_init_catalog_matches_backend_capabilities(
+    googleai_plugin_instance: GoogleAI, vertexai_plugin_instance: VertexAI
+) -> None:
+    """GoogleAI init registers Gemma 3/4 and -latest; VertexAI skips them; neither registers retired previews."""
+    google_names = {a.name for a in await googleai_plugin_instance.init()}
+    vertex_names = {a.name for a in await vertexai_plugin_instance.init()}
+
+    assert {'googleai/gemma-3-12b-it', 'googleai/gemma-4-31b-it', 'googleai/gemini-flash-latest'} <= google_names
+    assert 'googleai/gemini-2.5-pro-exp-03-25' not in google_names
+    assert 'googleai/gemini-2.5-flash-image-preview' not in google_names
+
+    assert not any('gemma-' in name for name in vertex_names)
+    assert not any(name.endswith('-latest') for name in vertex_names)
+    assert 'vertexai/gemini-2.5-pro-exp-03-25' not in vertex_names

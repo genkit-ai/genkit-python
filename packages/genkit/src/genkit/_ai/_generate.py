@@ -1374,12 +1374,12 @@ _LOGGED_ATTR = '_genkit_failure_logged'
 
 
 def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: str | None = None) -> None:
-    """Log a failure whose cause boxing hides behind ``internal error``.
+    """Log an unraised turn failure boxed onto ``ModelResponse``.
 
-    The caller only gets ``finish_reason=failed`` with ``internal error``, so
-    without this line the cause lives only in an exported trace. Failures that
-    keep their own message (``PublicError``, a ``GenkitError`` without a
-    foreign cause) are already on ``response.error`` and are not logged.
+    ``generate()`` returns ``finish_reason=failed`` instead of raising once a
+    turn has started, so callers reading ``response.text`` would otherwise get
+    an empty string with no log output. ``PublicError`` is an intentional
+    caller-facing rejection on ``response.error`` and is not logged.
 
     Args:
         exc: The exception about to be boxed.
@@ -1388,7 +1388,7 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     """
     if getattr(exc, _LOGGED_ATTR, False):
         return
-    if boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
+    if public_error(exc) is not None:
         return
     with contextlib.suppress(AttributeError, TypeError):
         setattr(exc, _LOGGED_ATTR, True)

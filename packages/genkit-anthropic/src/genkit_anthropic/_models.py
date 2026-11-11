@@ -437,12 +437,16 @@ class AnthropicModel:
         Returns:
             GenerationUsage with token and character counts.
         """
+        raw_creation: object = getattr(response.usage, 'cache_creation_input_tokens', None)
+        raw_read: object = getattr(response.usage, 'cache_read_input_tokens', None)
         return build_cache_usage(
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             basic_usage=basic_usage,
-            cache_creation_input_tokens=getattr(response.usage, 'cache_creation_input_tokens', None) or 0,
-            cache_read_input_tokens=getattr(response.usage, 'cache_read_input_tokens', None) or 0,
+            cache_creation_input_tokens=(
+                raw_creation if isinstance(raw_creation, int) and not isinstance(raw_creation, bool) else 0
+            ),
+            cache_read_input_tokens=raw_read if isinstance(raw_read, int) and not isinstance(raw_read, bool) else 0,
         )
 
     def _client_for_key(self, api_key: str | None) -> object:

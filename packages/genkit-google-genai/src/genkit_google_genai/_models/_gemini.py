@@ -1236,6 +1236,22 @@ _add_model(GEMMA_4_31B_IT, ['gemma-4-31b-it'])
 # resolve() writes into SUPPORTED_MODELS later.
 GEMINI_CATALOG_IDS = frozenset(SUPPORTED_MODELS)
 
+GOOGLEAI_KNOWN_MODELS: tuple[str, ...] = tuple(
+    sorted({
+        *get_args(KnownGoogleAIGemini),
+        *get_args(KnownGeminiTts),
+        *get_args(KnownGeminiImage),
+        *get_args(KnownGemma),
+    })
+)
+VERTEX_KNOWN_MODELS: tuple[str, ...] = tuple(
+    sorted({
+        *get_args(KnownVertexAIGemini),
+        *get_args(KnownGeminiTts),
+        *get_args(KnownGeminiImage),
+    })
+)
+
 
 DEFAULT_SUPPORTS_MODEL = ModelSupports(
     multiturn=True,

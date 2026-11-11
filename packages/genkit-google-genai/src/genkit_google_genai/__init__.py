@@ -18,8 +18,9 @@
 """Google GenAI plugin for Genkit.
 
 This plugin provides integration with Google's generative AI models through
-either Google AI (Gemini API) or Google Cloud Vertex AI. It dynamically discovers
-and registers available models and embedders at runtime.
+either Google AI (Gemini API) or Google Cloud Vertex AI. It registers known
+models and embedders at init with no network call and resolves any other model
+id by name on first use.
 
 Example:
     Using GoogleAI (Gemini API) with typed flat config:

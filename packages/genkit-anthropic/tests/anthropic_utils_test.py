@@ -293,10 +293,12 @@ class TestBuildCacheUsage:
         assert result.total_tokens == 150
         assert result.input_characters == 10
         assert result.output_characters == 20
+        assert result.cached_content_tokens is None
+        assert result.cache_write_tokens is None
         assert result.custom is None
 
     def test_usage_with_cache_creation(self) -> None:
-        """Includes cache_creation_input_tokens in custom."""
+        """Includes cache_creation_input_tokens in input_tokens, total_tokens, cache_write_tokens, and custom."""
         basic = GenerationUsage()
         result = build_cache_usage(
             input_tokens=100,
@@ -304,12 +306,15 @@ class TestBuildCacheUsage:
             basic_usage=basic,
             cache_creation_input_tokens=200,
         )
-        assert result.custom is not None
-        assert result.custom['cache_creation_input_tokens'] == 200
-        assert 'cache_read_input_tokens' not in result.custom
+        assert result.input_tokens == 300
+        assert result.output_tokens == 50
+        assert result.total_tokens == 350
+        assert result.cached_content_tokens is None
+        assert result.cache_write_tokens == 200
+        assert result.custom == {'cache_creation_input_tokens': 200}
 
     def test_usage_with_cache_read(self) -> None:
-        """Includes cache_read_input_tokens in custom."""
+        """Includes cache_read_input_tokens in input_tokens, total_tokens, cached_content_tokens, and custom."""
         basic = GenerationUsage()
         result = build_cache_usage(
             input_tokens=100,
@@ -317,12 +322,15 @@ class TestBuildCacheUsage:
             basic_usage=basic,
             cache_read_input_tokens=300,
         )
-        assert result.custom is not None
-        assert result.custom['cache_read_input_tokens'] == 300
-        assert 'cache_creation_input_tokens' not in result.custom
+        assert result.input_tokens == 400
+        assert result.output_tokens == 50
+        assert result.total_tokens == 450
+        assert result.cached_content_tokens == 300
+        assert result.cache_write_tokens is None
+        assert result.custom == {'cache_read_input_tokens': 300}
 
     def test_usage_with_both_cache_fields(self) -> None:
-        """Includes both cache token fields when both are present."""
+        """Includes both cache token fields in inclusive totals, shared fields, and custom."""
         basic = GenerationUsage()
         result = build_cache_usage(
             input_tokens=100,
@@ -331,12 +339,15 @@ class TestBuildCacheUsage:
             cache_creation_input_tokens=200,
             cache_read_input_tokens=300,
         )
-        assert result.custom is not None
-        assert result.custom['cache_creation_input_tokens'] == 200
-        assert result.custom['cache_read_input_tokens'] == 300
+        assert result.input_tokens == 600
+        assert result.output_tokens == 50
+        assert result.total_tokens == 650
+        assert result.cached_content_tokens == 300
+        assert result.cache_write_tokens == 200
+        assert result.custom == {'cache_creation_input_tokens': 200, 'cache_read_input_tokens': 300}
 
     def test_zero_cache_tokens_are_excluded(self) -> None:
-        """Zero cache tokens don't appear in custom field."""
+        """Zero cache tokens leave shared cache fields and custom unset."""
         basic = GenerationUsage()
         result = build_cache_usage(
             input_tokens=100,
@@ -345,4 +356,8 @@ class TestBuildCacheUsage:
             cache_creation_input_tokens=0,
             cache_read_input_tokens=0,
         )
+        assert result.input_tokens == 100
+        assert result.total_tokens == 150
+        assert result.cached_content_tokens is None
+        assert result.cache_write_tokens is None
         assert result.custom is None

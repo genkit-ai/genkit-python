@@ -20,6 +20,7 @@ import json
 from collections.abc import Callable
 from typing import Any, cast
 
+from genkit_openai._models._mistral import is_mistral, mistral_chat_body
 from genkit_openai._models._utils import (
     OPENAI_CALL_ERRORS,
     DictMessageAdapter,
@@ -261,6 +262,7 @@ class OpenAIModel:
         self._model = model
         self._openai_client = client
         self._supports = supports
+        self._mistral = is_mistral(client)
 
     @property
     def name(self) -> str:
@@ -490,6 +492,8 @@ class OpenAIModel:
         """
         openai_config = await self._get_openai_request_config(request=request)
         openai_config.pop('stream_options', None)
+        if self._mistral:
+            openai_config = mistral_chat_body(openai_config)
         logger.debug('OpenAI generate request', model=self._model, streaming=False)
         response = await self._openai_client.chat.completions.create(**openai_config)
         if not response.choices:
@@ -548,6 +552,8 @@ class OpenAIModel:
             **(openai_config.get('stream_options') or {}),
             'include_usage': True,
         }
+        if self._mistral:
+            openai_config = mistral_chat_body(openai_config)
 
         stream = await self._openai_client.chat.completions.create(**openai_config)
 

@@ -64,6 +64,7 @@ from genkit_openai._models._image import (
     OpenAIGptImageConfig,
     OpenAIImageModel,
 )
+from genkit_openai._models._mistral import is_mistral
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
     SUPPORTED_EMBEDDING_MODELS,
@@ -603,7 +604,23 @@ class OpenAI(Plugin):
             # Call with only non-None optional params to satisfy strict typings
             client = self._embed_client()
             try:
-                if dimensions is not None and encoding_format is not None:
+                # Mistral names the setting output_dimension and rejects
+                # dimensions. The SDK has no output_dimension kwarg, so it
+                # rides in extra_body.
+                if dimensions is not None and encoding_format is not None and is_mistral(client):
+                    response = await client.embeddings.create(
+                        model=name,
+                        input=texts,
+                        encoding_format=encoding_format,
+                        extra_body={'output_dimension': dimensions},
+                    )
+                elif dimensions is not None and is_mistral(client):
+                    response = await client.embeddings.create(
+                        model=name,
+                        input=texts,
+                        extra_body={'output_dimension': dimensions},
+                    )
+                elif dimensions is not None and encoding_format is not None:
                     response = await client.embeddings.create(
                         model=name,
                         input=texts,

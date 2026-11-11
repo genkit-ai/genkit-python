@@ -261,15 +261,22 @@ def build_cache_usage(
 ) -> GenerationUsage:
     """Build GenerationUsage with cache-aware token counts.
 
+    Anthropic's ``input_tokens`` leaves out tokens read from and written to the
+    prompt cache, so both are added back to make ``input_tokens`` the full
+    prompt (matching Gemini, OpenAI, Go, and OpenTelemetry GenAI), with
+    ``cached_content_tokens`` and ``cache_write_tokens`` as subsets.
+
     Args:
-        input_tokens: Number of input tokens from the API response.
-        output_tokens: Number of output tokens from the API response.
+        input_tokens: Uncached input token count from the API response.
+        output_tokens: Output token count from the API response.
         basic_usage: Basic character/image usage from message content.
         cache_creation_input_tokens: Tokens for newly created cache entries.
         cache_read_input_tokens: Tokens read from existing cache entries.
 
     Returns:
-        GenerationUsage with token, character, and cache counts.
+        GenerationUsage with inclusive ``input_tokens`` and ``total_tokens``,
+        ``cached_content_tokens`` / ``cache_write_tokens`` set when non-zero,
+        and Anthropic's raw key names preserved on ``custom``.
     """
     custom: dict[str, float] = {}
     if cache_creation_input_tokens:
@@ -277,13 +284,17 @@ def build_cache_usage(
     if cache_read_input_tokens:
         custom['cache_read_input_tokens'] = cache_read_input_tokens
 
+    total_input_tokens = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+
     return GenerationUsage(
-        input_tokens=input_tokens,
+        input_tokens=total_input_tokens,
         output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
+        total_tokens=total_input_tokens + output_tokens,
         input_characters=basic_usage.input_characters,
         output_characters=basic_usage.output_characters,
         input_images=basic_usage.input_images,
         output_images=basic_usage.output_images,
+        cached_content_tokens=cache_read_input_tokens or None,
+        cache_write_tokens=cache_creation_input_tokens or None,
         custom=custom if custom else None,
     )

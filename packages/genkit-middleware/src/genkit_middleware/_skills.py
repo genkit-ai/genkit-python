@@ -14,11 +14,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Skills middleware for Genkit."""
+"""Skills middleware for Genkit.
+
+Each entry in ``skill_paths`` is a skill root. Every direct subdirectory that
+holds a regular ``SKILL.md`` is a skill, named after the directory. A
+symlinked skill directory is followed, as in Go. A ``SKILL.md`` that is a
+symlink, is not a regular file, or is over 1 MiB is never read. ``use_skill``
+looks a name up in the scanned catalog and never joins it into a path, so a
+name like ``../secrets`` can't reach outside a skill directory.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import errno
+import os
+import re
+import stat
+import unicodedata
+import weakref
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -26,13 +40,28 @@ from typing import Any
 import yaml
 from pydantic import BaseModel as PydanticBaseModel, Field
 
-from genkit import Message, ModelResponse, Part, Role, Tool
+from genkit import Message, ModelResponse, Part, Role, Tool, get_logger
 from genkit.middleware import GenerateHookParams, Middleware, MiddlewareContext
 from genkit.model import GenerateActionOptions
 from genkit.plugin_api import GenkitConfig
 
+logger = get_logger(__name__)
+
 _SKILLS_MARKER = 'skills-instructions'
 _MISSING_DESCRIPTION = 'No description provided.'
+_SKILL_FILE_NAME = 'SKILL.md'
+
+# Process resource limit, same as Go: an oversized SKILL.md is skipped, never truncated.
+_SKILL_MAX_BYTES = 1 << 20
+# Agent Skills spec bound. A longer description is clipped in the catalog only.
+_SKILL_DESCRIPTION_MAX_CHARS = 1024
+
+# A '<' that opens a tag, e.g. '</skills>' or '<system>'.
+_TAG_OPEN = re.compile(r'<(?=/?[A-Za-z])')
+_FRONTMATTER_FENCE = re.compile(r'^[ \t]*---[ \t]*\r?$', re.MULTILINE)
+
+_O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+_O_NONBLOCK = getattr(os, 'O_NONBLOCK', 0)
 
 
 class _UseSkillInput(PydanticBaseModel):
@@ -47,56 +76,163 @@ class SkillsConfig(GenkitConfig):
     skill_paths: list[str] = Field(default_factory=lambda: ['skills'])
 
 
+def _single_line(value: str) -> str:
+    """Drop control and format characters (NUL, bidi overrides) and collapse whitespace."""
+    kept = ''.join(' ' if unicodedata.category(c) in ('Cc', 'Cf', 'Zl', 'Zp') else c for c in value)
+    return ' '.join(kept.split())
+
+
+def _frontmatter_text(value: object) -> str:
+    """Coerce a YAML scalar to text: ``name: 404`` is ``'404'``. Mappings and lists are ignored."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    return ''
+
+
+def _catalog_text(value: str) -> str:
+    """Escape tag openers so skill metadata can't close ``<skills>`` or open a new block."""
+    return _TAG_OPEN.sub('&lt;', value)
+
+
+def _clip(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + '...'
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Whether ``path``'s real path is ``root`` or under it. ``root`` must already be resolved."""
+    try:
+        return path.resolve().is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _read_skill_file(path: Path, skill_dir: Path) -> str:
+    """Read a ``SKILL.md`` that is a regular, non-symlink file in ``skill_dir`` within the size limit.
+
+    ``skill_dir`` is the skill directory's resolved path. Type and size are
+    checked on ``lstat`` before the open, so a symlinked ``SKILL.md`` or a named
+    pipe is never opened. ``O_NOFOLLOW`` refuses a ``SKILL.md`` replaced by a
+    symlink after the check, and the ``fstat`` identity check refuses a file
+    replaced by a different one. Neither guards against a parent directory
+    being swapped by someone who can write to the skill path.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError(f'{_SKILL_FILE_NAME} is not a regular file.')
+    if st.st_size > _SKILL_MAX_BYTES:
+        raise ValueError(f'{_SKILL_FILE_NAME} is {st.st_size:,} bytes, over the {_SKILL_MAX_BYTES:,} byte limit.')
+    if not _is_within(path, skill_dir):
+        raise ValueError(f'{_SKILL_FILE_NAME} is outside its skill directory.')
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as fh:
+        opened = os.fstat(fh.fileno())
+        if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino) or not stat.S_ISREG(opened.st_mode):
+            raise OSError(errno.ESTALE, f'{_SKILL_FILE_NAME} changed while it was being opened.')
+        data = fh.read(_SKILL_MAX_BYTES + 1)
+    if len(data) > _SKILL_MAX_BYTES:
+        raise ValueError(f'{_SKILL_FILE_NAME} is over the {_SKILL_MAX_BYTES:,} byte limit.')
+    return data.decode('utf-8')
+
+
 class Skills(Middleware[SkillsConfig]):
-    """Skills middleware that exposes ``SKILL.md`` files as loadable instructions."""
+    """Skills middleware that exposes ``SKILL.md`` files as loadable instructions.
+
+    A skill's name is its directory name, matching JS and Go. When frontmatter
+    defines a different name, the directory name is used. A symlinked skill
+    directory is followed, as in Go. When two skill paths hold the same skill
+    name, the later path wins, as in JS and Go.
+    """
 
     name = 'skills'
     description = 'Provides access to skill library for specialized instructions'
+    _cached_scan: tuple[weakref.ref[MiddlewareContext], dict[str, dict[str, str]]] | None = None
 
     def _scan_skills(self) -> dict[str, dict[str, str]]:
         skills: dict[str, dict[str, str]] = {}
         for path_str in self.config.skill_paths:
-            path = Path(path_str).resolve()
-            if not path.is_dir():
+            try:
+                root = Path(path_str).resolve()
+                if not root.is_dir():
+                    continue
+                subdirs = sorted(root.iterdir())
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning('skills path could not be read, skipping', path=path_str, error=str(exc))
                 continue
-            for subdir in sorted(path.iterdir()):
-                if not subdir.is_dir() or subdir.name.startswith('.'):
+            for subdir in subdirs:
+                if subdir.name.startswith('.'):
                     continue
-                skill_file = subdir / 'SKILL.md'
-                if not skill_file.is_file():
+                skill_file = subdir / _SKILL_FILE_NAME
+                try:
+                    if not subdir.is_dir():
+                        continue
+                    skill_dir = subdir.resolve()
+                    if _SKILL_FILE_NAME not in os.listdir(skill_dir):
+                        continue
+                    content = _read_skill_file(skill_file, skill_dir)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.warning('skill could not be loaded, skipping', path=str(subdir), error=str(exc))
                     continue
-                name, description = self._parse_skill_file(skill_file)
+                fm_name, fm_description = self._parse_frontmatter(content)
+                name = _single_line(subdir.name)
                 if not name:
-                    name = subdir.name
+                    continue
+                if fm_name and _single_line(fm_name) != name:
+                    logger.debug(
+                        'SKILL.md name does not match its directory name; the directory name is used',
+                        skill=name,
+                        frontmatter_name=fm_name,
+                        path=str(skill_file),
+                    )
+                if name in skills:
+                    logger.warning(
+                        'skill name found in more than one path, the later path wins',
+                        skill=name,
+                        shadowed=skills[name]['path'],
+                        using=str(skill_file),
+                    )
                 skills[name] = {
                     'path': str(skill_file),
-                    'description': description or '',
+                    'skill_dir': str(skill_dir),
+                    'description': _single_line(fm_description),
                 }
         return skills
 
-    def _parse_skill_file(self, path: Path) -> tuple[str, str]:
+    def _skills_for(self, ctx: MiddlewareContext) -> dict[str, dict[str, str]]:
+        cached = self._cached_scan
+        if cached is not None and cached[0]() is ctx:
+            return cached[1]
+        scanned = self._scan_skills()
+        self._cached_scan = (weakref.ref(ctx), scanned)
+        return scanned
+
+    async def _skills_for_async(self, ctx: MiddlewareContext) -> dict[str, dict[str, str]]:
+        cached = self._cached_scan
+        if cached is not None and cached[0]() is ctx:
+            return cached[1]
+        scanned = await asyncio.to_thread(self._scan_skills)
+        self._cached_scan = (weakref.ref(ctx), scanned)
+        return scanned
+
+    def _parse_frontmatter(self, content: str) -> tuple[str, str]:
+        content = content.lstrip('\ufeff')
+        open_match = _FRONTMATTER_FENCE.match(content)
+        if open_match is None or open_match.end() >= len(content) or content[open_match.end()] != '\n':
+            return '', ''
+        yaml_start = open_match.end() + 1
+        close_match = _FRONTMATTER_FENCE.search(content, yaml_start)
+        if close_match is None:
+            return '', ''
         try:
-            content = path.read_text(encoding='utf-8').lstrip('\ufeff')
+            data = yaml.safe_load(content[yaml_start : close_match.start()])
         except Exception:
             return '', ''
-        if content.startswith('---\r\n'):
-            start_idx = 5
-            end_marker = '\r\n---'
-        elif content.startswith('---\n'):
-            start_idx = 4
-            end_marker = '\n---'
-        else:
+        if not isinstance(data, dict):
             return '', ''
-        end_idx = content.find(end_marker, start_idx)
-        if end_idx == -1:
-            return '', ''
-        try:
-            data = yaml.safe_load(content[start_idx:end_idx])
-            if not isinstance(data, dict):
-                return '', ''
-            return data.get('name', ''), data.get('description', '')
-        except Exception:
-            return '', ''
+        return _frontmatter_text(data.get('name')), _frontmatter_text(data.get('description'))
 
     def _build_skills_prompt(self, skills: dict[str, dict[str, str]]) -> str:
         if not skills:
@@ -110,10 +246,11 @@ class Skills(Middleware[SkillsConfig]):
         ]
         for skill_name in sorted(skills.keys()):
             desc = skills[skill_name]['description']
+            name_text = _catalog_text(skill_name)
             if desc and desc != _MISSING_DESCRIPTION:
-                lines.append(f' - {skill_name} - {desc}')
+                lines.append(f' - {name_text} - {_catalog_text(_clip(desc, _SKILL_DESCRIPTION_MAX_CHARS))}')
             else:
-                lines.append(f' - {skill_name}')
+                lines.append(f' - {name_text}')
         lines.append('</skills>')
         return '\n'.join(lines)
 
@@ -150,21 +287,25 @@ class Skills(Middleware[SkillsConfig]):
         return new_options
 
     def tools(self, ctx: MiddlewareContext) -> list[Tool]:
-        if not self._scan_skills():
+        skills = self._skills_for(ctx)
+        if not skills:
             return []
 
         async def use_skill(input: _UseSkillInput) -> str:
             skill_name = input.skill_name
-            skills = await asyncio.to_thread(self._scan_skills)
+            # The catalog shows names with tag openers escaped; accept either form.
             info = skills.get(skill_name)
             if info is None:
-                available = ', '.join(sorted(skills.keys()))
-                return f'Unknown skill "{skill_name}". Available skills: {available}'
+                info = next((v for k, v in skills.items() if _catalog_text(k) == skill_name), None)
+            if info is None:
+                available = ', '.join(_catalog_text(k) for k in sorted(skills.keys()))
+                return f'Unknown skill "{_catalog_text(skill_name)}". Available skills: {available}'
             try:
-                skill_path = Path(info['path'])
-                return await asyncio.to_thread(skill_path.read_text, encoding='utf-8')
-            except Exception as exc:
-                return f'Failed to read skill "{skill_name}": {exc}'
+                return await asyncio.to_thread(_read_skill_file, Path(info['path']), Path(info['skill_dir']))
+            except (OSError, ValueError) as exc:
+                # Log the host path; keep it out of the model-visible result.
+                logger.warning('skill could not be read', skill=skill_name, path=info['path'], error=str(exc))
+                return f'Failed to read skill "{_catalog_text(skill_name)}".'
 
         return [Tool(use_skill, description='Load a skill by name.')]
 
@@ -174,7 +315,7 @@ class Skills(Middleware[SkillsConfig]):
         ctx: MiddlewareContext,
         next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        skills = await asyncio.to_thread(self._scan_skills)
+        skills = await self._skills_for_async(ctx)
         if skills:
             prompt_text = self._build_skills_prompt(skills)
             if prompt_text:

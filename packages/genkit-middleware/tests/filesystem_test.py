@@ -215,3 +215,66 @@ async def test_wrap_tool_lets_interrupt_through_without_queueing_an_error(ctx) -
 
         assert raised.value.metadata == {'reason': 'confirm overwrite', 'path': 'menu.md'}
         assert fs._message_queue == []  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Redaction boundaries, edit size caps, and special files (FIFOs)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_does_not_mangle_sibling_directory_sharing_root_prefix(tmp_path: Path) -> None:
+    """`_redact` replaces `root` only on path boundaries, never turning `/tmp/workspace_evil` into `._evil`."""
+    root = tmp_path / 'workspace'
+    root.mkdir()
+    evil = tmp_path / 'workspace_evil' / 'sibling.txt'
+    dashed = tmp_path / 'workspace-prod' / 'secret.txt'
+    fs = Filesystem(root_dir=str(root))
+
+    assert fs._redact(f"Absolute path '{evil}' escapes the root directory.") == (  # noqa: SLF001
+        f"Absolute path '{evil}' escapes the root directory."
+    )
+    assert fs._redact(f"Absolute path '{dashed}' escapes the root directory.") == (  # noqa: SLF001
+        f"Absolute path '{dashed}' escapes the root directory."
+    )
+    assert fs._redact(f"[Errno 21] Is a directory: '{fs._root_abs}'") == "[Errno 21] Is a directory: '.'"  # noqa: SLF001
+    assert fs._redact(f"No such file: '{fs._root_abs}/orders/a.txt'") == "No such file: 'orders/a.txt'"  # noqa: SLF001
+
+
+def test_edit_file_enforces_size_cap_before_read_and_before_write(tmp_path: Path) -> None:
+    """`_edit_file_impl` refuses files > 10 MiB on disk and edits whose result exceeds 10 MiB."""
+    big = tmp_path / 'huge.txt'
+    with open(big, 'wb') as fh:
+        fh.truncate(10 * 1024 * 1024 + 1)
+    fs = Filesystem(root_dir=str(tmp_path), allow_write_access=True)
+
+    with pytest.raises(ValueError, match='File too large'):
+        fs._edit_file_impl('huge.txt', [{'old_string': 'a', 'new_string': 'b'}])
+
+    seed = tmp_path / 'seed.txt'
+    seed.write_text('x' * 1024, encoding='utf-8')
+    chunk = 'y' * (11 * 1024)  # 1024 * 11 KiB > 10 MiB
+    with pytest.raises(ValueError, match='Edited file too large'):
+        fs._edit_file_impl('seed.txt', [{'old_string': 'x', 'new_string': chunk, 'replace_all': True}])
+    assert seed.read_text(encoding='utf-8') == 'x' * 1024
+
+
+@pytest.mark.skipif(not hasattr(os := __import__('os'), 'mkfifo'), reason='needs mkfifo')
+def test_fifo_is_hidden_from_list_files_and_rejected_by_write_without_blocking(tmp_path: Path) -> None:
+    """FIFOs are omitted from `list_files` (matching `read_file`) and refused by `write_file` before `open()`."""
+    import os
+
+    (tmp_path / 'menu.md').write_text('Soup\n', encoding='utf-8')
+    os.mkfifo(tmp_path / 'kitchen.pipe')
+    sub = tmp_path / 'orders'
+    sub.mkdir()
+    os.mkfifo(sub / 'nested.pipe')
+
+    fs = Filesystem(root_dir=str(tmp_path), allow_write_access=True)
+
+    assert [e['path'] for e in fs._list_files()] == ['menu.md', 'orders']
+    assert [e['path'] for e in fs._list_files(recursive=True)] == ['menu.md', 'orders']
+
+    with pytest.raises(ValueError, match='File not found'):
+        fs._read_file_impl('kitchen.pipe', 0, 0)
+    with pytest.raises(ValueError, match='Cannot write to non-regular file'):
+        fs._write_file_impl('kitchen.pipe', 'blocked forever if opened')

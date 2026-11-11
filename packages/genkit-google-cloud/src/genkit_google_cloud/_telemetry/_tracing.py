@@ -105,9 +105,11 @@ def enable_google_cloud_telemetry(
             Application Default Credentials project, in that order. Required
             when using external credentials (e.g., Workload Identity
             Federation).
-        credentials: Service account credentials dict for authenticating with
-            Google Cloud. Primarily for use outside of GCP. On GCP, credentials
-            are typically inferred via Application Default Credentials (ADC).
+        credentials: Service account key dict (the parsed JSON key file) for
+            authenticating with Google Cloud. Primarily for use outside of GCP.
+            On GCP, credentials are typically inferred via Application Default
+            Credentials (ADC). A dict that is not a usable service account key
+            raises ``INVALID_ARGUMENT``; the message names fields, never values.
         sampler: Sampler used when this helper creates the process tracer.
             Pass ``ALWAYS_ON``, ``ALWAYS_OFF``, or ``TraceIdRatioBased(0.1)``
             from ``opentelemetry.sdk.trace.sampling``. With no ``sampler=``,
@@ -199,8 +201,7 @@ def enable_google_cloud_telemetry(
         )
     # Before the flag is set, so a rejected call can be fixed and retried.
     _reject_unusable_cloud_setup(sampler=sampler, disable_traces=disable_traces)
-    _enable_google_cloud_telemetry_already_called = True
-
+    # Also before the flag: GcpTelemetry parses credentials= and raises on a bad key.
     manager = GcpTelemetry(
         project=project,
         credentials=credentials,
@@ -211,5 +212,6 @@ def enable_google_cloud_telemetry(
         metric_export_interval_ms=metric_export_interval_ms,
         metric_export_timeout_ms=metric_export_timeout_ms,
     )
+    _enable_google_cloud_telemetry_already_called = True
 
     manager.initialize()

@@ -2,7 +2,7 @@
 
 Connects Genkit to a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio and
 exposes that server's tools as Genkit `tool` actions through a dynamic action provider. It also
-serves a Genkit app's own tools to MCP clients.
+serves a Genkit app's own tools to MCP clients over stdio or streamable HTTP.
 
 Tracking issues: <https://github.com/genkit-ai/genkit/issues/6194> (client),
 <https://github.com/genkit-ai/genkit-python/issues/91> (server)
@@ -231,6 +231,82 @@ leave both as they are, for an app that keeps them clear itself.
 
 `await server.serve(read_stream, write_stream)` serves on any SDK stream pair instead, and touches
 nothing.
+
+### Streamable HTTP
+
+`server.asgi_app()` returns a Starlette app answering on `/mcp`, which uvicorn or any ASGI server
+can serve as it is:
+
+```python
+app = server.asgi_app()  # uvicorn myserver:app
+```
+
+Pass `stateless=True` for a fresh transport per request with no session id, `json_response=True` for
+one JSON body instead of an SSE stream, and, when stateful, `event_store=` to let a reconnecting
+client replay what it missed. Nothing here touches stdout: only stdio makes stdout the wire.
+
+The endpoint has no authentication. Anyone who can reach it can list and call every tool the app
+defines, so bind it to localhost, which uvicorn does by default, or put authentication in front of
+it before you bind it to a public interface. Mounting it in an app that already authenticates
+requests is one way to do that.
+
+A request whose `Host` header is not allowed gets a 421, and one from a browser whose `Origin` is not
+allowed gets a 403. By default only localhost, `127.0.0.1` and `[::1]` on any port, over http or
+https, are allowed, so a web page cannot reach a local server by rebinding its own name to
+`127.0.0.1`. Behind a proxy or on a public name, list the `Host` the server receives, which is the
+proxy's upstream address unless the proxy passes the client's on, and the `Origin` browsers send:
+
+```python
+app = server.asgi_app(
+    allowed_hosts=['tools.example.com'],
+    allowed_origins=['https://app.example.com'],
+)
+```
+
+`allowed_origins` only decides which origins get past the 403. The app sends no CORS headers, so a
+page on another origin also needs them added:
+
+```python
+from starlette.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['https://app.example.com'],
+    allow_methods=['GET', 'POST', 'DELETE'],
+    allow_headers=['content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'],
+    expose_headers=['mcp-session-id'],
+)
+```
+
+In the default stateful mode, the MCP SDK closes a session after 30 minutes with nothing in flight
+and holds at most 10,000 at once, answering 503 beyond that. It refuses a request body over 4 MiB
+with a 413 in either mode. Nothing limits request rate here, so do that at a reverse proxy.
+
+Starlette does not run a mounted app's lifespan, and the session manager inside needs one, so
+mounting into an existing app means chaining it:
+
+```python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+mcp_app = server.asgi_app()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with mcp_app.router.lifespan_context(app):
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount('/api', mcp_app)  # the endpoint is then /api/mcp
+```
+
+The app `asgi_app()` returns can start its lifespan only once, so each test that starts one needs
+its own.
+Starlette's `TestClient` sends `Host: testserver` unless told otherwise, which gets a 421; pass
+`base_url='http://localhost'`.
 
 ### Known gaps
 

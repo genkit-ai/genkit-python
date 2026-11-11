@@ -21,6 +21,7 @@ Order per call: ``context.secrets.api_key``, then the plugin key (argument or
 ``FAILED_PRECONDITION``.
 """
 
+import logging
 import os
 from collections.abc import Iterator
 from typing import Any
@@ -30,12 +31,35 @@ import pytest
 from genkit_google_genai import GoogleAI, VertexAI
 from genkit_google_genai._google import GenaiModels, _call_client
 from genkit_google_genai._models._interactions_utils import api_key_for_context
-from genkit_google_genai._models._secrets import context_api_key
-from google.genai import types as genai_types
+from genkit_google_genai._models._secrets import MISSING_API_KEY_MESSAGE, context_api_key
+from google.genai import errors as genai_errors, types as genai_types
 
 from genkit import Genkit, GenkitError
 
 _ENV_KEYS = ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY')
+_PLUGIN_LOGGER = 'genkit_google_genai._google'
+
+
+def _bad_key_error() -> genai_errors.ClientError:
+    """What google-genai raises when the Gemini API rejects a key."""
+    message = 'API key not valid. Please pass a valid API key.'
+    return genai_errors.ClientError(
+        400,
+        {
+            'error': {
+                'code': 400,
+                'message': message,
+                'status': 'INVALID_ARGUMENT',
+                'details': [
+                    {
+                        '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                        'reason': 'API_KEY_INVALID',
+                        'domain': 'googleapis.com',
+                    }
+                ],
+            }
+        },
+    )
 
 
 @pytest.fixture
@@ -122,6 +146,48 @@ async def test_resolved_env_key_is_passed_to_client_explicitly(no_key_env: None)
 
 
 # Keyless boot
+
+
+def _setup_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _PLUGIN_LOGGER and r.levelno == logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_keyless_plugin_warns_once_at_construction(no_key_env: None, caplog: pytest.LogCaptureFixture) -> None:
+    """No key from any source: one warning with the setup text, not one per init or call."""
+    with caplog.at_level(logging.WARNING, logger=_PLUGIN_LOGGER):
+        plugin = GoogleAI()
+        ai = Genkit(plugins=[plugin])
+        await plugin.init()
+        await plugin.list_actions()
+        await ai.generate(model='googleai/gemini-2.5-flash', prompt='Suggest a dish.')
+    assert _setup_warnings(caplog) == [MISSING_API_KEY_MESSAGE]
+    assert not MISSING_API_KEY_MESSAGE.startswith('\n')
+
+
+@pytest.mark.parametrize(
+    ('env', 'kwargs'),
+    [
+        ({'GEMINI_API_KEY': 'gemini'}, {}),
+        ({'GOOGLE_API_KEY': 'google'}, {}),
+        ({'GOOGLE_GENAI_API_KEY': 'genai'}, {}),
+        ({}, {'api_key': 'arg-key'}),
+        ({}, {'credentials': MagicMock()}),
+    ],
+    ids=['gemini-env', 'google-env', 'genai-env', 'api-key-arg', 'credentials'],
+)
+def test_no_warning_when_any_auth_resolves(
+    no_key_env: None, caplog: pytest.LogCaptureFixture, env: dict[str, str], kwargs: dict[str, Any]
+) -> None:
+    with patch.dict(os.environ, env), caplog.at_level(logging.WARNING, logger=_PLUGIN_LOGGER):
+        GoogleAI(**kwargs)
+    assert _setup_warnings(caplog) == []
+
+
+def test_vertex_does_not_warn_about_gemini_key(no_key_env: None, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=_PLUGIN_LOGGER):
+        VertexAI(project='plugin-project', location='us-central1')
+    assert _setup_warnings(caplog) == []
 
 
 @pytest.mark.asyncio
@@ -246,11 +312,11 @@ async def test_keyless_call_without_secret_is_failed_precondition(
     with patch('genkit_google_genai._google.genai.client.Client') as client_cls:
         error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.', context=context)
     assert error.status == 'FAILED_PRECONDITION'
-    message = error.message
-    assert 'GEMINI_API_KEY' in message
-    assert 'GOOGLE_API_KEY' in message
-    assert 'https://aistudio.google.com/app/apikey' in message
-    assert "context={'secrets': {'api_key': ...}}" in message
+    assert error.message == MISSING_API_KEY_MESSAGE
+    assert 'GEMINI_API_KEY' in error.message
+    assert 'GOOGLE_API_KEY' in error.message
+    assert 'https://aistudio.google.com/apikey' in error.message
+    assert "context={'secrets': {'api_key': ...}}" in error.message
     client_cls.assert_not_called()
 
 
@@ -419,3 +485,63 @@ async def test_vertex_embed_secret_uses_express_client() -> None:
     assert kwargs['credentials'] is None
     assert 'project' not in kwargs
     assert 'location' not in kwargs
+
+
+# A rejected key is the provider's 4xx, typed; a missing key never reaches it.
+
+
+@pytest.mark.asyncio
+async def test_bad_plugin_key_on_generate_is_boxed_unauthenticated(no_key_env: None) -> None:
+    """generate returns the provider's rejection on response.error, with its message."""
+    ai = Genkit(plugins=[GoogleAI(api_key='revoked-key')])
+    with _no_listing(), patch('genkit_google_genai._google.genai.client.Client') as client_cls:
+        client_cls.return_value.vertexai = False
+        client_cls.return_value.aio.models.generate_content = AsyncMock(side_effect=_bad_key_error())
+        error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.')
+    assert error.status == 'UNAUTHENTICATED'
+    assert 'API key not valid' in error.message
+
+
+@pytest.mark.asyncio
+async def test_bad_secret_key_on_keyless_generate_is_boxed_unauthenticated(no_key_env: None) -> None:
+    """A tenant's bad key is the same typed rejection, not the missing-key setup message."""
+    ai = Genkit(plugins=[GoogleAI()])
+    with (
+        patch('genkit_google_genai._google.genai.client.Client') as base_cls,
+        patch('genkit_google_genai._models._gemini.genai.Client') as request_cls,
+    ):
+        base_cls.return_value.vertexai = False
+        request_cls.return_value.aio.models.generate_content = AsyncMock(side_effect=_bad_key_error())
+        error = await _generate_error(
+            ai,
+            model='googleai/gemini-2.5-flash',
+            prompt='Suggest a dish.',
+            context={'secrets': {'api_key': 'tenant-typo'}},
+        )
+    assert error.status == 'UNAUTHENTICATED'
+    assert 'API key not valid' in error.message
+    assert error.message != MISSING_API_KEY_MESSAGE
+    assert request_cls.call_args.kwargs['api_key'] == 'tenant-typo'
+
+
+@pytest.mark.asyncio
+async def test_bad_key_on_embed_raises_unauthenticated(no_key_env: None) -> None:
+    ai = Genkit(plugins=[GoogleAI(api_key='revoked-key')])
+    with _no_listing(), patch('genkit_google_genai._google.genai.client.Client') as client_cls:
+        client_cls.return_value.aio.models.embed_content = AsyncMock(side_effect=_bad_key_error())
+        with pytest.raises(GenkitError) as raised:
+            await ai.embed(embedder='googleai/gemini-embedding-001', content='Peanut allergy: no satay.')
+    assert raised.value.status == 'UNAUTHENTICATED'
+    assert 'API key not valid' in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_bad_key_on_model_listing_raises_unauthenticated(no_key_env: None) -> None:
+    """list_actions() lists models with the plugin key; a rejected key raises there, typed."""
+    plugin = GoogleAI(api_key='revoked-key')
+    with patch('genkit_google_genai._google.genai.client.Client') as client_cls:
+        client_cls.return_value.aio.models.list = AsyncMock(side_effect=_bad_key_error())
+        with pytest.raises(GenkitError) as raised:
+            await plugin.list_actions()
+    assert raised.value.status == 'UNAUTHENTICATED'
+    assert 'API key not valid' in raised.value.message

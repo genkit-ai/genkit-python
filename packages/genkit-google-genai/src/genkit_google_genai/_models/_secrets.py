@@ -26,22 +26,21 @@ from genkit import GenkitError
 
 SECRETS_SLOT = "Pass the key as context={'secrets': {'api_key': ...}}."
 
+# One line: GoogleAI() logs it at construction and a keyless call raises it, so
+# it has to read cleanly both as a log line and inside str()/repr() of an error.
 MISSING_API_KEY_MESSAGE = (
-    '\n[Genkit] No Gemini API key found.\n\n'
-    'To get started with Google AI models:\n'
-    '1. Obtain an API key from Google AI Studio: https://aistudio.google.com/app/apikey\n'
-    '2. Set your key in the terminal environment:\n'
-    '   export GEMINI_API_KEY="your-api-key"\n'
-    '   (GOOGLE_API_KEY and GOOGLE_GENAI_API_KEY are also read, in that order.)\n'
-    "   Or pass a per-request key as context={'secrets': {'api_key': ...}}.\n\n"
-    'Documentation: https://genkit.dev/docs/python/integrations/google-genai/\n'
+    'No Gemini API key found. Set GEMINI_API_KEY (or GOOGLE_API_KEY), pass GoogleAI(api_key=...), '
+    "or send context={'secrets': {'api_key': ...}} per request. "
+    'Get a key: https://aistudio.google.com/apikey'
 )
 
 
 def missing_api_key_error() -> GenkitError:
     """No plugin key, no credentials, and no ``context.secrets.api_key``.
 
-    ``FAILED_PRECONDITION`` matches JS ``MISSING_API_KEY_ERROR``.
+    ``FAILED_PRECONDITION`` matches JS ``MISSING_API_KEY_ERROR``. A key the
+    API rejects is a different failure: the provider's 4xx comes back as
+    ``UNAUTHENTICATED`` or ``PERMISSION_DENIED`` (see ``_provider_errors``).
     """
     return GenkitError(status='FAILED_PRECONDITION', message=MISSING_API_KEY_MESSAGE)
 

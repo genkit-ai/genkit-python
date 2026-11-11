@@ -28,7 +28,7 @@ To use Google AI models, obtain an API key from [Google AI Studio](https://aistu
 export GEMINI_API_KEY='<your-api-key>'
 ```
 
-`GOOGLE_API_KEY` and `GOOGLE_GENAI_API_KEY` are read next, in that order. For a per-tenant key, start `GoogleAI()` with no key and pass `context={'secrets': {'api_key': tenant_key}}` on each `generate`, `generate_operation`, `embed`, or `embed_many` call. A call with no plugin key and no secret fails with `FAILED_PRECONDITION`.
+`GOOGLE_API_KEY` and `GOOGLE_GENAI_API_KEY` are read next, in that order. For a per-tenant key, start `GoogleAI()` with no key and pass `context={'secrets': {'api_key': tenant_key}}` on each `generate`, `generate_operation`, `embed`, or `embed_many` call. With no key from any of these, `GoogleAI()` logs one warning when it's constructed (to stderr unless your app configures `logging`), and a call with no plugin key and no secret fails with `FAILED_PRECONDITION`. A key the API rejects fails with `UNAUTHENTICATED` and the API's message.
 
 ### Vertex AI (Google Cloud)
 

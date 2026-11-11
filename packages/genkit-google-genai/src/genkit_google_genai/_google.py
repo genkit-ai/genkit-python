@@ -50,6 +50,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn
@@ -142,7 +143,7 @@ from genkit_google_genai._models._routing import (
     strip_ref_prefixes,
 )
 from genkit_google_genai._models._sdk_config import check_timeout_seconds, copy_http_options, timeout_seconds_to_ms
-from genkit_google_genai._models._secrets import context_api_key, missing_api_key_error
+from genkit_google_genai._models._secrets import MISSING_API_KEY_MESSAGE, context_api_key, missing_api_key_error
 from genkit_google_genai._models._veo import (
     GOOGLEAI_KNOWN_VEO,
     VERTEX_KNOWN_VEO,
@@ -162,6 +163,12 @@ from genkit_google_genai._models._virtual_try_on import (
     virtual_try_on_model_info,
 )
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, api_error, transport_error
+
+# The missing-key warning fires in GoogleAI() before Genkit() runs and outside
+# any trace, so genkit.get_logger's Dev UI routing has nothing to attach it to.
+# That logger is structlog, which prints to stdout; stdlib logging with no
+# handlers falls back to stderr, and an app's own logging config still applies.
+_setup_logger = logging.getLogger(__name__)  # noqa: TID251
 
 
 class GenaiModels:
@@ -649,7 +656,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
             api_key: The API key for authenticating with the Google AI service.
                 If not provided, reads ``GEMINI_API_KEY``, then ``GOOGLE_API_KEY``,
                 then ``GOOGLE_GENAI_API_KEY``. With no key and no ``credentials``
-                the plugin still loads: each call then needs
+                the plugin still loads and logs one warning: each call then needs
                 ``context={'secrets': {'api_key': ...}}``, and a call without
                 one fails with ``FAILED_PRECONDITION`` (``generate`` returns
                 it on ``response.error``; ``embed`` and
@@ -717,8 +724,13 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
                 raises ``INVALID_ARGUMENT``. Defaults to False.
         """
         # A missing key is not an error here: BYOK gateways boot keyless and
-        # pass context.secrets per call. _call_client raises on the first call.
+        # pass context.secrets per call. _call_client raises on the first call
+        # without one. Warn now, since generate returns that failure on
+        # response.error instead of raising, and a quickstart would otherwise
+        # print an empty line and exit 0.
         api_key = api_key or get_api_key_from_env()
+        if not api_key and credentials is None:
+            _setup_logger.warning(MISSING_API_KEY_MESSAGE)
 
         self._client_kwargs: dict[str, Any] = {
             'vertexai': self._vertexai,

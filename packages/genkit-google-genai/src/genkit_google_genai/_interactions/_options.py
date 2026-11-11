@@ -49,6 +49,10 @@ class ClientOptions(BaseModel):
     # Only the plugin sets this; a request config can't swap the connection.
     # A getter, called per request, so each event loop gets its own client.
     http_client_factory: Callable[[], httpx.AsyncClient] | None = Field(default=None, exclude=True)
+    # Only the plugin sets this (`GoogleAI(experimental_debug_traces=True)`),
+    # as in JS. Each create/get call then runs in an `httpRequest` span with
+    # the request and response (API key hidden).
+    experimental_debug_traces: bool = Field(default=False, exclude=True)
 
     def merge(self, overrides: ClientOptions | dict[str, Any] | None) -> Self:
         """Return a copy with non-null override fields applied."""

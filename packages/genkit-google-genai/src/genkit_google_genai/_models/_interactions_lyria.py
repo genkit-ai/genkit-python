@@ -26,6 +26,7 @@ from genkit_google_genai._interactions._converters import (
     from_interaction_sync,
     split_system_instruction,
     to_interaction_steps,
+    with_basic_usage_stats,
 )
 from genkit_google_genai._interactions._options import ClientOptions, ResponseModality
 from genkit_google_genai._models._interactions_registry import lyria_model_info
@@ -138,7 +139,7 @@ def create_lyria_action(
             require_interaction_steps(steps)
 
         created = await create_interaction(api_key, deep_merge(create_kwargs, extra), merged_options)
-        return from_interaction_sync(created)
+        return with_basic_usage_stats(from_interaction_sync(created), request.messages)
 
     return Model(
         name,

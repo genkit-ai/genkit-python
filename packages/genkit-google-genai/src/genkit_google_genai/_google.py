@@ -598,6 +598,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         max_retries: int | None = None,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         legacy_response_schema: bool = False,
+        experimental_debug_traces: bool = False,
     ) -> None:
         """Initializes the GoogleAI plugin.
 
@@ -666,6 +667,12 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
                 ``responseSchema`` field instead of ``responseJsonSchema``,
                 converted to its format; a schema that cannot be converted
                 raises ``INVALID_ARGUMENT``. Defaults to False.
+            experimental_debug_traces: Enables additional debug traces (e.g.
+                raw model API call details). Each Interactions API call
+                (Deep Research, Antigravity, Lyria) gets an ``httpRequest``
+                trace span with the endpoint, the request body, the headers
+                (API key hidden) and the response body. Experimental; the
+                span contents may change. Defaults to False.
 
         Raises:
             ValueError: If `api_key` is not provided and the 'GEMINI_API_KEY'
@@ -698,6 +705,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         self._http_client_factory = _loop_local_http_client(http_client_factory)
         self._base_url_pinned = bool(self._client_kwargs['http_options'].base_url)
         self._legacy_response_schema = legacy_response_schema
+        self._experimental_debug_traces = experimental_debug_traces
         self._list_actions_cache: list[Action | BackgroundAction[Any, Any]] | None = None
 
     @loop_local_client
@@ -728,6 +736,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
             # The getter, not a client: Interactions calls it per request so
             # each event loop gets its own client.
             http_client_factory=self._http_client_factory,
+            experimental_debug_traces=self._experimental_debug_traces,
         )
 
     def _plugin_api_key(self) -> str | None:

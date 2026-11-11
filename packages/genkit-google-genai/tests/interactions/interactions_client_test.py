@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 import httpx
 import pytest
+from genkit_google_genai import GoogleAI
 from genkit_google_genai._interactions import _client as interactions_client
 from genkit_google_genai._interactions._client import (
     API_REVISION,
@@ -210,6 +211,167 @@ async def test_429_retry_after_header_sets_retry_delay(http_client: MagicMock) -
     assert exc_info.value.retry_after_ms == 1500.0
     assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
     assert exc_info.value.details['error'] == {'message': 'slow down'}
+
+
+@pytest.mark.asyncio
+async def test_error_body_sent_as_a_list_is_unwrapped(http_client: MagicMock) -> None:
+    """A bad API key comes back as a one-element JSON array (seen with the Dart plugin)."""
+    body = {
+        'error': {
+            'code': 400,
+            'message': 'API key not valid. Please pass a valid API key.',
+            'status': 'INVALID_ARGUMENT',
+        }
+    }
+    http_client.request.return_value = httpx.Response(400, json=[body])
+    with patch.object(interactions_client, '_http_client', return_value=http_client):
+        with pytest.raises(GenkitError) as exc_info:
+            await create_interaction('key', {'model': 'lyria'})
+    assert exc_info.value.status == 'INVALID_ARGUMENT'
+    assert 'API key not valid. Please pass a valid API key.' in str(exc_info.value)
+    assert '[{' not in str(exc_info.value)
+    assert exc_info.value.details['error'] == body['error']
+
+
+@pytest.mark.asyncio
+async def test_interactions_error_code_wins_over_the_http_status(http_client: MagicMock) -> None:
+    """`model_not_found` on a 400 is NOT_FOUND, not INVALID_ARGUMENT."""
+    http_client.request.return_value = mock_response(
+        status_code=400,
+        json_body={'error': {'code': 'model_not_found', 'message': 'no such model'}},
+    )
+    with patch.object(interactions_client, '_http_client', return_value=http_client):
+        with pytest.raises(GenkitError) as exc_info:
+            await create_interaction('key', {'model': 'lyria-9'})
+    assert exc_info.value.status == 'NOT_FOUND'
+    assert 'no such model' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_unknown_interactions_error_code_keeps_the_http_status(http_client: MagicMock) -> None:
+    http_client.request.return_value = mock_response(
+        status_code=503,
+        json_body={'error': {'code': 'something_new', 'message': 'busy'}},
+    )
+    with patch.object(interactions_client, '_http_client', return_value=http_client):
+        with pytest.raises(GenkitError) as exc_info:
+            await create_interaction('key', {'model': 'lyria'})
+    assert exc_info.value.status == 'UNAVAILABLE'
+
+
+class SpanRecorder:
+    """Stands in for genkit.telemetry.run_in_new_span: records the call, runs the body."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, name: str, fn: Any, *, input: object = None, **_: Any) -> Any:  # noqa: A002
+        record: dict[str, Any] = {'name': name, 'input': input}
+        self.calls.append(record)
+        record['output'] = await fn(MagicMock())
+        return record['output']
+
+
+@pytest.mark.asyncio
+async def test_traces_create_interaction_with_experimental_debug_traces(http_client: MagicMock) -> None:
+    """Same span as JS createInteraction: endpoint, request, headers (key hidden); output = response."""
+    response_body = {'id': 'ix-1', 'status': 'completed', 'model': 'gemini-3.8-flash'}
+    http_client.request.return_value = mock_response(json_body=response_body)
+    recorder = SpanRecorder()
+    request_body: dict[str, object] = {'model': 'gemini-3.8-flash', 'input': 'hi'}
+    with (
+        patch.object(interactions_client, '_http_client', return_value=http_client),
+        patch.object(interactions_client, 'run_in_new_span', recorder),
+    ):
+        result = await create_interaction('secret-key12', request_body, ClientOptions(experimental_debug_traces=True))
+
+    assert result.id == 'ix-1'
+    assert len(recorder.calls) == 1
+    span = recorder.calls[0]
+    assert span['name'] == 'httpRequest'
+    assert span['input'] == {
+        'apiEndpoint': 'https://generativelanguage.googleapis.com/v1beta/interactions',
+        'request': request_body,
+        'headers': {
+            'content-type': 'application/json',
+            'x-goog-api-client': GENKIT_USER_AGENT,
+            'api-revision': API_REVISION,
+            'x-goog-api-key': '<REDACTED> (12 characters)',
+        },
+    }
+    assert span['output'] == response_body
+
+
+@pytest.mark.asyncio
+async def test_traces_get_interaction_and_the_timeout(http_client: MagicMock) -> None:
+    http_client.request.return_value = mock_response(json_body={'id': 'ix-9', 'status': 'in_progress'})
+    recorder = SpanRecorder()
+    with (
+        patch.object(interactions_client, '_http_client', return_value=http_client),
+        patch.object(interactions_client, 'run_in_new_span', recorder),
+    ):
+        await get_interaction('key', 'ix-9', ClientOptions(experimental_debug_traces=True, timeout=1500))
+
+    span = recorder.calls[0]
+    assert span['input']['apiEndpoint'].endswith('/interactions/ix-9')
+    assert span['input']['request'] is None
+    assert span['input']['options'] == {'timeout': 1500}
+
+
+@pytest.mark.asyncio
+async def test_no_trace_by_default(http_client: MagicMock) -> None:
+    http_client.request.return_value = mock_response(json_body={'id': 'ix-1', 'status': 'completed'})
+    recorder = SpanRecorder()
+    with (
+        patch.object(interactions_client, '_http_client', return_value=http_client),
+        patch.object(interactions_client, 'run_in_new_span', recorder),
+    ):
+        await create_interaction('key', {'model': 'm'})
+        await create_interaction('key', {'model': 'm'}, ClientOptions())
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_not_traced(http_client: MagicMock) -> None:
+    """As in JS: cancelInteraction calls makeRequest directly, without a span."""
+    http_client.request.return_value = mock_response(content=b'')
+    recorder = SpanRecorder()
+    with (
+        patch.object(interactions_client, '_http_client', return_value=http_client),
+        patch.object(interactions_client, 'run_in_new_span', recorder),
+    ):
+        result = await cancel_interaction('key', 'ix-1', ClientOptions(experimental_debug_traces=True))
+    assert result.status == 'cancelled'
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_traced_call_still_raises_errors(http_client: MagicMock) -> None:
+    http_client.request.return_value = mock_response(
+        status_code=400, json_body={'error': {'code': 'invalid_request', 'message': 'bad'}}
+    )
+    recorder = SpanRecorder()
+    with (
+        patch.object(interactions_client, '_http_client', return_value=http_client),
+        patch.object(interactions_client, 'run_in_new_span', recorder),
+    ):
+        with pytest.raises(GenkitError) as exc_info:
+            await create_interaction('key', {'model': 'm'}, ClientOptions(experimental_debug_traces=True))
+    assert exc_info.value.status == 'INVALID_ARGUMENT'
+    assert len(recorder.calls) == 1
+
+
+def test_google_ai_passes_experimental_debug_traces_to_interactions_calls() -> None:
+    traced = GoogleAI(api_key='k', experimental_debug_traces=True)
+    assert traced._interactions_client_options().experimental_debug_traces
+    assert not GoogleAI(api_key='k')._interactions_client_options().experimental_debug_traces
+
+
+def test_a_request_override_cannot_turn_on_debug_traces() -> None:
+    """Plugin-only, as in JS: merge() ignores it (excluded from the dump)."""
+    plugin = ClientOptions(experimental_debug_traces=True)
+    assert plugin.merge(ClientOptions(timeout=5)).experimental_debug_traces is True
+    assert ClientOptions().merge(ClientOptions(experimental_debug_traces=True)).experimental_debug_traces is False
 
 
 @pytest.mark.asyncio

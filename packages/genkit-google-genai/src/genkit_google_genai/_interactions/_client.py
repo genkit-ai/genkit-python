@@ -25,8 +25,9 @@ from urllib.parse import quote
 import httpx
 from genkit_google_genai._interactions._errors import api_error_fields, interaction_error_status, unwrap_error_body
 from genkit_google_genai._interactions._options import ClientOptions
+from genkit_google_genai._interactions._types import GeminiInteraction, parse_interaction
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, transport_error
-from google.genai.interactions import Interaction
+from pydantic import ValidationError
 
 from genkit import GenkitError
 from genkit.plugin_api import GENKIT_USER_AGENT, StatusName, loop_local_client, provider_error
@@ -86,7 +87,7 @@ async def create_interaction(
     api_key: str,
     body: dict[str, object],
     client_options: ClientOptions | None = None,
-) -> Interaction:
+) -> GeminiInteraction:
     """POST /interactions and return the parsed Interaction."""
     url = google_ai_url('interactions', client_options=client_options)
     created = await request(
@@ -104,7 +105,7 @@ async def get_interaction(
     api_key: str,
     interaction_id: str,
     client_options: ClientOptions | None = None,
-) -> Interaction:
+) -> GeminiInteraction:
     """GET /interactions/{id} and return the parsed Interaction."""
     url = google_ai_url(f'interactions/{quote(interaction_id, safe="")}', client_options=client_options)
     found = await request(
@@ -121,7 +122,7 @@ async def cancel_interaction(
     api_key: str,
     interaction_id: str,
     client_options: ClientOptions | None = None,
-) -> Interaction:
+) -> GeminiInteraction:
     """POST /interactions/{id}/cancel and return a cancelled Interaction."""
     url = google_ai_url(f'interactions/{quote(interaction_id, safe="")}/cancel', client_options=client_options)
     try:
@@ -136,11 +137,11 @@ async def cancel_interaction(
         )
     except GenkitError as error:
         if error.status == 'CANCELLED':
-            return Interaction.model_validate({'id': interaction_id, 'status': 'cancelled'})
+            return {'id': interaction_id, 'status': 'cancelled'}
         raise
     if interaction is None:
-        return Interaction.model_validate({'id': interaction_id, 'status': 'cancelled'})
-    return interaction.model_copy(update={'status': 'cancelled'})
+        return {'id': interaction_id, 'status': 'cancelled'}
+    return {**interaction, 'status': 'cancelled'}
 
 
 def redact(value: str) -> str:
@@ -180,7 +181,7 @@ async def request(
     json_body: dict[str, object] | None = None,
     allow_empty: bool = False,
     trace: bool = True,
-) -> Interaction | None:
+) -> GeminiInteraction | None:
     """Issue one Interactions HTTP call and parse the Interaction body.
 
     With ``experimental_debug_traces`` on the client options (and ``trace``),
@@ -213,8 +214,8 @@ async def request(
     if body is None:
         return None
     try:
-        return Interaction.model_validate(body)
-    except Exception as error:
+        return parse_interaction(body)
+    except ValidationError as error:
         raise GenkitError(
             status='INTERNAL',
             message=f'Unable to parse Interaction response from {url}: {error}',

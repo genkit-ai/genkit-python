@@ -26,6 +26,7 @@ import pytest
 from genkit_google_genai._google import GenaiModels, GoogleAI, VertexAI, googleai_name
 from genkit_google_genai._interactions._converters import split_system_instruction
 from genkit_google_genai._interactions._options import ClientOptions
+from genkit_google_genai._interactions._types import GeminiInteraction, parse_interaction
 from genkit_google_genai._models._antigravity import AntigravityConfig, create_antigravity_action
 from genkit_google_genai._models._deep_research import (
     DeepResearchConfig,
@@ -35,7 +36,6 @@ from genkit_google_genai._models._deep_research import (
 from genkit_google_genai._models._interactions_lyria import LyriaConfig, create_lyria_action
 from genkit_google_genai._models._interactions_registry import deep_research_model_info, lyria_model_info
 from genkit_google_genai._models._interactions_utils import pop_extra
-from google.genai.interactions import Interaction
 from pydantic import BaseModel, ValidationError
 
 from genkit import Genkit, GenkitError, Message, Operation, Part, Role
@@ -87,37 +87,37 @@ def patch_interactions(
         api_key: str,
         body: dict[str, Any],
         client_options: ClientOptions | None = None,
-    ) -> Interaction:
+    ) -> GeminiInteraction:
         create_calls.append(body)
         if captured is not None:
             captured['create'] = body
             captured['api_key'] = api_key
             captured['client_options'] = client_options
-        return Interaction.model_validate(create_result or {'id': 'ix-1', 'status': 'in_progress'})
+        return parse_interaction(create_result or {'id': 'ix-1', 'status': 'in_progress'})
 
     async def get(
         api_key: str,
         interaction_id: str,
         client_options: ClientOptions | None = None,
-    ) -> Interaction:
+    ) -> GeminiInteraction:
         get_calls.append(interaction_id)
         if captured is not None:
             captured['get'] = interaction_id
             captured['api_key'] = api_key
             captured['client_options'] = client_options
-        return Interaction.model_validate(get_result or {'id': interaction_id, 'status': 'completed', 'steps': []})
+        return parse_interaction(get_result or {'id': interaction_id, 'status': 'completed', 'steps': []})
 
     async def cancel(
         api_key: str,
         interaction_id: str,
         client_options: ClientOptions | None = None,
-    ) -> Interaction:
+    ) -> GeminiInteraction:
         cancel_calls.append(interaction_id)
         if captured is not None:
             captured['cancel'] = interaction_id
             captured['api_key'] = api_key
             captured['client_options'] = client_options
-        return Interaction.model_validate(cancel_result or {'id': interaction_id, 'status': 'cancelled'})
+        return parse_interaction(cancel_result or {'id': interaction_id, 'status': 'cancelled'})
 
     patches: dict[str, Any] = {
         'create_interaction': AsyncMock(side_effect=create),
@@ -1821,12 +1821,12 @@ async def test_generate_antigravity_function_tools_loop_skips_sandbox_calls_and_
 
     create_calls: list[dict[str, Any]] = []
     replies = [
-        Interaction.model_validate(turn_1),
-        Interaction.model_validate(turn_2),
-        Interaction.model_validate(_TEXT_REPLY),
+        parse_interaction(turn_1),
+        parse_interaction(turn_2),
+        parse_interaction(_TEXT_REPLY),
     ]
 
-    async def fake_create(_api_key: str, kwargs: dict[str, Any], _options: object) -> Interaction:
+    async def fake_create(_api_key: str, kwargs: dict[str, Any], _options: object) -> GeminiInteraction:
         create_calls.append(kwargs)
         return replies.pop(0)
 

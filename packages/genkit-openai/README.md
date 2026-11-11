@@ -71,18 +71,30 @@ res = await ai.generate(
 embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant')
 ```
 
-Mistral rejects any request field it doesn't declare, so with that `base_url`
-the plugin sends Mistral's names for the settings that differ:
+Pass `api_key=` explicitly. Without it the plugin falls back to
+`OPENAI_API_KEY` and sends that key to Mistral. For Codestral keys, use
+`base_url='https://codestral.mistral.ai/v1'`.
+
+Mistral rejects any request field it doesn't declare, so with either of those
+hosts the plugin sends Mistral's names for the settings that differ:
 
 - `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
   even with `reasoning_effort` set.
 - `seed` goes out as `random_seed`.
+- `top_k` goes out as is. Mistral takes it; OpenAI never gets it.
 - Streaming sends no `stream_options`; Mistral reports usage on the last chunk.
 - An embedder's `dimensions` goes out as `output_dimension`.
 
+Magistral replies carry their reasoning in `thinking` chunks; those come back
+as reasoning parts, ahead of the text, streamed or not.
+
 Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
-and Mistral rejects them. Mistral-only fields like `safe_prompt` go in `extra`.
-A gateway in front of Mistral on another host gets the OpenAI field names.
+and Mistral fails the call naming them. Mistral-only fields like `safe_prompt`
+go in `extra`. A gateway in front of Mistral on any other host gets the OpenAI
+field names.
+
+The plugin doesn't know Mistral's embedders, so their info reports the default
+1536 dimensions; `mistral-embed` returns 1024.
 
 ## Config
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import sys
 import weakref
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
@@ -185,14 +186,22 @@ def mirror_result(task: asyncio.Future[_ResultT], pick: Callable[[_ResultT], _Pi
 
 
 _pending_stops: set[asyncio.Task[None]] = set()
+_stop_scope: contextvars.ContextVar[set[asyncio.Task[None]] | None] = contextvars.ContextVar(
+    '_stop_scope', default=None
+)
 
 
 def _spawn_stop(stop: Callable[[], Awaitable[None]], *, on_done: Callable[[], None] | None = None) -> None:
     task = asyncio.ensure_future(stop())
     _pending_stops.add(task)
+    scope = _stop_scope.get()
+    if scope is not None:
+        scope.add(task)
 
     def _finish(done: asyncio.Task[None]) -> None:
         _pending_stops.discard(done)
+        if scope is not None:
+            scope.discard(done)
         if on_done is not None:
             on_done()
 
@@ -224,9 +233,12 @@ class StoppableStream(AsyncIterator[T]):
         self._source: AsyncIterator[T] | None = None
         self._stop = stop
         self._finished = False
+        self._closing = False
         self._stopped = False
         self._loop_ref: weakref.ref[asyncio.AbstractEventLoop] | None = None
-        self._watched: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+        self._watched: weakref.WeakKeyDictionary[asyncio.Task[Any], Callable[[asyncio.Task[Any]], None]] = (
+            weakref.WeakKeyDictionary()
+        )
 
     @override
     def __aiter__(self) -> Self:
@@ -234,7 +246,7 @@ class StoppableStream(AsyncIterator[T]):
 
     @override
     async def __anext__(self) -> T:
-        if self._finished:
+        if self._finished or self._closing:
             raise StopAsyncIteration
         if self._source is None:
             assert self._chunks is not None
@@ -249,7 +261,13 @@ class StoppableStream(AsyncIterator[T]):
             self._source = None
             self._stop = None
             self._loop_ref = None
+            self._unwatch_readers()
             raise
+
+    def _unwatch_readers(self) -> None:
+        for task, cb in list(self._watched.items()):
+            task.remove_done_callback(cb)
+        self._watched.clear()
 
     def _watch_reader(self) -> None:
         """Stop the run once a reader task dies cancelled or with an unhandled exception.
@@ -270,15 +288,16 @@ class StoppableStream(AsyncIterator[T]):
         coro = task.get_coro()
         if getattr(coro, 'cr_code', None) is _RAW_ANEXT_CODE or type(coro).__name__ == 'anext_awaitable':
             return
-        self._watched.add(task)
         stream_ref = weakref.ref(self)
 
         def _on_reader_done(done_task: asyncio.Task[Any]) -> None:
+            stream = stream_ref()
+            if stream is None or stream._finished or stream._stopped or stream._closing:
+                return
             if done_task.cancelled() or done_task.exception() is not None:
-                stream = stream_ref()
-                if stream is not None:
-                    stream._stop_run()
+                stream._stop_run()
 
+        self._watched[task] = _on_reader_done
         task.add_done_callback(_on_reader_done)
 
     def _clear_stop_ref(self) -> None:
@@ -290,12 +309,14 @@ class StoppableStream(AsyncIterator[T]):
             return
         self._stopped = True
         self._loop_ref = None
+        self._unwatch_readers()
         stream_ref = weakref.ref(self)
         _spawn_stop(stop, on_done=lambda: (s := stream_ref()) is not None and s._clear_stop_ref())  # type: ignore[func-returns-value]
 
     def __del__(self) -> None:
         # A bare `async for` that breaks never calls aclose(). Once the reader
         # lets go of a stream it started reading, stop the run.
+        self._unwatch_readers()
         stop = self._stop
         loop = self._loop_ref() if self._loop_ref is not None else None
         if stop is None or self._stopped or self._finished or loop is None or loop.is_closed():
@@ -310,8 +331,10 @@ class StoppableStream(AsyncIterator[T]):
         """Stop the run if it hasn't finished, and wait for it to end."""
         if self._finished:
             return
+        self._closing = True
         self._stopped = True
         self._loop_ref = None
+        self._unwatch_readers()
         target = self._source if self._source is not None else self._chunks
         self._chunks = None
         self._source = None
@@ -320,11 +343,13 @@ class StoppableStream(AsyncIterator[T]):
         try:
             if source_aclose is not None:
                 await source_aclose()
-            if stop is not None:
-                await stop()
         finally:
-            self._finished = True
-            self._stop = None
+            try:
+                if stop is not None:
+                    await stop()
+            finally:
+                self._finished = True
+                self._stop = None
 
     async def __aenter__(self) -> Self:
         return self

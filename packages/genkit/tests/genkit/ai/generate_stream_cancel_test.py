@@ -784,3 +784,72 @@ async def test_generate_stream_response_only_is_not_stopped_when_stream_is_dropp
 
     assert not model.cancelled.is_set()
     assert response.text == 'one two'
+
+
+@pytest.mark.asyncio
+async def test_nested_stream_cleanup_finishes_before_outer_aclose_returns() -> None:
+    """Outer aclose() waits for nested generate_stream cancellation/finally before returning."""
+    ai = Genkit()
+    reading = asyncio.Event()
+    model_finally_ran = asyncio.Event()
+
+    async def slow_model(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        try:
+            ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('one')]))
+            await asyncio.sleep(10)
+            return ModelResponse(
+                finish_reason=FinishReason.STOP,
+                message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
+            )
+        finally:
+            await asyncio.sleep(0)
+            model_finally_ran.set()
+
+    ai.define_model(name='slow_finally', fn=slow_model)
+
+    @ai.flow()
+    async def chef(order: str, ctx: FlowContext) -> str:
+        stream = ai.generate_stream(model='slow_finally', prompt=order)
+        async for chunk in stream:
+            reading.set()
+            ctx.send_chunk(chunk.text)
+        return (await stream.response).text
+
+    served = chef.stream('ramen')
+
+    async def read_first() -> None:
+        async for _ in served.stream:
+            await reading.wait()
+            break
+
+    await read_first()
+    await served.stream.aclose()
+    # Must already be set without yielding to the loop again (Flask _iter_over_async shape).
+    assert model_finally_ran.is_set()
+
+
+@pytest.mark.asyncio
+async def test_to_sse_disconnect_cancels_flow_and_model() -> None:
+    """Closing to_sse() early (web handler disconnect path) cancels the flow and inner model."""
+    import contextlib
+
+    from genkit.web._sse import to_sse
+
+    ai, model = setup()
+
+    @ai.flow()
+    async def chef(order: str, ctx: FlowContext) -> str:
+        stream = ai.generate_stream(model='slow', prompt=order)
+        async for chunk in stream:
+            ctx.send_chunk(chunk.text)
+        return (await stream.response).text
+
+    served = chef.stream('ramen')
+    frames: list[str] = []
+    async with contextlib.aclosing(to_sse(served)) as lines:
+        async for line in lines:
+            frames.append(line)
+            break
+
+    assert len(frames) == 1
+    assert model.cancelled.is_set()

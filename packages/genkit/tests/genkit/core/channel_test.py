@@ -387,3 +387,147 @@ def test_stoppable_stream_retained_after_finish_or_aclose_does_not_pin_closed_lo
 
     assert len(retained) == 2
     assert [r() for r in loop_refs] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_stoppable_stream_aclose_from_another_task_ends_reader_cleanly() -> None:
+    """Calling aclose() from another task while a reader is mid-loop ends __anext__ with StopAsyncIteration."""
+    from genkit._core._channel import StoppableStream
+
+    channel: Channel[str, str] = Channel()
+    done: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    channel.set_close_future(done)
+    release_stop = asyncio.Event()
+    in_stop = asyncio.Event()
+
+    async def stop() -> None:
+        in_stop.set()
+        await release_stop.wait()
+
+    stream = StoppableStream(chunks=channel, stop=stop)
+    channel.send('first')
+
+    got_first = asyncio.Event()
+    proceed_next = asyncio.Event()
+    reader_ended_cleanly = False
+
+    async def reader() -> None:
+        nonlocal reader_ended_cleanly
+        async for chunk in stream:
+            assert chunk == 'first'
+            got_first.set()
+            await proceed_next.wait()
+        reader_ended_cleanly = True
+
+    reader_task = asyncio.create_task(reader())
+    await got_first.wait()
+
+    close_task = asyncio.create_task(stream.aclose())
+    await in_stop.wait()
+
+    # Reader calls __anext__ while aclose() is suspended in stop().
+    proceed_next.set()
+    await reader_task
+    assert reader_ended_cleanly
+
+    release_stop.set()
+    await close_task
+
+
+@pytest.mark.asyncio
+async def test_stoppable_stream_removes_reader_callback_on_finish_and_aclose() -> None:
+    """Finished and closed StoppableStreams remove their done callback from long-lived reader tasks."""
+    from collections.abc import AsyncIterator
+
+    from genkit._core._channel import StoppableStream
+
+    async def one_chunk() -> AsyncIterator[str]:
+        yield 'a'
+
+    async def noop_stop() -> None:
+        return None
+
+    task = asyncio.current_task()
+    assert task is not None
+    baseline = len(getattr(task, '_callbacks', ()))
+
+    for _ in range(25):
+        s = StoppableStream(chunks=one_chunk(), stop=noop_stop)
+        assert [c async for c in s] == ['a']
+
+    for _ in range(25):
+        s = StoppableStream(chunks=one_chunk(), stop=noop_stop)
+        async with s:
+            async for _ in s:
+                break
+
+    assert len(getattr(task, '_callbacks', ())) == baseline
+
+
+@pytest.mark.asyncio
+async def test_stoppable_stream_fire_and_forget_reader_still_logs_unretrieved_exception() -> None:
+    """A fire-and-forget task that finishes a StoppableStream and later raises still reports its exception."""
+    import gc
+    from collections.abc import AsyncIterator
+
+    from genkit._core._channel import StoppableStream
+
+    async def one_chunk() -> AsyncIterator[str]:
+        yield 'a'
+
+    async def noop_stop() -> None:
+        return None
+
+    loop = asyncio.get_running_loop()
+    unretrieved: list[dict[str, object]] = []
+    prev_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: unretrieved.append(dict(ctx)))
+    try:
+
+        async def fire_and_forget() -> None:
+            s = StoppableStream(chunks=one_chunk(), stop=noop_stop)
+            assert [c async for c in s] == ['a']
+            raise RuntimeError('post-stream failure')
+
+        task = asyncio.create_task(fire_and_forget())
+        await asyncio.wait([task])
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(prev_handler)
+
+    assert len(unretrieved) == 1
+    assert isinstance(unretrieved[0].get('exception'), RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_stoppable_stream_source_aclose_error_still_runs_stop() -> None:
+    """If source.aclose() raises, StoppableStream.aclose() still calls stop() and marks finished."""
+    from genkit._core._channel import StoppableStream
+
+    stopped = False
+
+    class FailingSource:
+        def __aiter__(self) -> FailingSource:
+            return self
+
+        async def __anext__(self) -> str:
+            return 'chunk'
+
+        async def aclose(self) -> None:
+            raise RuntimeError('source close failed')
+
+    async def stop() -> None:
+        nonlocal stopped
+        stopped = True
+
+    stream = StoppableStream(chunks=FailingSource(), stop=stop)
+    assert await anext(stream) == 'chunk'
+
+    with pytest.raises(RuntimeError, match='source close failed'):
+        await stream.aclose()
+
+    assert stopped
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)

@@ -264,6 +264,28 @@ def test_public_error() -> None:
     assert error.message == 'Please log in'
     assert error.details['extra_msg'] == 'Session expired'
 
+    classified = PublicError(
+        'NOT_FOUND',
+        "Snapshot 'snap-1' not found",
+        reason=ErrorReason.SNAPSHOT_NOT_FOUND,
+    )
+    assert classified.reason is ErrorReason.SNAPSHOT_NOT_FOUND
+    assert classified.details == {'reason': 'SNAPSHOT_NOT_FOUND'}
+    assert error_body(classified) == {
+        'status': 'NOT_FOUND',
+        'message': "Snapshot 'snap-1' not found",
+        'details': {'reason': 'SNAPSHOT_NOT_FOUND'},
+    }
+
+    merged = PublicError(
+        'INVALID_ARGUMENT',
+        'Bad request',
+        details={'field': 'snapshotId'},
+        reason=ErrorReason.INVALID_INPUT,
+    )
+    assert merged.reason is ErrorReason.INVALID_INPUT
+    assert merged.details == {'field': 'snapshotId', 'reason': 'INVALID_INPUT'}
+
 
 def test_genkit_error_message_is_the_sentence_they_passed() -> None:
     """err.message is the text passed as message=, without the status prefix."""

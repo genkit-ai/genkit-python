@@ -739,15 +739,24 @@ class PublicError(GenkitError):
     other GenkitError is 500 Internal Error on the wire.
     """
 
-    def __init__(self, status: StatusName, message: str, details: Any = None) -> None:  # noqa: ANN401
+    def __init__(
+        self,
+        status: StatusName,
+        message: str,
+        details: Any = None,  # noqa: ANN401
+        *,
+        reason: ErrorReason | None = None,
+    ) -> None:
         """Initialize a PublicError.
 
         Args:
             status: The status name for this error.
             message: The error message.
             details: Optional details to include.
+            reason: Extra why when the failure has a stable classification;
+                stored on ``details['reason']``.
         """
-        super().__init__(status=status, message=message, details=details)
+        super().__init__(status=status, message=message, details=details, reason=reason)
 
 
 _INTERNAL_CLIENT_BODY: dict[str, Any] = {'message': 'Internal Error', 'status': 'INTERNAL'}

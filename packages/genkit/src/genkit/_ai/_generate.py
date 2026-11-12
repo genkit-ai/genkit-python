@@ -2740,9 +2740,9 @@ async def resolve_resume_options(
     last_message = messages[-1] if messages else None
     tool_requests = [p for p in last_message.content if p.tool_request is not None] if last_message else []
     if last_message is None or last_message.role != Role.MODEL or len(tool_requests) == 0:
-        raise GenkitError(
-            status='FAILED_PRECONDITION',
-            message=(
+        raise PublicError(
+            'FAILED_PRECONDITION',
+            (
                 "Cannot 'resume' generation unless the previous message is a model "
                 'message with at least one tool request.'
             ),
@@ -2793,9 +2793,9 @@ async def resolve_resume_options(
         return (options, interrupted, None)
 
     if len(tool_responses) != len(tool_requests):
-        raise GenkitError(
-            status='FAILED_PRECONDITION',
-            message=f'Expected {len(tool_requests)} responses, but resolved to {len(tool_responses)}',
+        raise PublicError(
+            'FAILED_PRECONDITION',
+            f'Expected {len(tool_requests)} responses, but resolved to {len(tool_responses)}',
             reason=ErrorReason.INVALID_RESUME,
         )
 
@@ -2942,9 +2942,9 @@ async def resolve_resumed_tool(
             executed,
         )
 
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f"Unresolved tool request '{tool_req.name}' "
+    raise PublicError(
+        'INVALID_ARGUMENT',
+        f"Unresolved tool request '{tool_req.name}' "
         + "was not handled by the 'resume' argument. You must supply replies or "
         + 'restarts for all interrupted tool requests.',
         reason=ErrorReason.UNRESOLVED_TOOL_REQUEST,

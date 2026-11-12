@@ -68,7 +68,7 @@ from genkit._ai._prompt import (
     render_prompt,
 )
 from genkit._core._action import Action, ActionKind, BidiAction, BidiFn, get_current_context
-from genkit._core._error import ErrorReason, GenkitError
+from genkit._core._error import ErrorReason, GenkitError, PublicError
 from genkit._core._middleware import Middleware
 from genkit._core._model import (
     AgentInit,
@@ -311,9 +311,9 @@ def register_snapshot_actions(*, registry: Registry, name: str, agent: Agent) ->
             # an empty-but-successful read, so surface it as NOT_FOUND instead of a
             # null the caller has to re-interpret.
             target = sid or sess_id or 'unknown'
-            raise GenkitError(
-                status='NOT_FOUND',
-                message=f'Snapshot {target!r} not found for agent {name!r}.',
+            raise PublicError(
+                'NOT_FOUND',
+                f'Snapshot {target!r} not found for agent {name!r}.',
                 reason=ErrorReason.SNAPSHOT_NOT_FOUND,
             )
         return snap
@@ -507,21 +507,23 @@ def validate_resume_against_history(resume: Resume, history: list[Message]) -> N
             continue
         match = find(tr.name, tr.ref)
         if match is None:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                (
                     f"resume.restart references tool '{tr.name}'{ref_suffix(tr.ref)} "
                     'which was not found in session history.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )
         if tool_input_key(tr.input) != tool_input_key(match.input):
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                (
                     f"resume.restart for tool '{tr.name}'{ref_suffix(tr.ref)} has modified inputs that do not "
                     'match the original tool request in session history. Restart inputs must exactly match the '
                     'interrupted tool request.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )
 
     for respond_part in resume.respond or []:
@@ -529,10 +531,11 @@ def validate_resume_against_history(resume: Resume, history: list[Message]) -> N
         if resp is None:
             continue
         if find(resp.name, resp.ref) is None:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                (
                     f"resume.respond references tool '{resp.name}'{ref_suffix(resp.ref)} "
                     'which was not found in session history.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )

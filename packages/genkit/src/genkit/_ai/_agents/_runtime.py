@@ -329,9 +329,9 @@ class AgentInitError(PublicError):
 
     Covers calling an agent with an init that does not match its state-management
     mode (e.g. sending ``state`` to a server-managed agent). Recoverable pre-turn
-    problems (missing snapshot, non-resumable snapshot, invalid custom state)
-    stay as plain ``GenkitError`` so the caller can absorb them into
-    ``finish_reason='failed'``.
+    problems (missing or non-resumable snapshot, invalid custom state) are not
+    subclasses of ``AgentInitError``, so ``define_custom_agent`` absorbs them
+    into ``finish_reason='failed'``.
 
     It is a ``PublicError``: the message names only the init fields and ids the
     caller sent, so a served agent returns its status, message, and
@@ -347,7 +347,7 @@ class AgentInitError(PublicError):
             message: Caller-facing sentence; must not include server-side data.
             reason: Stable reason, sent on the wire as ``details.reason``.
         """
-        super().__init__(status, message, details={'reason': reason.value} if reason is not None else None)
+        super().__init__(status, message, reason=reason)
 
 
 def seeded_init_fields(state: SessionState) -> str:
@@ -418,8 +418,9 @@ async def load_session(
     client is validated against it before the session is built.
 
     State-management mismatches raise ``AgentInitError`` (must propagate).
-    Missing/non-resumable snapshots and invalid custom state raise plain
-    ``GenkitError`` for the caller to turn into ``finish_reason='failed'``.
+    Missing/non-resumable snapshots raise ``PublicError`` and invalid custom
+    state raises ``GenkitError``; the agent boundary turns both into
+    ``finish_reason='failed'``.
     """
     name = agent_name or 'agent'
 
@@ -430,9 +431,9 @@ async def load_session(
     if store is not None and init.snapshot_id:
         snap = await store.get_snapshot(snapshot_id=init.snapshot_id, context=ctx)
         if snap is None:
-            raise GenkitError(
-                status='NOT_FOUND',
-                message=f'Snapshot {init.snapshot_id!r} not found',
+            raise PublicError(
+                'NOT_FOUND',
+                f'Snapshot {init.snapshot_id!r} not found',
                 reason=ErrorReason.SNAPSHOT_NOT_FOUND,
             )
         # When init carries both ids, the snapshot id picks the row and the
@@ -450,9 +451,9 @@ async def load_session(
         # A failed/aborted/pending snapshot is kept for inspection but isn't a
         # valid place to continue a conversation from.
         if snap.status != SnapshotStatus.COMPLETED:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                (
                     f'Snapshot {init.snapshot_id!r} is not resumable '
                     f'(status: {snap.status.value if snap.status else "unknown"}). '
                     "Only 'completed' snapshots can be resumed."

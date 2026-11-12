@@ -42,9 +42,9 @@ from genkit._ai._agents._snapshot import walk_back_to_resumable
 from genkit._ai._agents._types import ChunkTransform, StateTransform, TurnContext, TurnResult
 from genkit._ai._generate import (
     CallScope,
-    boxed_finish_message,
     generate_action,
     log_dropped_failure,
+    mark_failure_logged,
 )
 from genkit._ai._json_patch import diff_json
 from genkit._core._action import ActionRunContext, get_current_context
@@ -60,6 +60,7 @@ from genkit._core._error import (
     TaskGroupError,
     attached_cause,
     interrupt_escape_error,
+    is_logged_failure,
     is_public_failure,
     mark_public_failure,
 )
@@ -1169,11 +1170,14 @@ async def generate_prompt_agent_turn(
                 response.error.message,
                 details=response.error.details,
             )
-        raise GenkitError(
+        err = GenkitError(
             message=response.error.message,
             status=response.error.status,
             details=response.error.details,
         )
+        if is_logged_failure(response.error):
+            mark_failure_logged(err)
+        raise err
 
     # Return the turn result wrapping the model finish reason
     finish_reason = to_agent_finish_reason(response.finish_reason) if response.finish_reason is not None else None
@@ -1199,9 +1203,10 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
     and Go ``convertKeepText``, so in-process callers, the session store and
     the Dev UI see what went wrong. A served agent's HTTP caller doesn't:
     ``genkit.web`` swaps in a generic message unless the turn raised a
-    ``PublicError`` (see ``client_safe_failure``). A cause that generate's
-    rule for a raising tool would hide is also logged here with its
-    traceback, so the server log has it when the wire doesn't.
+    ``PublicError`` (see ``client_safe_failure``). Every non-``PublicError``
+    failure (except an escaped ``Interrupt``) is logged here unless
+    ``generate`` already logged it, so the server log has what the wire
+    redacts.
 
     Args:
         exc: The exception that ended the turn or invocation.
@@ -1214,11 +1219,10 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
         message = exc.message
         cause = attached_cause(exc)
         # interrupt_escape_error's sentence isn't foreign text: the attached
-        # Interrupt is tool metadata. A prompt agent re-raises generate's
-        # already-boxed failure as a fresh GenkitError carrying
-        # ``internal error``; generate logged that cause already.
+        # Interrupt is tool metadata. A prompt agent stamps mark_failure_logged
+        # on the GenkitError it re-raises when generate already logged it.
         escaped_interrupt = cause is not None and interrupt_escape_error(cause) is not None
-        hides_cause = not escaped_interrupt and boxed_finish_message(exc=exc, pipe_failed=False) != exc.message
+        hides_cause = not isinstance(exc, PublicError) and not escaped_interrupt
         if isinstance(exc.details, Mapping) and exc.details:
             details = dict(cast(Mapping[str, Any], exc.details))
     else:
@@ -1232,7 +1236,7 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
         message = str(exc) or 'Internal failure'
         hides_cause = True
     if hides_cause:
-        log_dropped_failure(exc, agent=agent)
+        log_dropped_failure(exc, agent=agent, redacted=True)
     failure = Failure(status=status, message=message, details=details)
     if isinstance(exc, PublicError):
         mark_public_failure(failure)

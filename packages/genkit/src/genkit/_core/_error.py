@@ -153,6 +153,9 @@ class Failure(_RuntimeErrorWire):
     # its message. Not serialized, like Go's status.Error.Public: a failure
     # read back from a store or another process is redacted on the wire.
     _public: bool = PrivateAttr(default=False)
+    # Set when generate already logged the underlying exception, so a prompt
+    # agent re-raising response.error does not log it a second time.
+    _logged: bool = PrivateAttr(default=False)
 
     @model_validator(mode='before')
     @classmethod
@@ -181,11 +184,12 @@ class Failure(_RuntimeErrorWire):
         return error_reason(self.details)
 
     def __eq__(self, other: object) -> bool:
-        # _public is wire-redaction provenance, not part of the failure value:
-        # res.error == Failure(...) and snapshot round-trip equality ignore it.
+        # Private attrs (_public, _logged) live in __pydantic_private__, not
+        # __dict__: res.error == Failure(...) and snapshot round-trip equality
+        # compare all declared fields and ignore provenance.
         if not isinstance(other, Failure):
             return NotImplemented
-        return (self.status, self.message, self.details) == (other.status, other.message, other.details)
+        return self.__dict__ == other.__dict__
 
 
 def mark_public_failure(failure: Failure) -> Failure:
@@ -201,6 +205,17 @@ def is_public_failure(failure: Failure) -> bool:
     return failure._public
 
 
+def mark_logged_failure(failure: Failure) -> Failure:
+    """Mark ``failure`` as already logged server-side by ``generate``."""
+    failure._logged = True  # pyrefly: ignore[read-only]
+    return failure
+
+
+def is_logged_failure(failure: Failure) -> bool:
+    """Whether ``generate`` already logged the exception behind ``failure``."""
+    return failure._logged
+
+
 def client_safe_failure(failure: Failure) -> Failure:
     """``failure`` as the HTTP caller of a served agent may see it.
 
@@ -209,7 +224,9 @@ def client_safe_failure(failure: Failure) -> Failure:
     callers branch on it, but gets a generic message for that status and no
     details, so exception text, provider responses and internal ids stay in
     the process, the store and the server log. Mirrors Go's
-    ``clientSafeError``.
+    ``clientSafeError``, except ``GENKIT_ENV=dev`` still redacts here
+    (matching ``error_body``; the Dev UI reads unredacted errors over
+    reflection).
     """
     if failure._public:
         details = _client_details(failure.details)

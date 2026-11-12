@@ -80,6 +80,7 @@ from genkit._core._error import (
     PublicError,
     _StreamingCallbackError,
     attached_cause,
+    mark_logged_failure,
     mark_public_failure,
 )
 from genkit._core._logger import get_logger, is_debug_enabled
@@ -1369,9 +1370,15 @@ def boxed_finish_message(*, exc: BaseException, pipe_failed: bool) -> str:
     return INTERNAL_FINISH_MESSAGE
 
 
-# Set on an exception once log_dropped_failure has logged it, so the tool site
-# and the generate-level box never log the same failure twice.
+# Set on an exception once log_dropped_failure has logged it, so the tool site,
+# the generate-level box, and an outer agent never log the same failure twice.
 _LOGGED_ATTR = '_genkit_failure_logged'
+
+
+def mark_failure_logged(exc: BaseException) -> None:
+    """Stamp ``exc`` as already logged so an outer handler skips it."""
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, _LOGGED_ATTR, True)
 
 
 def log_dropped_failure(
@@ -1380,13 +1387,14 @@ def log_dropped_failure(
     model: str | None = None,
     tool: str | None = None,
     agent: str | None = None,
-) -> None:
-    """Log a failure whose cause boxing hides behind ``internal error``.
+    redacted: bool = False,
+) -> bool:
+    """Log a failure whose cause boxing or the agent wire hides.
 
-    The caller only gets ``finish_reason=failed`` with ``internal error``, so
-    without this line the cause lives only in an exported trace. Failures that
-    keep their own message (``PublicError``, a ``GenkitError`` without a
-    foreign cause) are already on ``response.error`` and are not logged.
+    ``generate`` only hides failures that collapse to ``internal error``; a
+    served agent's wire (``client_safe_failure``) hides every non-``PublicError``
+    message and passes ``redacted=True``. Returns True once ``exc`` has been
+    logged (on this call or an earlier inner one).
 
     Args:
         exc: The exception about to be boxed.
@@ -1394,13 +1402,14 @@ def log_dropped_failure(
         tool: Tool that raised, when known. Named over ``model``.
         agent: Agent whose turn raised, when known. ``tool`` and ``model``
             are named over it.
+        redacted: Caller's boundary hides ``exc`` even when ``generate``'s
+            in-process finish message would keep its text.
     """
     if getattr(exc, _LOGGED_ATTR, False):
-        return
-    if boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
-        return
-    with contextlib.suppress(AttributeError, TypeError):
-        setattr(exc, _LOGGED_ATTR, True)
+        return True
+    if not redacted and boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
+        return False
+    mark_failure_logged(exc)
     fields: dict[str, object] = {}
     if model:
         fields['model'] = model
@@ -1418,8 +1427,9 @@ def log_dropped_failure(
     elif agent:
         culprit = f'agent {agent!r}'
     else:
-        culprit = 'generate'
+        culprit = 'agent' if redacted else 'generate'
     logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+    return True
 
 
 def stamp_cancelled_error(
@@ -1481,14 +1491,16 @@ def box_from_exc(
     """Box a failure after generate has entered: closed history, unanswered turn dropped."""
     callback_cause = streaming_callback_cause(exc=exc)
     pipe_failed = False
+    logged = bool(getattr(exc, _LOGGED_ATTR, False))
     if callback_cause is not None:
         # The stream pipe is framework plumbing, not a tool or model
         # sentinel. Keep the sink's wording; replace any loop reason.
         exc = callback_cause
         reason = ErrorReason.STREAM_CALLBACK_FAILED
         pipe_failed = True
+        logged = False
     elif not caller_stopped:
-        log_dropped_failure(exc, model=model)
+        logged = log_dropped_failure(exc, model=model)
     finish_message = boxed_finish_message(exc=exc, pipe_failed=pipe_failed)
     if caller_stopped:
         finish_message = 'Generation aborted.'
@@ -1511,6 +1523,8 @@ def box_from_exc(
     failure = Failure(status=status, message=finish_message, details=failure_details)
     if not caller_stopped and not pipe_failed and isinstance(exc, PublicError):
         mark_public_failure(failure)
+    if logged:
+        mark_logged_failure(failure)
     out = box_dead_turn(
         response=response,
         messages=messages,

@@ -19,7 +19,7 @@
 import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic_core import to_jsonable_python
 
@@ -71,7 +71,10 @@ def _frame_value(obj: object) -> object:
     # A failed turn is a 200 with the failure as data, so error_body never
     # sees it. Apply the same rule here: only a PublicError's text leaves.
     if isinstance(obj, (AgentOutput, SessionSnapshot)) and obj.error is not None:
-        obj = obj.model_copy(update={'error': client_safe_failure(obj.error)})
+        # Typed as Any-valued: ty narrows to Top[SessionSnapshot[Any]], whose
+        # model_copy(update=) would otherwise only accept Mapping[str, Never].
+        update: dict[str, Any] = {'error': client_safe_failure(obj.error)}
+        obj = obj.model_copy(update=update)
     return to_jsonable_python(obj, by_alias=True, exclude_none=True)
 
 

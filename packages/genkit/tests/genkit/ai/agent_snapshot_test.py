@@ -18,6 +18,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import BaseModel
 
 from genkit import Genkit, Part
 from genkit._ai._agents._base import define_custom_agent
@@ -365,3 +366,38 @@ async def test_load_chat_by_session_hydrates_aborted_leaf() -> None:
     out = await resumed.send('still there?')
     assert out.finish_reason == AgentFinishReason.STOP
     assert resumed.snapshot_id not in (None, task.snapshot_id)
+
+
+class _CartState(BaseModel):
+    items: list[str]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_hydrates_state_schema() -> None:
+    """With state_schema set, agent.get_snapshot and chat.get_snapshot validate state.custom."""
+    ai = Genkit()
+    store = InMemorySessionStore()
+
+    async def fn(session_runner: SessionRunner[_CartState], _: AgentContext) -> AgentResult:
+        async def handle_turn(_inp: AgentInput, _tc: TurnContext) -> TurnResult | None:
+            await session_runner.update_custom(lambda _: _CartState(items=['tartine']))
+            await session_runner.add_messages([Message(role='model', content=[Part.from_text('added')])])
+            return TurnResult(finish_reason=AgentFinishReason.STOP)
+
+        await session_runner.run(handle_turn)
+        return await session_runner.result()
+
+    agent = define_custom_agent(ai, 'cartAgent', fn, store=store, state_schema=_CartState)
+    chat = agent.chat()
+    await chat.send('add tartine')
+    assert chat.session_id is not None
+
+    from_chat: SessionSnapshot[_CartState] | None = await chat.get_snapshot()
+    assert from_chat is not None and from_chat.state is not None
+    assert isinstance(from_chat.state.custom, _CartState)
+    assert from_chat.state.custom.items == ['tartine']
+
+    from_client: SessionSnapshot[_CartState] | None = await agent.get_snapshot(session_id=chat.session_id)
+    assert from_client is not None and from_client.state is not None
+    assert isinstance(from_client.state.custom, _CartState)
+    assert from_client.state.custom.items == ['tartine']

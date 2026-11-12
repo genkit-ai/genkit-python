@@ -23,7 +23,7 @@ agent still remembers turn 1.
 
 These samples use ``InMemorySessionStore`` so they run tonight. The same
 ``store=`` slot takes ``FirestoreSessionStore`` from ``genkit_google_cloud.exp``
-when you ship. Requires GEMINI_API_KEY.
+when you ship (install ``genkit-google-cloud[firestore]``). Requires GEMINI_API_KEY.
 """
 
 from __future__ import annotations

@@ -408,14 +408,18 @@ name = "basic-flows"
 version = "0.2.0"
 source = { editable = "samples/basic-flows" }
 dependencies = [
+    { name = "fastapi" },
     { name = "genkit" },
     { name = "genkit-fastapi" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.100.0" },
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-fastapi", editable = "packages/genkit-fastapi" },
+    { name = "pydantic", specifier = ">=2.11" },
 ]
 
 [[package]]
@@ -829,12 +833,14 @@ source = { editable = "samples/context" }
 dependencies = [
     { name = "genkit" },
     { name = "genkit-google-genai" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
+    { name = "pydantic", specifier = ">=2.11" },
 ]
 
 [[package]]
@@ -1651,7 +1657,7 @@ dependencies = [
     { name = "pydantic" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1663,12 +1669,15 @@ dev = [
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "pydantic", specifier = ">=2.11" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.4" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.2" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.1" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3.4" },
+    { name = "pytest-asyncio", specifier = ">=0.25.2" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.6.1" },
+]
 
 [[package]]
 name = "genkit-amazon-bedrock"
@@ -1761,7 +1770,6 @@ source = { editable = "packages/genkit-google-cloud" }
 dependencies = [
     { name = "genkit" },
     { name = "genkit-otel" },
-    { name = "google-cloud-firestore" },
     { name = "google-cloud-logging" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-gcp-logging" },
@@ -1772,11 +1780,16 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
+[package.optional-dependencies]
+firestore = [
+    { name = "google-cloud-firestore" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-otel", editable = "packages/genkit-otel" },
-    { name = "google-cloud-firestore", specifier = ">=2.14.0" },
+    { name = "google-cloud-firestore", marker = "extra == 'firestore'", specifier = ">=2.14.0" },
     { name = "google-cloud-logging", specifier = ">=3.10.0" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-gcp-logging", specifier = ">=1.9.0a0" },
@@ -1786,6 +1799,7 @@ requires-dist = [
     { name = "strenum", marker = "python_full_version < '3.11'", specifier = ">=0.4.15" },
     { name = "typing-extensions", specifier = ">=4.0" },
 ]
+provides-extras = ["firestore"]
 
 [[package]]
 name = "genkit-google-genai"
@@ -1838,7 +1852,7 @@ dependencies = [
     { name = "pyyaml" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1849,13 +1863,16 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.4" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.2" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.1" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3.4" },
+    { name = "pytest-asyncio", specifier = ">=0.25.2" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.6.1" },
+]
 
 [[package]]
 name = "genkit-ollama"
@@ -1942,7 +1959,7 @@ dependencies = [
     { name = "genkit-django" },
     { name = "genkit-fastapi" },
     { name = "genkit-flask" },
-    { name = "genkit-google-cloud" },
+    { name = "genkit-google-cloud", extra = ["firestore"] },
     { name = "genkit-google-genai" },
     { name = "genkit-mcp" },
     { name = "genkit-middleware" },
@@ -2015,7 +2032,7 @@ requires-dist = [
     { name = "genkit-django", editable = "packages/genkit-django" },
     { name = "genkit-fastapi", editable = "packages/genkit-fastapi" },
     { name = "genkit-flask", editable = "packages/genkit-flask" },
-    { name = "genkit-google-cloud", editable = "packages/genkit-google-cloud" },
+    { name = "genkit-google-cloud", extras = ["firestore"], editable = "packages/genkit-google-cloud" },
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
     { name = "genkit-mcp", editable = "packages/genkit-mcp" },
     { name = "genkit-middleware", editable = "packages/genkit-middleware" },
@@ -4947,6 +4964,7 @@ dependencies = [
     { name = "genkit" },
     { name = "genkit-google-genai" },
     { name = "genkit-otel" },
+    { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
 ]
@@ -4956,6 +4974,7 @@ requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
     { name = "genkit-otel", editable = "packages/genkit-otel" },
+    { name = "opentelemetry-api", specifier = ">=1.29.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.29.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.29.0" },
 ]
@@ -4967,12 +4986,14 @@ source = { editable = "samples/output-formats" }
 dependencies = [
     { name = "genkit" },
     { name = "genkit-google-genai" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
+    { name = "pydantic", specifier = ">=2.11" },
 ]
 
 [[package]]
@@ -6965,12 +6986,14 @@ source = { editable = "samples/tracing" }
 dependencies = [
     { name = "genkit" },
     { name = "genkit-google-genai" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
+    { name = "pydantic", specifier = ">=2.11" },
 ]
 
 [[package]]

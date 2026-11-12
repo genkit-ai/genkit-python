@@ -37,12 +37,15 @@ def model_garden_app() -> Genkit:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('key_name', ['api_key', 'apiKey'])
-async def test_generate_model_garden_claude_secrets_api_key_fails_invalid_argument(key_name: str) -> None:
-    """A key in `context.secrets` on Model Garden Claude fails with INVALID_ARGUMENT and never builds a client."""
+@pytest.mark.parametrize('key_value', ['tenant-key', None], ids=['string', 'none'])
+async def test_generate_model_garden_claude_secrets_api_key_fails_invalid_argument(
+    key_name: str, key_value: str | None
+) -> None:
+    """A key slot in `context.secrets` on Model Garden Claude fails with INVALID_ARGUMENT and never builds a client."""
     ai = model_garden_app()
 
     with patch('genkit_vertexai._model_garden._anthropic.AsyncAnthropicVertex') as vertex_client:
-        response = await ai.generate(model=CLAUDE_MODEL, prompt='hi', context={'secrets': {key_name: 'tenant-key'}})
+        response = await ai.generate(model=CLAUDE_MODEL, prompt='hi', context={'secrets': {key_name: key_value}})
 
     assert response.error is not None
     assert response.error.status == 'INVALID_ARGUMENT'

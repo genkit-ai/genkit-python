@@ -52,29 +52,30 @@ def misplaced_key_error() -> GenkitError:
     )
 
 
-def string_secret(value: object) -> str | None:
-    # A blank key is a tenant that meant to bring one and didn't (a missing
-    # header, say). Raise instead of returning None, which would bill the
-    # plugin key. Same rule as genkit-openai and genkit-anthropic.
-    if value is None:
-        return None
-    if isinstance(value, str):
-        cleaned = value.strip()
-        if not cleaned:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=f'context.secrets.api_key is blank. {SECRETS_SLOT}',
-            )
-        if any(c in cleaned for c in ('\r', '\n', '\0', ' ', '\t')):
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=f'context.secrets.api_key contains invalid whitespace or control characters. {SECRETS_SLOT}',
-            )
-        return cleaned
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f'context.secrets.api_key must be a string. {SECRETS_SLOT}',
-    )
+_KEY_SLOTS = ('api_key', 'apiKey')
+
+
+def string_secret(value: object, slot: str = 'api_key') -> str:
+    # An explicit None or blank key is a tenant that meant to bring one and
+    # didn't (request.headers.get('x-gemini-key') returning None, say). Raise
+    # instead of falling back, which would bill the plugin key.
+    if not isinstance(value, str):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} must be a string. {SECRETS_SLOT}',
+        )
+    cleaned = value.strip()
+    if not cleaned:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} is blank. {SECRETS_SLOT}',
+        )
+    if any(c in cleaned for c in ('\r', '\n', '\0', ' ', '\t')):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} contains invalid whitespace or control characters. {SECRETS_SLOT}',
+        )
+    return cleaned
 
 
 def context_api_key(context: dict[str, Any]) -> str | None:
@@ -82,18 +83,20 @@ def context_api_key(context: dict[str, Any]) -> str | None:
 
     Documented slot is ``api_key``; ``apiKey`` is accepted so either
     spelling works. A key on ``context['config']`` or the top-level
-    context is rejected so it cannot silently fall through to the
-    plugin client. ``generate(..., config={'api_key': ...})`` is the
-    same leftover — reject it on the request too.
+    context (even ``None``) is rejected so an explicit override in the
+    wrong place cannot silently fall through to the plugin client.
+    ``generate(..., config={'api_key': ...})`` is the same leftover —
+    reject it on the request too.
 
-    Returns ``None`` when ``secrets`` holds only app secrets; the call
-    then falls back to the plugin key, as in genkit-openai and
-    genkit-anthropic. A key that is set but blank raises.
+    Returns ``None`` only when ``secrets`` omits ``api_key`` / ``apiKey``
+    (e.g. holding other app secrets); the call then falls back to the
+    plugin key, as in genkit-openai and genkit-anthropic. An explicit
+    ``None`` or blank key raises instead of billing the plugin key.
     """
     extra = context.get('config')
-    if isinstance(extra, dict) and (extra.get('api_key') is not None or extra.get('apiKey') is not None):
+    if isinstance(extra, dict) and any(slot in extra for slot in _KEY_SLOTS):
         raise misplaced_key_error()
-    if context.get('api_key') is not None or context.get('apiKey') is not None:
+    if any(slot in context for slot in _KEY_SLOTS):
         raise misplaced_key_error()
 
     if 'secrets' not in context:
@@ -104,10 +107,10 @@ def context_api_key(context: dict[str, Any]) -> str | None:
             status='INVALID_ARGUMENT',
             message=f'context.secrets must be a dict. {SECRETS_SLOT}',
         )
-    key = string_secret(secrets.get('api_key'))
-    if key is None:
-        key = string_secret(secrets.get('apiKey'))
-    return key
+    for slot in _KEY_SLOTS:
+        if slot in secrets:
+            return string_secret(secrets[slot], slot)
+    return None
 
 
 def _bag_has_api_key(bag: dict[str, Any]) -> bool:

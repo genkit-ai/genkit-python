@@ -300,8 +300,8 @@ async def test_app_secrets_without_api_key_fall_back_to_plugin_key(no_key_env: N
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'context',
-    [None, {'secrets': {'crm_token': 'crm-123'}}, {'secrets': {'api_key': None}}],
-    ids=['no-context', 'app-secrets-only', 'none-key'],
+    [None, {'secrets': {'crm_token': 'crm-123'}}, {'secrets': {}}],
+    ids=['no-context', 'app-secrets-only', 'empty-secrets'],
 )
 async def test_keyless_call_without_secret_is_failed_precondition(
     no_key_env: None, context: dict[str, object] | None
@@ -322,10 +322,22 @@ async def test_keyless_call_without_secret_is_failed_precondition(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('blank', ['', '   '], ids=['empty', 'whitespace'])
-async def test_blank_secret_is_invalid_argument_not_plugin_key(no_key_env: None, blank: str) -> None:
-    """A tenant that sends a blank key (missing header) must not be billed to the plugin key."""
-    ai = Genkit(plugins=[GoogleAI(api_key='plugin-key')])
+@pytest.mark.parametrize(
+    ('secrets', 'match'),
+    [
+        ({'api_key': None}, 'must be a string'),
+        ({'apiKey': None}, 'must be a string'),
+        ({'api_key': ''}, 'blank'),
+        ({'api_key': '   '}, 'blank'),
+    ],
+    ids=['none-api_key', 'none-apiKey', 'empty', 'whitespace'],
+)
+@pytest.mark.parametrize('plugin_key', ['plugin-key', None], ids=['plugin-key', 'keyless'])
+async def test_unset_or_blank_secret_is_invalid_argument_not_plugin_key(
+    no_key_env: None, secrets: dict[str, object], match: str, plugin_key: str | None
+) -> None:
+    """A missing header (None) or blank key in context.secrets never bills the plugin key."""
+    ai = Genkit(plugins=[GoogleAI(api_key=plugin_key)])
     with (
         _no_listing(),
         patch('genkit_google_genai._google.genai.client.Client') as base_cls,
@@ -333,19 +345,37 @@ async def test_blank_secret_is_invalid_argument_not_plugin_key(no_key_env: None,
         base_cls.return_value.vertexai = False
         base_cls.return_value.aio.models.generate_content = AsyncMock(return_value=_text_response())
         error = await _generate_error(
-            ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.', context={'secrets': {'api_key': blank}}
+            ai, model='googleai/gemini-2.5-flash', prompt='Suggest a dish.', context={'secrets': secrets}
         )
     assert error.status == 'INVALID_ARGUMENT'
-    assert 'blank' in error.message
+    assert match in error.message
     base_cls.return_value.aio.models.generate_content.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_misplaced_key_still_invalid_argument_on_keyless_plugin(no_key_env: None) -> None:
-    """A key at the top level of context is a caller bug, not a missing key."""
-    ai = Genkit(plugins=[GoogleAI()])
-    error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='hi', context={'api_key': 'tenant-key'})
+@pytest.mark.parametrize(
+    'context',
+    [
+        {'api_key': 'tenant-key'},
+        {'api_key': None},
+        {'apiKey': None},
+        {'config': {'api_key': None}},
+    ],
+    ids=['top-level-str', 'top-level-none', 'top-level-camel-none', 'context-config-none'],
+)
+@pytest.mark.parametrize('plugin_key', ['plugin-key', None], ids=['plugin-key', 'keyless'])
+async def test_misplaced_key_is_invalid_argument(
+    no_key_env: None, context: dict[str, object], plugin_key: str | None
+) -> None:
+    """A key slot at the top level of context or context.config (even None) is a caller bug."""
+    ai = Genkit(plugins=[GoogleAI(api_key=plugin_key)])
+    with _no_listing(), patch('genkit_google_genai._google.genai.client.Client') as base_cls:
+        base_cls.return_value.vertexai = False
+        base_cls.return_value.aio.models.generate_content = AsyncMock(return_value=_text_response())
+        error = await _generate_error(ai, model='googleai/gemini-2.5-flash', prompt='hi', context=context)
     assert error.status == 'INVALID_ARGUMENT'
+    assert 'context.secrets' in error.message
+    base_cls.return_value.aio.models.generate_content.assert_not_called()
 
 
 def test_interactions_missing_key_uses_same_status_and_text(no_key_env: None) -> None:

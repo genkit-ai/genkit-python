@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""FlowContext, ToolContext, ModelContext, and AgentContext: subclasses of ActionRunContext."""
+"""FlowContext, ToolContext, ModelContext, and AgentContext: subclasses of ActionContext."""
 
 import types
 from typing import Any, cast, get_args, get_origin
@@ -39,7 +39,7 @@ from genkit import (
     Role,
     ToolContext,
 )
-from genkit._core._action import ActionKind, ActionRunContext, find_input_and_context
+from genkit._core._action import ActionKind, find_input_and_context
 from genkit.embedder import EmbedContext, EmbedRequest, EmbedResponse
 from genkit.exp import Genkit as ExpGenkit
 from genkit.exp.agent import (
@@ -53,15 +53,15 @@ from genkit.exp.agent import (
     TurnResult,
 )
 from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelSupports
-from genkit.plugin_api import BackgroundAction
+from genkit.plugin_api import ActionContext, BackgroundAction
 
 
 def test_public_contexts_are_distinct_subclasses_of_action_run_context() -> None:
-    """FlowContext, ModelContext, ToolContext, and AgentContext are distinct subclasses of ActionRunContext."""
+    """FlowContext, ModelContext, ToolContext, and AgentContext are distinct subclasses of ActionContext."""
     public_classes = (FlowContext, ModelContext, ToolContext, AgentContext)
     for cls in public_classes:
-        assert cls is not ActionRunContext
-        assert issubclass(cls, ActionRunContext)
+        assert cls is not ActionContext
+        assert issubclass(cls, ActionContext)
 
     for cls_a in public_classes:
         for cls_b in public_classes:
@@ -70,12 +70,12 @@ def test_public_contexts_are_distinct_subclasses_of_action_run_context() -> None
 
 
 def test_model_context_is_exported_from_genkit_model() -> None:
-    """`ModelContext` subclasses `ActionRunContext[ModelResponseChunk]` and is exported from `genkit.model`."""
+    """`ModelContext` subclasses `ActionContext[ModelResponseChunk]` and is exported from `genkit.model`."""
     assert 'ModelContext' in genkit.model.__all__
-    assert issubclass(ModelContext, ActionRunContext)
+    assert issubclass(ModelContext, ActionContext)
     orig_bases = cast(tuple[Any, ...], getattr(ModelContext, '__orig_bases__', ()))
     assert len(orig_bases) == 1
-    assert get_origin(orig_bases[0]) is ActionRunContext
+    assert get_origin(orig_bases[0]) is ActionContext
     assert get_args(orig_bases[0]) == (ModelResponseChunk,)
 
 
@@ -90,15 +90,15 @@ def test_model_context_has_one_definition() -> None:
 
 def test_isinstance_works_and_distinguishes_each_context_class() -> None:
     """`isinstance` works at runtime for every context class without raising `TypeError`."""
-    instances: list[tuple[ActionRunContext[Any], type[ActionRunContext[Any]]]] = [
+    instances: list[tuple[ActionContext[Any], type[ActionContext[Any]]]] = [
         (FlowContext(), FlowContext),
         (ModelContext(), ModelContext),
-        (ToolContext(ActionRunContext()), ToolContext),
+        (ToolContext(ActionContext()), ToolContext),
         (AgentContext(), AgentContext),
     ]
 
     for ctx, expected_cls in instances:
-        assert isinstance(ctx, ActionRunContext)
+        assert isinstance(ctx, ActionContext)
         assert isinstance(ctx, expected_cls)
         for _, other_cls in instances:
             if other_cls is not expected_cls:
@@ -136,14 +136,14 @@ async def test_flow_and_tool_contexts_pass_shared_isinstance_check() -> None:
     assert not isinstance(AgentContext(), (FlowContext, ToolContext))
 
 
-def test_action_run_context_is_not_publicly_exported() -> None:
-    """`ActionRunContext` stays internal; public packages export only concrete subclasses."""
-    assert 'ActionRunContext' not in genkit.__all__
-    assert not hasattr(genkit, 'ActionRunContext')
-    assert 'ActionRunContext' not in genkit.plugin_api.__all__
-    assert not hasattr(genkit.plugin_api, 'ActionRunContext')
-    assert 'ActionRunContext' not in genkit.model.__all__
-    assert 'ActionRunContext' not in genkit.exp.agent.__all__
+def test_action_context_is_exported_in_plugin_api_only() -> None:
+    """`ActionContext` lives in `genkit.plugin_api`, not top-level `genkit` or domain modules."""
+    assert 'ActionContext' not in genkit.__all__
+    assert not hasattr(genkit, 'ActionContext')
+    assert 'ActionContext' in genkit.plugin_api.__all__
+    assert hasattr(genkit.plugin_api, 'ActionContext')
+    assert 'ActionContext' not in genkit.model.__all__
+    assert 'ActionContext' not in genkit.exp.agent.__all__
 
 
 def test_contexts_subscript_at_runtime() -> None:
@@ -224,15 +224,15 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
     class ReportJob(BackgroundAction[RenderRequest, Report]):
         pass
 
-    async def start_report(request: RenderRequest, ctx: FlowContext) -> Operation:
+    async def start_report(request: RenderRequest, ctx: ActionContext) -> Operation:
         seen['custom_bg_start'] = ctx
         return Operation(id=f'report-{request.quarter}', done=False)
 
-    async def check_report(op: Operation[Report], ctx: FlowContext) -> Operation:
+    async def check_report(op: Operation[Report], ctx: ActionContext) -> Operation:
         seen['custom_bg_check'] = ctx
         return Operation(id=op.id, done=True, output=Report(url=f'https://reports.example/{op.id}.pdf'))
 
-    async def cancel_report(op: Operation[Report], ctx: FlowContext) -> Operation:
+    async def cancel_report(op: Operation[Report], ctx: ActionContext) -> Operation:
         seen['custom_bg_cancel'] = ctx
         return Operation(id=op.id, done=True)
 
@@ -278,18 +278,18 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
     assert isinstance(seen['bg_cancel'], ModelContext)
     assert type(seen['bg_cancel']) is ModelContext
 
-    # 4. Custom BackgroundAction (start / check / cancel -> FlowContext)
+    # 4. Custom BackgroundAction (start / check / cancel -> ActionContext)
     report_op = await report_job.start(RenderRequest(quarter='q3'))
     checked_report = await ai.check_operation(report_op)
     assert checked_report.done is True
     cancelled_report = await ai.cancel_operation(report_op)
     assert cancelled_report.done is True
-    assert isinstance(seen['custom_bg_start'], FlowContext)
-    assert type(seen['custom_bg_start']) is FlowContext
-    assert isinstance(seen['custom_bg_check'], FlowContext)
-    assert type(seen['custom_bg_check']) is FlowContext
-    assert isinstance(seen['custom_bg_cancel'], FlowContext)
-    assert type(seen['custom_bg_cancel']) is FlowContext
+    assert isinstance(seen['custom_bg_start'], ActionContext)
+    assert type(seen['custom_bg_start']) is ActionContext
+    assert isinstance(seen['custom_bg_check'], ActionContext)
+    assert type(seen['custom_bg_check']) is ActionContext
+    assert isinstance(seen['custom_bg_cancel'], ActionContext)
+    assert type(seen['custom_bg_cancel']) is ActionContext
 
     # 5. Embedder
     embeddings = await ai.embed(embedder='bistro/menu-embedder', content=Document.from_text('Smoked Salmon Tartine'))
@@ -324,7 +324,7 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
         'ToolContext',
         'ModelContext',
         'AgentContext',
-        'ActionRunContext',
+        'ActionContext',
         'FlowContext[str]',
         'ToolContext[int]',
         'FlowContext | None',
@@ -419,7 +419,7 @@ def test_background_check_signature_error_names_owner_context() -> None:
     async def bad_check_report(op: Operation[Report], extra: int) -> Operation:
         return op
 
-    with pytest.raises(TypeError, match="annotate 'extra' as FlowContext"):
+    with pytest.raises(TypeError, match="annotate 'extra' as ActionContext"):
         ReportJob('render-report', start_report, cast(Any, bad_check_report), kind=ActionKind.CUSTOM)
 
     async def start_video(request: ModelRequest, ctx: ModelContext) -> Operation:
@@ -439,11 +439,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from genkit import FlowContext as RuntimeFlowContext, Operation as RuntimeOperation
-from genkit.plugin_api import ActionKind, BackgroundAction
+from genkit import Operation as RuntimeOperation
+from genkit.plugin_api import ActionContext as RuntimeActionContext, ActionKind, BackgroundAction
 
 if TYPE_CHECKING:
-    from genkit import FlowContext, Operation
+    from genkit import Operation
+    from genkit.plugin_api import ActionContext
 
 
 class RenderRequest(BaseModel):
@@ -458,25 +459,25 @@ class ReportJob(BackgroundAction[RenderRequest, Report]):
     pass
 
 
-async def start_report(request: RenderRequest, ctx: FlowContext) -> Operation:
-    assert type(ctx) is RuntimeFlowContext
+async def start_report(request: RenderRequest, ctx: ActionContext) -> Operation:
+    assert type(ctx) is RuntimeActionContext
     return RuntimeOperation(id=f'report-{request.quarter}', done=False)
 
 
-async def check_report(op: Operation[Report], ctx: FlowContext) -> Operation:
-    assert type(ctx) is RuntimeFlowContext
+async def check_report(op: Operation[Report], ctx: ActionContext) -> Operation:
+    assert type(ctx) is RuntimeActionContext
     return RuntimeOperation(id=op.id, done=True, output=Report(url=f'https://reports.example/{op.id}.pdf'))
 
 
-async def cancel_report(op: Operation[Report], ctx: FlowContext) -> Operation:
-    assert type(ctx) is RuntimeFlowContext
+async def cancel_report(op: Operation[Report], ctx: ActionContext) -> Operation:
+    assert type(ctx) is RuntimeActionContext
     return RuntimeOperation(id=op.id, done=True)
 """
 
 
 @pytest.mark.asyncio
-async def test_future_annotations_custom_background_job_receives_flow_context() -> None:
-    """`from __future__ import annotations` on a custom `BackgroundAction` resolves `Operation` and `FlowContext`."""
+async def test_future_annotations_custom_background_job_receives_action_context() -> None:
+    """`from __future__ import annotations` on a custom `BackgroundAction` resolves `Operation` and `ActionContext`."""
     module = types.ModuleType('future_bg_job')
     exec(_FUTURE_BACKGROUND_JOB_MODULE, module.__dict__)  # noqa: S102 - builds a module with postponed annotations
 

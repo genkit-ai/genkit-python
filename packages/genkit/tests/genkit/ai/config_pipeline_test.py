@@ -33,7 +33,7 @@ from pydantic.alias_generators import to_camel
 
 from genkit import FinishReason, Genkit, GenkitError
 from genkit._ai._embedding import EmbedderInfo, EmbedderRef
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit._core._error import get_reflection_json
 from genkit._core._middleware import Middleware
 from genkit._core._model import (
@@ -99,7 +99,7 @@ def _embedding() -> EmbedResponse:
 def test_model_annotation_and_config_schema_must_agree() -> None:
     ai = Genkit()
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     with pytest.raises(GenkitError, match=r"model 'bistro': config_schema is .*MenuOnlyConfig, but the function"):
@@ -109,10 +109,10 @@ def test_model_annotation_and_config_schema_must_agree() -> None:
 def test_background_model_annotation_and_config_schema_must_agree() -> None:
     ai = Genkit()
 
-    async def start(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> Operation:
+    async def start(request: ModelRequest[TableConfig], ctx: ActionContext) -> Operation:
         raise NotImplementedError
 
-    async def check(operation: Operation, ctx: ActionRunContext) -> Operation:
+    async def check(operation: Operation, ctx: ActionContext) -> Operation:
         raise NotImplementedError
 
     with pytest.raises(GenkitError, match='config_schema is .*MenuOnlyConfig'):
@@ -132,7 +132,7 @@ def test_embedder_annotation_and_config_schema_must_agree() -> None:
 def test_same_class_in_annotation_and_config_schema_is_fine() -> None:
     ai = Genkit()
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     action = ai.define_model(name='bistro', fn=bistro, config_schema=TableConfig)
@@ -143,7 +143,7 @@ def test_same_class_in_annotation_and_config_schema_is_fine() -> None:
 def test_annotation_alone_sets_config_schema_and_dev_ui_form() -> None:
     ai = Genkit()
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     async def crm_search(request: EmbedRequest[CrmEmbedConfig]) -> EmbedResponse:
@@ -208,7 +208,7 @@ def _pipeline_app(config_schema: type[BaseModel] = TableConfig) -> tuple[Genkit,
     ai = Genkit()
     seen: dict[str, Any] = {}
 
-    async def bistro(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         seen['model'] = request.config
         return _ok()
 
@@ -285,7 +285,7 @@ async def test_typed_fns_see_the_class_with_defaults() -> None:
     ai = Genkit()
     seen: dict[str, Any] = {}
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         seen['model'] = request.config
         return _ok()
 
@@ -314,7 +314,7 @@ async def test_typed_fn_always_gets_an_instance_even_with_all_none_defaults() ->
     ai = Genkit()
     seen: list[Any] = []
 
-    async def bistro(request: ModelRequest[NotSetConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[NotSetConfig], ctx: ActionContext) -> ModelResponse:
         seen.append(request.config)
         return _ok()
 
@@ -335,7 +335,7 @@ async def test_typed_class_that_cannot_build_from_defaults_raises() -> None:
     ai = Genkit()
     seen: list[Any] = []
 
-    async def booking(request: ModelRequest[ReservationConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def booking(request: ModelRequest[ReservationConfig], ctx: ActionContext) -> ModelResponse:
         seen.append(request.config)
         return _ok()
 
@@ -369,7 +369,7 @@ async def test_explicit_none_overrides_ref_and_default_for_an_optional_field() -
     ai_typed = Genkit()
     typed_seen: list[Any] = []
 
-    async def kitchen(request: ModelRequest[KitchenConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def kitchen(request: ModelRequest[KitchenConfig], ctx: ActionContext) -> ModelResponse:
         typed_seen.append(request.config)
         return _ok()
 
@@ -408,7 +408,7 @@ async def test_untyped_fn_without_a_class_receives_none() -> None:
     ai = Genkit()
     seen: list[Any] = []
 
-    async def bistro(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         seen.append(request.config)
         return _ok()
 
@@ -470,7 +470,7 @@ def _typed_app() -> tuple[Genkit, dict[str, Any]]:
     ai = Genkit()
     seen: dict[str, Any] = {}
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         seen['model'] = request.config
         return _ok()
 
@@ -670,7 +670,7 @@ def _alias_only_app() -> tuple[Genkit, dict[str, Any]]:
     ai = Genkit()
     seen: dict[str, Any] = {}
 
-    async def bistro(request: ModelRequest[AliasOnlyConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[AliasOnlyConfig], ctx: ActionContext) -> ModelResponse:
         seen['model'] = request.config
         return _ok()
 
@@ -792,11 +792,11 @@ async def test_background_model_start_gets_schema_defaults() -> None:
     ai = Genkit()
     seen: list[Any] = []
 
-    async def start(request: ModelRequest, ctx: ActionRunContext) -> Operation:
+    async def start(request: ModelRequest, ctx: ActionContext) -> Operation:
         seen.append(request.config)
         return Operation(id='op-1', done=False)
 
-    async def check(operation: Operation, ctx: ActionRunContext) -> Operation:
+    async def check(operation: Operation, ctx: ActionContext) -> Operation:
         return operation
 
     ai.define_background_model(name='video', start=start, check=check, config_schema=TableConfig)
@@ -822,11 +822,11 @@ async def test_middleware_sees_config_before_the_boundary() -> None:
     untyped_seen: list[object] = []
     typed_seen: list[object] = []
 
-    async def untyped(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def untyped(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         untyped_seen.append(request.config)
         return _ok()
 
-    async def typed(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def typed(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         typed_seen.append(request.config)
         return _ok()
 
@@ -852,11 +852,11 @@ async def test_alias_forbid_class_takes_field_names_on_every_path() -> None:
     ai = Genkit()
     seen: dict[str, Any] = {}
 
-    async def typed(request: ModelRequest[AliasForbidConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def typed(request: ModelRequest[AliasForbidConfig], ctx: ActionContext) -> ModelResponse:
         seen['typed'] = request.config
         return _ok()
 
-    async def untyped(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def untyped(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         seen['untyped'] = request.config
         return _ok()
 
@@ -880,10 +880,10 @@ async def test_missing_required_field_fails_the_same_way_typed_or_untyped() -> N
     """Nothing fills party_size: a failed turn from generate, a raise from a direct run, same message."""
     ai = Genkit()
 
-    async def typed(request: ModelRequest[ReservationConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def typed(request: ModelRequest[ReservationConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
-    async def untyped(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def untyped(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     ai.define_model(name='booking', fn=typed)
@@ -959,7 +959,7 @@ TABLE_JSON_SCHEMA: dict[str, object] = {'type': 'object', 'properties': {'temper
 def test_model_json_schema_next_to_typed_annotation_raises() -> None:
     ai = Genkit()
 
-    async def bistro(request: ModelRequest[TableConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest[TableConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     with pytest.raises(
@@ -987,7 +987,7 @@ def test_embedder_json_schema_next_to_typed_annotation_raises() -> None:
 def test_json_schema_with_untyped_fn_is_still_fine() -> None:
     ai = Genkit()
 
-    async def bistro(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def bistro(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     action = ai.define_model(name='bistro', fn=bistro, config_schema=TABLE_JSON_SCHEMA)
@@ -1010,7 +1010,7 @@ class ChefConfig(BaseModel):
 async def test_bad_config_names_each_problem_once_on_every_kind() -> None:
     ai = Genkit()
 
-    async def chef(request: ModelRequest[ChefConfig], ctx: ActionRunContext) -> ModelResponse:
+    async def chef(request: ModelRequest[ChefConfig], ctx: ActionContext) -> ModelResponse:
         return _ok()
 
     async def crm_search(request: EmbedRequest[ChefConfig]) -> EmbedResponse:

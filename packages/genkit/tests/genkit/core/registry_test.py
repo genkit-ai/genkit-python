@@ -15,7 +15,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from genkit import Genkit
-from genkit._core._action import Action, ActionKind, ActionRunContext, create_action_key
+from genkit._core._action import Action, ActionContext, ActionKind, create_action_key
 from genkit._core._dap import DapValue
 from genkit._core._model import ModelRequest, ModelResponse
 from genkit._core._operation import Operation
@@ -499,11 +499,11 @@ def test_registry_satisfies_registry_like() -> None:
     assert isinstance(Registry(None), RegistryLike)
 
 
-async def _bg_start(_request: ModelRequest, _ctx: ActionRunContext) -> Operation:
+async def _bg_start(_request: ModelRequest, _ctx: ActionContext) -> Operation:
     return Operation(id='bg-op', done=False)
 
 
-async def _bg_check(op: Operation, _ctx: ActionRunContext) -> Operation:
+async def _bg_check(op: Operation, _ctx: ActionContext) -> Operation:
     return op
 
 
@@ -524,7 +524,7 @@ async def test_resolve_model_finds_background_model() -> None:
 async def test_resolve_model_prefers_foreground_when_both_exist() -> None:
     """A normal model of the same name wins. The fallback is only for names that have no MODEL."""
 
-    async def fg(_request: ModelRequest, _ctx: ActionRunContext) -> ModelResponse:
+    async def fg(_request: ModelRequest, _ctx: ActionContext) -> ModelResponse:
         return ModelResponse()
 
     ai = Genkit()

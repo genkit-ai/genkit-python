@@ -30,8 +30,8 @@ from typing_extensions import TypeVar
 
 from genkit._core._action import (
     Action,
+    ActionContext,
     ActionKind,
-    ActionRunContext,
     get_func_description,
     resolve_type_hints,
 )
@@ -241,7 +241,7 @@ def model_schema_from_return_annotation(
     return to_json_schema(cast(type | dict[str, Any] | str, inner))
 
 
-class ToolContext(ActionRunContext[ChunkT]):
+class ToolContext(ActionContext[ChunkT]):
     """What a tool sees while it runs: request context, streaming, and resume state.
 
     Annotate a tool parameter with it to receive it:
@@ -282,7 +282,7 @@ class ToolContext(ActionRunContext[ChunkT]):
 
     def __init__(
         self,
-        ctx: ActionRunContext[ChunkT],
+        ctx: ActionContext[ChunkT],
         *,
         resumed_metadata: dict[str, Any] | None = None,
         original_input: Any = None,  # noqa: ANN401 - prior tool_request.input when replacing on restart
@@ -314,7 +314,7 @@ async def call_tool_fn(
     tool: Action[Any, Any, Any, Any],
     func: Callable[..., Awaitable[OutputT]],
     raw_input: object,
-    ctx: ActionRunContext[Any],
+    ctx: ActionContext[Any],
 ) -> OutputT:
     """Call a tool function with a ``ToolContext`` carrying resume state.
 
@@ -462,7 +462,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         typed_func = cast(Callable[..., Awaitable[OutputT]], func)
         self._wire_action = None
 
-        async def tool_fn(raw_input: object, ctx: ActionRunContext[Any]) -> OutputT:
+        async def tool_fn(raw_input: object, ctx: ActionContext[Any]) -> OutputT:
             return await call_tool_fn(self, typed_func, raw_input, ctx)
 
         super().__init__(
@@ -476,7 +476,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         model_schema = model_schema_from_return_annotation(func, inferred=self.output_schema)
         self.metadata[ORIGINAL_OUTPUT_SCHEMA_KEY] = model_schema
 
-        async def wire_fn(raw_input: object, ctx: ActionRunContext[Any]) -> MultipartToolResponse[Any]:
+        async def wire_fn(raw_input: object, ctx: ActionContext[Any]) -> MultipartToolResponse[Any]:
             raw = await call_tool_fn(self, typed_func, raw_input, ctx)
             return as_multipart_tool_response(raw, tool_name=self.name)
 
@@ -540,7 +540,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
             output_schema=self.model_output_schema,
         )
 
-    async def _invoke(self, input: object | None, ctx: ActionRunContext) -> OutputT:
+    async def _invoke(self, input: object | None, ctx: ActionContext) -> OutputT:
         """Run the function, then check its result the way generate would send it to a model.
 
         A value the model couldn't receive (unserializable output or metadata,

@@ -341,7 +341,7 @@ def parse_plugin_name_from_action_name(name: str) -> str | None:
 #   async def ping(ctx: FlowContext) -> str: ...                      # no input
 #
 # Rules for the function:
-#   - The context is the parameter annotated ActionRunContext or a subclass
+#   - The context is the parameter annotated ActionContext or a subclass
 #     (FlowContext, ToolContext, ModelContext, AgentContext).
 #   - Any other parameter is the input, so there's only one. Put more fields
 #     on one input model.
@@ -371,7 +371,7 @@ class ActionParams:
         self,
         fn: Callable[..., _CallT],
         input: object,  # noqa: A002
-        ctx: 'ActionRunContext',
+        ctx: 'ActionContext',
     ) -> _CallT:
         """Call ``fn`` with ``input`` and ``ctx`` passed by parameter name.
 
@@ -416,8 +416,9 @@ def _public_context_name(kind: ActionKind) -> str:
 
     ToolContext for tools, ModelContext (genkit.model) for model and
     background-model ops, EmbedContext (genkit.embedder) for embedders,
-    AgentContext (genkit.exp.agent) for agents, and FlowContext for flows
-    and custom actions.
+    AgentContext (genkit.exp.agent) for agents, ActionContext
+    (genkit.plugin_api) for custom/background actions, and FlowContext for
+    flows and evaluators.
     """
     if kind in (ActionKind.TOOL, ActionKind.TOOL_V2):
         return 'ToolContext'
@@ -427,6 +428,8 @@ def _public_context_name(kind: ActionKind) -> str:
         return 'EmbedContext'
     if kind == ActionKind.AGENT:
         return 'AgentContext'
+    if kind == ActionKind.CUSTOM:
+        return 'ActionContext'
     return 'FlowContext'
 
 
@@ -509,7 +512,7 @@ def known_annotation_names(kind: ActionKind, *, context_kind: ActionKind | None 
     if kind == ActionKind.BACKGROUND_MODEL:
         return {'ModelRequest': ModelRequest, 'Operation': Operation, 'ModelContext': ModelContext}
     if kind in (ActionKind.CHECK_OPERATION, ActionKind.CANCEL_OPERATION):
-        ctx_cls = ModelContext if effective_context_kind in _MODEL_CONTEXT_KINDS else FlowContext
+        ctx_cls = ModelContext if effective_context_kind in _MODEL_CONTEXT_KINDS else ActionContext
         return {'Operation': Operation, ctx_cls.__name__: ctx_cls}
     if kind == ActionKind.EMBEDDER:
         return {
@@ -518,6 +521,8 @@ def known_annotation_names(kind: ActionKind, *, context_kind: ActionKind | None 
             'EmbedContext': EmbedContext,
             'FlowContext': FlowContext,
         }
+    if kind == ActionKind.CUSTOM:
+        return {'ActionContext': ActionContext, 'Operation': Operation}
     return {}
 
 
@@ -690,7 +695,7 @@ def _resolve_one(annotation: object, module_globals: dict[str, Any]) -> object:
 def _is_context_annotation(annotation: object) -> bool:
     """True if ``annotation`` marks the run-context parameter.
 
-    That's ActionRunContext or any subclass (FlowContext, ToolContext,
+    That's ActionContext or any subclass (FlowContext, ToolContext,
     ModelContext, EmbedContext, AgentContext), written any of these ways: ``ToolContext``,
     ``FlowContext[str]``, ``ToolContext | None``, or as a string
     (see _string_names_context).
@@ -707,13 +712,20 @@ def _is_context_annotation(annotation: object) -> bool:
         return any(_is_context_annotation(arg) for arg in get_args(annotation))
     # FlowContext[str] -> FlowContext
     cls = origin if origin is not None else annotation
-    return isinstance(cls, type) and issubclass(cls, ActionRunContext)
+    return isinstance(cls, type) and issubclass(cls, ActionContext)
 
 
-# Public run-context subclasses of ActionRunContext. ToolContext and
+# Public run-context subclasses of ActionContext. ToolContext and
 # AgentContext live in submodules that may not be imported yet when
-# ActionRunContext.__subclasses__() runs, so list all four explicitly.
-_CONTEXT_ALIAS_NAMES = frozenset({'FlowContext', 'ToolContext', 'AgentContext', 'ModelContext', 'EmbedContext'})
+# ActionContext.__subclasses__() runs, so list all four explicitly.
+_CONTEXT_ALIAS_NAMES = frozenset({
+    'ActionContext',
+    'FlowContext',
+    'ToolContext',
+    'AgentContext',
+    'ModelContext',
+    'EmbedContext',
+})
 
 
 def _string_names_context(annotation: str) -> bool:
@@ -723,9 +735,9 @@ def _string_names_context(annotation: str) -> bool:
     'FlowContext[str]' and 'genkit.ToolContext' all do.
     """
     # The annotation couldn't be resolved to a class, so match by name against
-    # the public context classes, ActionRunContext, and every subclass defined so far.
+    # the public context classes, ActionContext, and every subclass defined so far.
     context_names: set[str] = set(_CONTEXT_ALIAS_NAMES)
-    classes: list[type] = [ActionRunContext]
+    classes: list[type] = [ActionContext]
     while classes:
         cls = classes.pop()
         context_names.add(cls.__name__)
@@ -736,7 +748,7 @@ def _string_names_context(annotation: str) -> bool:
         for prefix in ('Optional[', 'typing.Optional['):
             if name.startswith(prefix) and name.endswith(']'):
                 name = name[len(prefix) : -1].strip()  # Optional[X] -> X
-        name = name.split('[', 1)[0]  # ActionRunContext[str] -> ActionRunContext
+        name = name.split('[', 1)[0]  # ActionContext[str] -> ActionContext
         name = name.rsplit('.', 1)[-1]  # genkit.ToolContext -> ToolContext
         if name in context_names:
             return True
@@ -870,10 +882,12 @@ def input_from_json(value: object) -> object:
     return NO_INPUT if value is None else value
 
 
-class ActionRunContext(Generic[ChunkT]):
+class ActionContext(Generic[ChunkT]):
     """Base execution context for a running action: request context and chunk streaming.
 
-    Subclassed publicly as ``genkit.FlowContext``, ``genkit.ToolContext``,
+    Exported in ``genkit.plugin_api`` for custom actions and
+    ``BackgroundAction`` handlers, and subclassed publicly as
+    ``genkit.FlowContext``, ``genkit.ToolContext``,
     ``genkit.model.ModelContext``, ``genkit.embedder.EmbedContext``, and
     ``genkit.exp.agent.AgentContext``.
     ``ChunkT`` is the type ``send_chunk`` accepts.
@@ -932,7 +946,7 @@ class ActionRunContext(Generic[ChunkT]):
         return _action_context.get(None)
 
 
-class FlowContext(ActionRunContext[ChunkT]):
+class FlowContext(ActionContext[ChunkT]):
     """Execution context passed to flow and custom action functions.
 
     Provides ``ctx.send_chunk(chunk)`` for streaming ``ChunkT`` chunks and
@@ -962,7 +976,7 @@ class FlowContext(ActionRunContext[ChunkT]):
     """
 
 
-class ModelContext(ActionRunContext[ModelResponseChunk]):
+class ModelContext(ActionContext[ModelResponseChunk]):
     """Execution context passed to model and background-model functions.
 
     - ``ctx.send_chunk(chunk)`` streams a :class:`~genkit.ModelResponseChunk` to the caller.
@@ -971,7 +985,7 @@ class ModelContext(ActionRunContext[ModelResponseChunk]):
     """
 
 
-class EmbedContext(ActionRunContext[Never]):
+class EmbedContext(ActionContext[Never]):
     """Execution context passed to embedder functions.
 
     ``ctx.context`` holds the caller's context dict. Embedders don't stream,
@@ -996,7 +1010,7 @@ class EmbedContext(ActionRunContext[Never]):
     """
 
 
-def _context_cls_for_kind(kind: ActionKind) -> type[ActionRunContext[Any]]:
+def _context_cls_for_kind(kind: ActionKind) -> type[ActionContext[Any]]:
     """The context class ``Action._run`` constructs before invoking ``self._fn``."""
     if kind in _MODEL_CONTEXT_KINDS:
         return ModelContext
@@ -1006,8 +1020,8 @@ def _context_cls_for_kind(kind: ActionKind) -> type[ActionRunContext[Any]]:
     # call_tool_fn wraps it into ToolContext (adding resumed_metadata and
     # original_input) for both the tool and its tool.v2 envelope, and
     # BidiAction hands init/stream to AgentRuntime.run, which builds AgentContext.
-    if kind in (ActionKind.TOOL, ActionKind.TOOL_V2, ActionKind.AGENT):
-        return ActionRunContext
+    if kind in (ActionKind.TOOL, ActionKind.TOOL_V2, ActionKind.AGENT, ActionKind.CUSTOM):
+        return ActionContext
     return FlowContext
 
 
@@ -1034,7 +1048,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         self._kind: ActionKind = kind
         self._name: str = name
         context_kind = _context_kind if _context_kind is not None else kind
-        self._context_cls: type[ActionRunContext[Any]] = _context_cls_for_kind(context_kind)
+        self._context_cls: type[ActionContext[Any]] = _context_cls_for_kind(context_kind)
         # Flows treat None as a real value and check the return against the
         # annotation. Other actions still treat a missing/None input as omitted
         # and leave the return unchecked.
@@ -1278,7 +1292,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         inside_token = _inside_action.set(True)
 
         streaming_cb = cast(StreamingCallback, on_chunk) if on_chunk else None
-        action_ctx: ActionRunContext[Any] = self._context_cls(
+        action_ctx: ActionContext[Any] = self._context_cls(
             context=_action_context.get(None),
             streaming_callback=streaming_cb,
             init=init,
@@ -1646,7 +1660,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     async def _run_with_telemetry(
         self,
         input: object | None,
-        ctx: ActionRunContext,
+        ctx: ActionContext,
         on_trace_start: Callable[[str, str], Awaitable[None]] | None,
         telemetry_labels: dict[str, object] | None,
         *,
@@ -1757,7 +1771,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 reason=ErrorReason.INVALID_OUTPUT,
             ) from e
 
-    async def _invoke(self, input: object | None, ctx: ActionRunContext) -> OutputT:
+    async def _invoke(self, input: object | None, ctx: ActionContext) -> OutputT:
         """Call ``self._fn`` with the input and context.
 
         A missing input stays ``NO_INPUT`` so a defaulted parameter gets its
@@ -1882,7 +1896,7 @@ class BidiAction(Action[InputT, OutputT, ChunkT, InitT]):
             input_schema=input_schema,
         )
 
-    async def action_fn(self, input: InputT, ctx: ActionRunContext) -> OutputT:  # noqa: A002
+    async def action_fn(self, input: InputT, ctx: ActionContext) -> OutputT:  # noqa: A002
         """Adapt the bidi fn to the plain Action fn shape.
 
         The bidi fn reads its per-turn inputs from an async stream and emits

@@ -66,7 +66,6 @@ def test_generation_usage_from_messages_counts_characters() -> None:
     ('module', 'names'),
     [
         ('genkit.model', ['ModelFn']),
-        ('genkit.plugin_api', ['ActionResponse']),
         ('genkit_mcp', ['McpServerEntry']),
     ],
 )
@@ -96,7 +95,7 @@ def test_signature_types_are_exported(module: str, names: list[str]) -> None:
             ],
         ),
         ('genkit.middleware', ['MiddlewareRef']),
-        ('genkit.plugin_api', ['ActionMetadata', 'custom_options_schema']),
+        ('genkit.plugin_api', ['ActionMetadata', 'ActionResponse', 'custom_options_schema']),
     ],
 )
 def test_non_app_and_wire_types_stay_out_of_genkit_and_middleware_exports(module: str, names: list[str]) -> None:

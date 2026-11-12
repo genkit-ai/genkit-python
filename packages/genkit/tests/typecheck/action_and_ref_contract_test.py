@@ -42,9 +42,10 @@ from genkit import (
     StreamResponse,
     ToolContext,
 )
+from genkit._core._action import ActionResponse
 from genkit.embedder import EmbedderRef, EmbedRequest, EmbedResponse
 from genkit.model import ModelConfig, ModelContext, ModelFn, ModelRef, ModelRequest
-from genkit.plugin_api import Action, ActionKind, ActionResponse
+from genkit.plugin_api import Action, ActionKind
 
 
 class OrderReq(BaseModel):
@@ -73,7 +74,7 @@ class OtherEmbedConfig(BaseModel):
 
 @pytest.mark.asyncio
 async def test_public_signature_exports_and_action_response() -> None:
-    """``ModelFn``, ``ActionResponse``, and ``McpServerEntry`` import cleanly and type ``action.run``."""
+    """``ModelFn`` and ``McpServerEntry`` import cleanly and ``action.run`` preserves ``ActionResponse[T]``."""
     ai = Genkit()
 
     async def bistro_model(req: ModelRequest, ctx: ModelContext) -> ModelResponse[Any]:

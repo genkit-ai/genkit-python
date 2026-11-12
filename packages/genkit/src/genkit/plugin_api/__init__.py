@@ -17,7 +17,7 @@
 """Framework primitives for plugin authors."""
 
 # Base class and framework primitives
-from genkit._core._action import Action, ActionKind, ActionResponse
+from genkit._core._action import Action, ActionKind
 from genkit._core._background import BackgroundAction
 from genkit._core._base import GenkitConfig
 from genkit._core._compat import StrEnum
@@ -34,7 +34,6 @@ __all__ = [
     'Plugin',
     'GenkitConfig',
     'Action',
-    'ActionResponse',
     'BackgroundAction',
     'ActionKind',
     'DynamicActionProvider',

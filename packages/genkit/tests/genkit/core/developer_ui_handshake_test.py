@@ -335,7 +335,7 @@ async def test_dev_ui_run_flush_ignores_broken_collector_sink() -> None:
     """A raising Dev UI collector sink does not fail reflection v2 flush_tracing."""
 
     class BrokenSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:

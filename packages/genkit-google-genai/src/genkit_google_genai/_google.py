@@ -1338,7 +1338,7 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         if is_tuned_gemini_name(name):
             model_info = ModelInfo(
                 label=f'{PLUGIN_DISPLAY_NAME[VERTEXAI_PLUGIN_NAME]} - {name}',
-                supports=google_model_info('gemini').supports,
+                supports=google_model_info(name).supports,
             )
 
             async def _run_tuned(request: ModelRequest[GeminiConfig], ctx: ModelContext) -> ModelResponse:

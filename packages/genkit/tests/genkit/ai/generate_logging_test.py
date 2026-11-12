@@ -12,11 +12,12 @@ import pytest
 import structlog
 from structlog.testing import capture_logs
 
-from genkit import ErrorReason, Genkit, Message, ModelResponse, ModelResponseChunk, Part, PublicError
+from genkit import ErrorReason, Genkit, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, PublicError
 from genkit._ai._generate import CallScope, generate_action, log_dropped_failure
 from genkit._ai._model import resolve_model_arg
 from genkit._ai._tools import Interrupt
 from genkit._core._environment import GENKIT_ENV
+from genkit._core._error import StatusName
 from genkit._core._logger import GENKIT_LOG, get_logger
 from genkit._core._model import GenerateActionOptions, ModelRequest, Resume
 from genkit._core._registry import Registry
@@ -784,3 +785,79 @@ async def test_readonly_exception_still_boxes_and_logs() -> None:
     errors = _errors(entries)
     assert len(errors) == 1
     assert errors[0]['error'] == 'ReadOnlyError: immutable provider failure'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status', 'message'),
+    [
+        ('FAILED_PRECONDITION', '[Genkit] No Gemini API key found.\nSet GEMINI_API_KEY.'),
+        ('UNAUTHENTICATED', 'API key not valid. Please pass a valid API key.'),
+        ('NOT_FOUND', 'models/gemini-flash-lates is not found for API version v1beta'),
+        ('INVALID_ARGUMENT', 'Unable to fetch media from https://example.com/photo.jpg'),
+    ],
+)
+async def test_non_public_genkit_error_from_model_logs_one_line_without_traceback(
+    status: StatusName,
+    message: str,
+) -> None:
+    """Non-public GenkitErrors boxed into finish_reason=failed log one line naming the model and cause."""
+    structlog.reset_defaults()
+    ai = Genkit()
+
+    async def failing_provider(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status=status, message=message)
+
+    ai.define_model(name='googleai/gemini-flash-latest', fn=failing_provider)
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='googleai/gemini-flash-latest', prompt='secret-prompt-text')
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert response.text == ''
+    assert response.error is not None
+    assert response.error.status == status
+    assert response.error.message == message
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['event'] == "model 'googleai/gemini-flash-latest' raised, returning finish_reason=failed"
+    assert errors[0]['model'] == 'googleai/gemini-flash-latest'
+    assert errors[0]['error'] == f'GenkitError: {status}: {message}'
+    assert str(errors[0]['at']).startswith(f'{__file__}:')
+    assert 'exc_info' not in errors[0]
+
+    # Rendered console output stays strictly one line and never echoes the prompt.
+    buf = io.StringIO()
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=buf))
+    _ = await ai.generate(model='googleai/gemini-flash-latest', prompt='secret-prompt-text')
+    rendered = buf.getvalue()
+    assert len(rendered.strip().splitlines()) == 1
+    assert 'secret-prompt-text' not in rendered
+
+
+@pytest.mark.asyncio
+async def test_non_public_genkit_error_from_tool_logs_once() -> None:
+    """A tool raising a non-public GenkitError logs one line naming the tool, without duplicate outer logging."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='check_allergens')
+    async def check_allergens(_: dict) -> str:  # noqa: ARG001
+        raise GenkitError(status='UNAVAILABLE', message='allergy service unavailable')
+
+    pm.responses = [_tool_turn('check_allergens')]
+
+    with capture_logs() as entries:
+        response = await ai.generate(model='scriptedModel', prompt='hi', tools=['check_allergens'])
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert response.error is not None
+    assert response.error.status == 'UNAVAILABLE'
+    errors = _errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['event'] == "tool 'check_allergens' raised, returning finish_reason=failed"
+    assert errors[0]['tool'] == 'check_allergens'
+    assert errors[0]['error'] == 'GenkitError: UNAVAILABLE: allergy service unavailable'
+    assert str(errors[0]['at']).startswith(f'{__file__}:')
+    assert 'exc_info' not in errors[0]

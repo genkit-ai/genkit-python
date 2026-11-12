@@ -14,9 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Developer UI trace poster that POSTs OTLP/JSON. No OpenTelemetry runtime.
+"""Developer UI trace poster that POSTs TraceData to ``/api/traces``. No OpenTelemetry runtime.
 
-Logs reach the Developer UI through Genkit's own log exporter, not here.
+Spans go to ``/api/traces`` rather than ``/api/otlp`` because the collector's
+OTLP converter drops span events, and the Traces tab reads a failed span's
+heading and stack from its ``exception`` event. Logs reach the Developer UI
+through Genkit's own log exporter (``/api/otlp``), not here.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import secrets
 import threading
@@ -37,7 +41,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urljoin, urlparse
 
 from .._environment import is_dev_environment
-from .._error import GenkitError, Interrupt, _StreamingCallbackError
+from .._error import GenkitError, Interrupt, _StreamingCallbackError, format_exception_traceback
 from .._logger import get_logger
 from .._reflection_config import reflection_enabled
 from ._attrs import Attr, State, metadata_key
@@ -65,6 +69,9 @@ EXPORT_TIMEOUT_SECONDS = 300
 # The Developer UI flushes right before it reads a trace. A hung collector
 # should cost it a couple of seconds, not the full export timeout.
 FLUSH_TIMEOUT_SECONDS = 2.0
+# Cross-SDK value for each span's ``instrumentationLibrary`` field in the
+# /api/traces body.
+INSTRUMENTATION_LIBRARY = {'name': 'genkit-tracer', 'version': 'v1'}
 
 
 @dataclass
@@ -78,6 +85,9 @@ class ActiveSpan:
     attributes: dict[str, object] = field(default_factory=dict)
     status_code: int = 0
     status_message: str | None = None
+    # exception.type / .message / .stacktrace, formatted when the span fails.
+    # Plain strings, so a finished span holds no traceback frames.
+    exception: dict[str, str] | None = field(default=None, repr=False, compare=False)
     parent: ActiveSpan | None = field(default=None, repr=False, compare=False)
     has_failed_child: bool = field(default=False, repr=False, compare=False)
 
@@ -138,56 +148,92 @@ def new_span_id() -> str:
     return secrets.token_hex(8)
 
 
-def encode_attribute_value(value: object) -> dict[str, object]:
-    if isinstance(value, str):
-        return {'stringValue': value}
-    if isinstance(value, bool):
-        return {'boolValue': value}
-    if isinstance(value, int) and not isinstance(value, bool):
-        return {'intValue': value}
-    if isinstance(value, float):
-        return {'doubleValue': value}
-    return {'stringValue': str(value)}
+def exception_attributes(exc: BaseException) -> dict[str, str]:
+    """The attributes OpenTelemetry's ``Span.record_exception`` writes, minus ``exception.escaped``.
+
+    An empty ``str(exc)`` leaves ``exception.message`` out, so the Traces tab
+    falls back to its generic heading instead of a blank one.
+    """
+    cls = type(exc)
+    module = cls.__module__
+    attrs = {'exception.type': f'{module}.{cls.__qualname__}' if module and module != 'builtins' else cls.__qualname__}
+    message = str(exc)
+    if message:
+        attrs['exception.message'] = message
+    attrs['exception.stacktrace'] = format_exception_traceback(exc)
+    return attrs
 
 
-def encode_attributes(attributes: dict[str, object]) -> list[dict[str, object]]:
-    return [{'key': key, 'value': encode_attribute_value(value)} for key, value in attributes.items()]
+def nanos_to_millis(nanos: int) -> float:
+    return nanos / 1_000_000
 
 
-def encode_span(span: ActiveSpan, *, resource_attributes: dict[str, object]) -> dict[str, object]:
+def encode_attribute_value(value: object) -> str | bool | int | float:
+    # NaN and infinity aren't JSON; the collector would reject the whole trace.
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
+
+
+def encode_span(span: ActiveSpan) -> dict[str, object]:
+    """One ``SpanData`` in the shape the collector's ``/api/traces`` schema takes.
+
+    The start export has ``endTime`` 0, which the collector and the Traces tab
+    read as still running. The end export replaces it in the collector's store.
+    """
+    end_time = nanos_to_millis(span.end_time_unix_nano) if span.end_time_unix_nano else 0
+    status: dict[str, object] = {'code': span.status_code}
+    if span.status_message:
+        status['message'] = span.status_message
+    time_events: list[dict[str, object]] = []
+    if span.exception is not None and span.end_time_unix_nano:
+        time_events.append({
+            'time': end_time,
+            'annotation': {'description': 'exception', 'attributes': dict(span.exception)},
+        })
     body: dict[str, object] = {
-        'traceId': span.trace_id,
         'spanId': span.span_id,
-        'name': span.name,
-        'kind': 1,
-        'startTimeUnixNano': str(span.start_time_unix_nano),
-        'endTimeUnixNano': str(span.end_time_unix_nano),
-        'attributes': encode_attributes(span.attributes),
-        'droppedAttributesCount': 0,
-        'events': [],
-        'droppedEventsCount': 0,
-        'status': {'code': span.status_code, 'message': span.status_message},
+        'traceId': span.trace_id,
+        'startTime': nanos_to_millis(span.start_time_unix_nano),
+        'endTime': end_time,
+        'attributes': {key: encode_attribute_value(value) for key, value in span.attributes.items()},
+        'displayName': span.name,
         'links': [],
-        'droppedLinksCount': 0,
+        'instrumentationLibrary': dict(INSTRUMENTATION_LIBRARY),
+        'spanKind': 'INTERNAL',
+        'sameProcessAsParentSpan': {'value': True},
+        'status': status,
+        'timeEvents': {'timeEvent': time_events},
     }
     if span.parent_span_id:
         body['parentSpanId'] = span.parent_span_id
-    return {
-        'resource': {
-            'attributes': encode_attributes(resource_attributes),
-            'droppedAttributesCount': 0,
-        },
-        'scopeSpans': [
-            {
-                'scope': {'name': 'genkit-python', 'version': ''},
-                'spans': [body],
-            }
-        ],
+    return body
+
+
+def encode_trace(span: ActiveSpan) -> dict[str, object]:
+    """One ``TraceData`` payload for a single span in the collector's ``/api/traces`` schema.
+
+    Only the root span sets the trace's ``displayName`` and ``startTime``.
+    ``endTime`` stays off until the root ends, so the Traces tab lists the
+    trace as running until then.
+    """
+    encoded = encode_span(span)
+    trace: dict[str, object] = {
+        'traceId': span.trace_id,
+        'spans': {span.span_id: encoded},
     }
+    if span.parent_span_id is None:
+        trace['displayName'] = span.name
+        trace['startTime'] = encoded['startTime']
+        if span.end_time_unix_nano:
+            trace['endTime'] = encoded['endTime']
+    return trace
 
 
-def collector_otlp_url(server: str) -> str:
-    return urljoin(server.rstrip('/') + '/', 'api/otlp')
+def collector_traces_url(server: str) -> str:
+    return urljoin(server.rstrip('/') + '/', 'api/traces')
 
 
 def post_json(*, url: str, body: str) -> None:
@@ -204,7 +250,7 @@ def post_json(*, url: str, body: str) -> None:
 
 
 class CollectorHttpSink:
-    """POSTs OTLP/JSON spans to the collector from one background worker."""
+    """POSTs TraceData to the collector's ``/api/traces`` from one background worker."""
 
     def __init__(self, url: str) -> None:
         self.url = url
@@ -213,14 +259,16 @@ class CollectorHttpSink:
         self.worker = threading.Thread(target=self.run_worker, name='genkit-trace-export', daemon=True)
         self.worker.start()
 
-    def export_spans(self, spans: list[ActiveSpan], *, resource_attributes: dict[str, object]) -> None:
+    def export_spans(self, spans: list[ActiveSpan]) -> None:
+        # Encoded on the caller's thread: the start export has to snapshot the
+        # span before the body goes on to change it.
         if self.closed or not spans:
             return
-        payload = {'resourceSpans': [encode_span(span, resource_attributes=resource_attributes) for span in spans]}
-        try:
-            self.queue.put_nowait(json.dumps(payload))
-        except Full:
-            logger.debug('Developer UI trace export queue is full; dropping spans')
+        for span in spans:
+            try:
+                self.queue.put_nowait(json.dumps(encode_trace(span)))
+            except Full:
+                logger.debug('Developer UI trace export queue is full; dropping spans')
 
     def run_worker(self) -> None:
         while True:
@@ -252,14 +300,8 @@ class DirectHttpInstrumentation:
     does not count as the tab already being on.
     """
 
-    def __init__(
-        self,
-        sink: CollectorHttpSink,
-        *,
-        resource_attributes: dict[str, object] | None = None,
-    ) -> None:
+    def __init__(self, sink: CollectorHttpSink) -> None:
         self.sink = sink
-        self.resource_attributes = resource_attributes or {'service.name': 'genkit-python'}
 
     async def run_in_new_span(
         self,
@@ -280,7 +322,7 @@ class DirectHttpInstrumentation:
         )
         if parent is None:
             span.attributes[Attr.IS_ROOT] = True
-        self.sink.export_spans([span], resource_attributes=self.resource_attributes)
+        self.sink.export_spans([span])
         path_token = parent_path_context.set(qualified_path)
         parent_token = _parent_span.set(span)
         ctx = DirectSpanContext(span)
@@ -296,6 +338,8 @@ class DirectHttpInstrumentation:
             except Interrupt as e:
                 # the Dev UI draws an interrupted tool from the error state plus
                 # genkit:metadata:interrupt; generate above it still succeeds.
+                # No exception event: the Traces tab titles the span
+                # "Interrupted" only when there's no exception message.
                 span.attributes[Attr.STATE] = State.ERROR
                 span.status_code = 2
                 mark_failure_source(span=span, exc=e)
@@ -304,17 +348,23 @@ class DirectHttpInstrumentation:
                 raise
             except (Exception, _StreamingCallbackError) as e:
                 actual = e.__cause__ if isinstance(e, _StreamingCallbackError) and e.__cause__ is not None else e
-                span.attributes[Attr.STATE] = State.ERROR
-                err_text = actual.message if isinstance(actual, GenkitError) else str(actual)
-                span.attributes[Attr.ERROR] = err_text
-                span.status_code = 2
-                span.status_message = str(actual)
-                note_child_failed(span)
-                mark_failure_source(span=span, exc=actual)
-                raise
+                try:
+                    span.attributes[Attr.STATE] = State.ERROR
+                    err_text = actual.message if isinstance(actual, GenkitError) else str(actual)
+                    span.attributes[Attr.ERROR] = err_text
+                    span.status_code = 2
+                    span.status_message = str(actual)
+                    # The Traces tab heading reads exception.message and the stack
+                    # box reads exception.stacktrace.
+                    span.exception = exception_attributes(actual)
+                    note_child_failed(span)
+                    mark_failure_source(span=span, exc=actual)
+                    raise
+                finally:
+                    actual = None
         finally:
             span.end_time_unix_nano = now_unix_nano()
-            self.sink.export_spans([span], resource_attributes=self.resource_attributes)
+            self.sink.export_spans([span])
             _parent_span.reset(parent_token)
             parent_path_context.reset(path_token)
 
@@ -379,7 +429,7 @@ def telemetry_server_url() -> str | None:
 
 
 def direct_http_for_collector(*, url: str) -> DevUIInstrumentation:
-    return DevUIInstrumentation(CollectorHttpSink(collector_otlp_url(url)))
+    return DevUIInstrumentation(CollectorHttpSink(collector_traces_url(url)))
 
 
 def genkit_dev_instrumentation() -> Instrumentation | None:

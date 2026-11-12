@@ -630,7 +630,7 @@ async def test_run_action_flushes_dev_ui_collector_only() -> None:
     events: list[str] = []
 
     class RecordingSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -676,7 +676,7 @@ async def test_run_action_succeeds_when_dev_ui_collector_flush_raises() -> None:
     from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
 
     class BrokenSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:

@@ -60,9 +60,12 @@ def headers(*, api_key: str, client_options: ClientOptions | None) -> dict[str, 
     """Build request headers; api key and Genkit client attribution win over custom.
 
     Header names are matched case-insensitively so ``X-Goog-Api-Key`` cannot
-    sneak a second key onto the request.
+    sneak a second key onto the request, and case-variant custom headers replace
+    rather than concatenate.
     """
-    custom = httpx.Headers((client_options or ClientOptions()).custom_headers or {})
+    custom = httpx.Headers()
+    for name, value in ((client_options or ClientOptions()).custom_headers or {}).items():
+        custom[name] = value
     for name in RESERVED_HEADERS:
         custom.pop(name, None)
     custom['Content-Type'] = 'application/json'

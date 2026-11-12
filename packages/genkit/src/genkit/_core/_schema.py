@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from jsonschema.validators import validator_for
-from pydantic import TypeAdapter
+from pydantic import PydanticUserError, TypeAdapter
 
 from genkit._core._error import ErrorReason, GenkitError
 
@@ -47,8 +47,11 @@ def to_json_schema(schema: type | dict[str, Any] | str | None) -> dict[str, Any]
         return {'type': 'null'}
     if isinstance(schema, dict):
         return schema
-    type_adapter = TypeAdapter(schema)
-    return type_adapter.json_schema()
+    try:
+        type_adapter = TypeAdapter(schema)
+        return type_adapter.json_schema()
+    except (PydanticUserError, TypeError) as error:
+        raise InvalidOutputSchemaError(cause=error) from error
 
 
 def custom_options_schema(schema: type | dict[str, Any]) -> dict[str, Any]:
@@ -90,6 +93,30 @@ def fixed_json_schema(cls: type) -> dict[str, Any]:
     out and may be edited.
     """
     return copy.deepcopy(_generated_schema(cls))
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_output_adapter(schema_type: Any) -> TypeAdapter[Any]:  # noqa: ANN401
+    return TypeAdapter(schema_type)
+
+
+def output_adapter(schema_type: Any) -> TypeAdapter[Any]:  # noqa: ANN401
+    """The ``TypeAdapter`` that turns parsed JSON into an ``output_schema`` value.
+
+    Works for any type pydantic validates: a model, ``list[T]``, ``dict``,
+    ``Literal``, ``Annotated``, a dataclass, ``TypedDict``, ``Enum``,
+    ``Decimal``, ``UUID``, ``datetime``. Built once per type; an annotation
+    whose metadata isn't hashable gets a fresh adapter each call.
+    """
+    try:
+        return _cached_output_adapter(schema_type)
+    except PydanticUserError as error:
+        raise InvalidOutputSchemaError(cause=error) from error
+    except TypeError:
+        try:
+            return TypeAdapter(schema_type)
+        except (PydanticUserError, TypeError) as error:
+            raise InvalidOutputSchemaError(cause=error) from error
 
 
 def check_output_schema(json_schema: dict[str, Any]) -> None:

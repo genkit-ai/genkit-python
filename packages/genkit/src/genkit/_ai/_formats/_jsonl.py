@@ -147,8 +147,10 @@ class JsonlFormat(Formatter):
                 'conforming to the following schema:\n\n'
                 f'```\n{json.dumps(resolved_schema["items"], indent=2)}\n```\n'
             )
-        return FormatHandler(
+        handler = FormatHandler(
             chunk_parser=chunk_parser,
             message_parser=message_parser,
             instructions=instructions,
         )
+        handler._streams_items = True
+        return handler

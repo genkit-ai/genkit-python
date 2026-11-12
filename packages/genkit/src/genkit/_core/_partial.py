@@ -27,38 +27,84 @@ optional fields get their defaults, and missing required fields are ``None``.
 from __future__ import annotations
 
 import sys
+import typing
 from collections.abc import Hashable, Mapping, MutableMapping, MutableSequence, Sequence
 from contextlib import suppress
 from enum import Enum
 from functools import lru_cache
 from types import UnionType
-from typing import Annotated, Any, ForwardRef, Literal, TypeGuard, Union, cast, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    ForwardRef,
+    Literal,
+    TypeGuard,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
-from pydantic import AliasChoices, BaseModel, Discriminator, RootModel, TypeAdapter
+from pydantic import AliasChoices, BaseModel, Discriminator, RootModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import SchemaValidator, core_schema
+from typing_extensions import TypeAliasType as _ExtTypeAliasType
 
-SEQUENCE_ORIGINS = (list, tuple, Sequence, MutableSequence)
+from genkit._core._schema import output_adapter
+
+SEQUENCE_ORIGINS = (list, tuple, set, frozenset, Sequence, MutableSequence)
 MAPPING_ORIGINS = (dict, Mapping, MutableMapping)
 UNION_ORIGINS = (Union, UnionType)
+_STDLIB_VALUE_MODULES = frozenset({'builtins', 'uuid', 'datetime', 'decimal', '_decimal', 'pathlib', 'ipaddress'})
+_StdTypeAliasType: Any = getattr(typing, 'TypeAliasType', None)
+_TYPE_ALIAS_TYPES: tuple[type[Any], ...] = (
+    (_StdTypeAliasType, _ExtTypeAliasType) if isinstance(_StdTypeAliasType, type) else (_ExtTypeAliasType,)
+)
 _UNRESOLVED = object()
 
 
 def is_model(annotation: Any) -> TypeGuard[type[BaseModel]]:  # noqa: ANN401
-    return (
-        isinstance(annotation, type)
-        and issubclass(annotation, BaseModel)
-        and annotation is not BaseModel
-        and not issubclass(annotation, RootModel)
-    )
+    try:
+        return (
+            isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+            and annotation is not BaseModel
+            and not issubclass(annotation, RootModel)
+        )
+    except TypeError:  # dict[str, Any] passes isinstance(_, type) on 3.10
+        return False
+
+
+def _step_type_alias(annotation: Any) -> tuple[Any, bool]:  # noqa: ANN401
+    if isinstance(annotation, _TYPE_ALIAS_TYPES):
+        return getattr(annotation, '__value__', annotation), True
+    origin = get_origin(annotation)
+    if isinstance(origin, _TYPE_ALIAS_TYPES):
+        args = get_args(annotation)
+        value = getattr(origin, '__value__', None)
+        if args and value is not None:
+            with suppress(Exception):
+                return value[args[0] if len(args) == 1 else args], True
+    return annotation, False
 
 
 def unwrap_annotated(*, annotation: Any) -> Any:  # noqa: ANN401
-    while get_origin(annotation) is Annotated:
-        args = get_args(annotation)
-        if not args:
-            break
-        annotation = args[0]
+    seen: set[int] = set()
+    while id(annotation) not in seen:
+        seen.add(id(annotation))
+        stepped, changed = _step_type_alias(annotation)
+        if changed:
+            annotation = stepped
+            continue
+        if get_origin(annotation) is Annotated:
+            args = get_args(annotation)
+            if not args:
+                break
+            annotation = args[0]
+            continue
+        break
     return annotation
 
 
@@ -79,17 +125,28 @@ def extract_discriminator(*, annotation: Any, info: FieldInfo | None = None) -> 
             if disc is not None:
                 return _unwrap_discriminator(disc)
     cur = annotation
-    while get_origin(cur) is Annotated:
-        args = get_args(cur)
-        if not args:
-            break
-        for meta in args[1:]:
-            disc = (
-                _unwrap_discriminator(meta) if isinstance(meta, Discriminator) else getattr(meta, 'discriminator', None)
-            )
-            if disc is not None:
-                return _unwrap_discriminator(disc)
-        cur = args[0]
+    seen: set[int] = set()
+    while id(cur) not in seen:
+        seen.add(id(cur))
+        stepped, changed = _step_type_alias(cur)
+        if changed:
+            cur = stepped
+            continue
+        if get_origin(cur) is Annotated:
+            args = get_args(cur)
+            if not args:
+                break
+            for meta in args[1:]:
+                disc = (
+                    _unwrap_discriminator(meta)
+                    if isinstance(meta, Discriminator)
+                    else getattr(meta, 'discriminator', None)
+                )
+                if disc is not None:
+                    return _unwrap_discriminator(disc)
+            cur = args[0]
+            continue
+        break
     if get_origin(cur) in UNION_ORIGINS:
         for arg in get_args(cur):
             found = extract_discriminator(annotation=arg)
@@ -98,7 +155,7 @@ def extract_discriminator(*, annotation: Any, info: FieldInfo | None = None) -> 
     return None
 
 
-def lookup_name(*, name: str, schema_type: type[BaseModel]) -> type[BaseModel] | None:
+def lookup_name(*, name: str, schema_type: type) -> type[BaseModel] | None:
     # list['Post'] stores the name they wrote, not the class. The class
     # lives next to the schema on its module, or is the schema itself.
     if name == schema_type.__name__ and is_model(schema_type):
@@ -108,7 +165,7 @@ def lookup_name(*, name: str, schema_type: type[BaseModel]) -> type[BaseModel] |
     return obj if is_model(obj) else None
 
 
-def resolve(*, annotation: Any, schema_type: type[BaseModel]) -> Any:  # noqa: ANN401
+def resolve(*, annotation: Any, schema_type: type) -> Any:  # noqa: ANN401
     annotation = unwrap_annotated(annotation=annotation)
     if isinstance(annotation, ForwardRef):
         annotation = annotation.__forward_arg__
@@ -118,7 +175,7 @@ def resolve(*, annotation: Any, schema_type: type[BaseModel]) -> Any:  # noqa: A
     return annotation
 
 
-def union_members(*, annotation: Any, schema_type: type[BaseModel]) -> tuple[Any, ...]:  # noqa: ANN401
+def union_members(*, annotation: Any, schema_type: type) -> tuple[Any, ...]:  # noqa: ANN401
     annotation = resolve(annotation=annotation, schema_type=schema_type)
     origin = get_origin(annotation)
     if origin in UNION_ORIGINS:
@@ -129,7 +186,7 @@ def union_members(*, annotation: Any, schema_type: type[BaseModel]) -> tuple[Any
     return (annotation,)
 
 
-def unwrap_optional_container(*, annotation: Any, schema_type: type[BaseModel]) -> Any:  # noqa: ANN401
+def unwrap_optional_container(*, annotation: Any, schema_type: type) -> Any:  # noqa: ANN401
     annotation = resolve(annotation=annotation, schema_type=schema_type)
     if get_origin(annotation) in UNION_ORIGINS:
         non_none = [
@@ -148,7 +205,10 @@ def field_annotation(*, schema_type: type[BaseModel], name: str, info: FieldInfo
         hints = get_type_hints(schema_type, include_extras=True)
     except Exception:
         return annotation
-    return hints.get(name, annotation)
+    hint = hints.get(name, annotation)
+    if isinstance(hint, TypeVar) or getattr(hint, '__parameters__', ()):
+        return info.rebuild_annotation()
+    return hint
 
 
 def field_keys(*, name: str, info: FieldInfo) -> tuple[str, ...]:
@@ -253,7 +313,7 @@ def overlap(*, schema_type: type[BaseModel], data: dict[str, Any]) -> int:
     return len(keys & data.keys())
 
 
-def pick_model(*, annotation: Any, data: dict[str, Any], schema_type: type[BaseModel]) -> type[BaseModel] | None:  # noqa: ANN401
+def pick_model(*, annotation: Any, data: dict[str, Any], schema_type: type) -> type[BaseModel] | None:  # noqa: ANN401
     candidates = [
         member for member in union_members(annotation=annotation, schema_type=schema_type) if is_model(member)
     ]
@@ -269,8 +329,10 @@ def _cached_adapter(annotation: Any, module_name: str) -> TypeAdapter[Any]:  # n
     return TypeAdapter(annotation, module=module_name)
 
 
-def validate_closed_value(*, annotation: Any, raw: Any, schema_type: type[BaseModel]) -> tuple[Any, bool]:  # noqa: ANN401
+def validate_closed_value(*, annotation: Any, raw: Any, schema_type: type) -> tuple[Any, bool]:  # noqa: ANN401
     try:
+        if schema_type is object:
+            return output_adapter(annotation).validate_python(raw), True
         try:
             adapter = _cached_adapter(annotation, schema_type.__module__)
         except TypeError:
@@ -363,18 +425,30 @@ def validate_closed_field(
         return None, False
 
 
-def accepts_open_scalar(*, annotation: Any, raw: Any, schema_type: type[BaseModel]) -> bool:  # noqa: ANN401
+def _enum_str_values(*, members: Sequence[Any]) -> set[str]:
+    values: set[str] = set()
+    for member in members:
+        if isinstance(member, type) and issubclass(member, Enum):
+            for item in member:
+                if isinstance(item.value, str):
+                    values.add(item.value)
+    return values
+
+
+def accepts_open_scalar(*, annotation: Any, raw: Any, schema_type: type) -> bool:  # noqa: ANN401
     members = [m for m in union_members(annotation=annotation, schema_type=schema_type) if m is not type(None)]
     if not members or any(m in (Any, object) for m in members):
         return True
-    tags = literal_values(annotation=annotation)
+    if isinstance(raw, str) and any(m is str for m in members):
+        return True
+    tags = literal_values(annotation=annotation) | _enum_str_values(members=members)
     if tags and raw in tags:
         return not (
             isinstance(raw, str)
             and any(isinstance(other, str) and other != raw and other.startswith(raw) for other in tags)
         )
     if isinstance(raw, str):
-        return any(m is str for m in members)
+        return False
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return not all((isinstance(m, type) and issubclass(m, Enum)) or get_origin(m) is Literal for m in members)
     return True
@@ -384,7 +458,7 @@ def coerce(
     *,
     annotation: Any,  # noqa: ANN401
     raw: Any,  # noqa: ANN401
-    schema_type: type[BaseModel],
+    schema_type: type,
     closed: bool = False,
     discriminator: str | object | None = None,
 ) -> Any:  # noqa: ANN401
@@ -411,7 +485,7 @@ def coerce(
             if handled:
                 if matched is None:
                     return _UNRESOLVED
-                return construct_partial(schema_type=matched, data=raw, closed=closed)
+                return build_partial(schema_type=matched, data=raw, closed=closed)
 
     if closed:
         validated, ok = validate_closed_value(annotation=annotation, raw=raw, schema_type=schema_type)
@@ -422,7 +496,7 @@ def coerce(
     if isinstance(raw, dict):
         model = pick_model(annotation=annotation, data=raw, schema_type=schema_type)
         if model is not None:
-            return construct_partial(schema_type=model, data=raw, closed=closed)
+            return build_partial(schema_type=model, data=raw, closed=closed)
         origin = get_origin(container_annotation)
         if origin in MAPPING_ORIGINS:
             args = get_args(container_annotation)
@@ -460,10 +534,21 @@ def coerce(
                     )
                     if coerced_item is not _UNRESOLVED:
                         items.append(coerced_item)
-                return tuple(items) if origin is tuple else items
+                if origin is tuple:
+                    return tuple(items)
+                if origin in (set, frozenset):
+                    with suppress(TypeError):
+                        return origin(items)
+                return items
         return raw
-    if not closed and not accepts_open_scalar(annotation=annotation, raw=raw, schema_type=schema_type):
-        return _UNRESOLVED
+    if not closed:
+        if not accepts_open_scalar(annotation=annotation, raw=raw, schema_type=schema_type):
+            return _UNRESOLVED
+        members = [m for m in union_members(annotation=annotation, schema_type=schema_type) if m is not type(None)]
+        if any(isinstance(m, type) and issubclass(m, Enum) for m in members) and not any(m is str for m in members):
+            validated, ok = validate_closed_value(annotation=annotation, raw=raw, schema_type=schema_type)
+            if ok:
+                return validated
     return raw
 
 
@@ -476,10 +561,20 @@ def construct_partial(*, schema_type: type[BaseModel], data: dict[str, Any], clo
     and missing required fields are ``None``. Keys and list items before the
     trailing open frontier run field validation (``@field_validator`` and field
     constraints, while ``@model_validator`` waits until the object itself
-    closes); closed values that fail validation fall back to
-    ``model_construct`` / raw values. ``(await stream.response).output``
-    remains the only fully validated value.
+    closes); nested closed values that fail validation fall back to
+    ``model_construct`` / raw values.
+
+    With ``closed=True`` the whole object is done, so it is validated like the
+    final response and a ``ValidationError`` propagates: the closing chunk
+    never carries an object that skipped validators.
     """
+    if closed:
+        return schema_type.model_validate(data)
+    return build_partial(schema_type=schema_type, data=data, closed=False)
+
+
+def build_partial(*, schema_type: type[BaseModel], data: dict[str, Any], closed: bool) -> BaseModel:
+    """``construct_partial`` for a nested object: a closed one that fails validation is still built."""
     if closed:
         with suppress(Exception):
             return schema_type.model_validate(data)
@@ -516,3 +611,108 @@ def construct_partial(*, schema_type: type[BaseModel], data: dict[str, Any], clo
         )
         values[name] = default_value(info=info, validated_data=values) if coerced is _UNRESOLVED else coerced
     return schema_type.model_construct(**values)
+
+
+def _is_root_model(annotation: Any) -> TypeGuard[type[RootModel[Any]]]:  # noqa: ANN401
+    try:
+        return isinstance(annotation, type) and issubclass(annotation, RootModel)
+    except TypeError:  # list[int] passes isinstance(_, type) on 3.10
+        return False
+
+
+def anchor_type(annotation: Any) -> type:  # noqa: ANN401
+    """The first user class inside ``annotation``; its module resolves string forward refs."""
+    pending: list[Any] = [annotation]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        stepped, changed = _step_type_alias(current)
+        if changed:
+            pending.append(stepped)
+            continue
+        if (
+            isinstance(current, type)
+            and get_origin(current) is None
+            and current.__module__.split('.', 1)[0] not in _STDLIB_VALUE_MODULES
+        ):
+            return current
+        pending.extend(get_args(current))
+    return object
+
+
+def _validate_strict_item(*, annotation: Any, raw: Any, anchor: type) -> Any:  # noqa: ANN401
+    if anchor is object:
+        return output_adapter(annotation).validate_python(raw)
+    try:
+        adapter = _cached_adapter(annotation, anchor.__module__)
+    except TypeError:
+        adapter = TypeAdapter(annotation, module=anchor.__module__)
+    return adapter.validate_python(raw)
+
+
+def hydrate_chunk_items(*, schema: Any, data: Any) -> Any:  # noqa: ANN401
+    """Hydrate a per-chunk delta list of complete items against ``schema``'s element type."""
+    if not isinstance(data, list):
+        return hydrate_partial(schema=schema, data=data, closed=False)
+    unwrapped = unwrap_annotated(annotation=schema)
+    anchor: type = unwrapped if _is_root_model(unwrapped) else anchor_type(schema)
+    if _is_root_model(unwrapped):
+        info = unwrapped.model_fields['root']
+        unwrapped = unwrap_annotated(annotation=field_annotation(schema_type=unwrapped, name='root', info=info))
+    container = unwrap_optional_container(annotation=unwrapped, schema_type=anchor)
+    if get_origin(container) not in SEQUENCE_ORIGINS:
+        return data
+    inners = tuple(arg for arg in get_args(container) if arg is not Ellipsis)
+    if not inners or not data:
+        return [] if not data else data
+    unique = list(dict.fromkeys(inners))
+    if len(unique) == 1:
+        return [_validate_strict_item(annotation=unique[0], raw=item, anchor=anchor) for item in data]
+    hydrated: list[Any] = []
+    for item in data:
+        last_err: ValidationError | None = None
+        for candidate in unique:
+            try:
+                hydrated.append(_validate_strict_item(annotation=candidate, raw=item, anchor=anchor))
+                last_err = None
+                break
+            except ValidationError as err:
+                last_err = err
+        if last_err is not None:
+            raise last_err
+    return hydrated
+
+
+def hydrate_partial(*, schema: Any, data: Any, closed: bool) -> Any:  # noqa: ANN401
+    """Turn a streamed JSON value into ``schema`` as far as it goes.
+
+    ``schema`` is any ``output_schema`` type. With ``closed=True`` the JSON is
+    complete, so the value is validated like the final response and a
+    ``ValidationError`` propagates. An open value is built leniently: models
+    through ``construct_partial``, lists and dicts item by item. A scalar
+    that can't be used yet (a prefix of an ``Enum`` value) is ``None``. A
+    dataclass or ``TypedDict`` has no partial form and stays raw JSON until
+    the value closes.
+    """
+    if data is None:
+        return None
+    unwrapped = unwrap_annotated(annotation=schema)
+    # A model class only takes an object; anything else (a custom format's
+    # scalar) passes through as parsed.
+    if is_model(unwrapped) and not isinstance(data, dict):
+        return data
+    if closed:
+        return output_adapter(schema).validate_python(data)
+    if _is_root_model(unwrapped):
+        info = unwrapped.model_fields['root']
+        root = coerce(
+            annotation=field_annotation(schema_type=unwrapped, name='root', info=info),
+            raw=data,
+            schema_type=unwrapped,
+        )
+        return None if root is _UNRESOLVED else unwrapped.model_construct(root=root)
+    value = coerce(annotation=schema, raw=data, schema_type=anchor_type(schema))
+    return None if value is _UNRESOLVED else value

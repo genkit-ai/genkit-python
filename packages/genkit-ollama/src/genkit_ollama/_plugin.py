@@ -31,6 +31,7 @@ import ollama as ollama_api
 
 from genkit import GenkitError, ModelResponse, get_logger
 from genkit.embedder import (
+    EmbedContext,
     Embedder,
     EmbedderInfo,
     EmbedderSupports,
@@ -472,10 +473,12 @@ class Ollama(Plugin):
 
         base_url = self.base_url
 
-        async def _run(request: EmbedRequest) -> EmbedResponse:
+        async def _run(request: EmbedRequest, ctx: EmbedContext | None = None) -> EmbedResponse:
+            api_key = context_api_key(ctx.context) if ctx is not None else None
             # Embedding requests never fetch media, so the whole SDK call is wrapped.
-            async with wrap_connection_errors(base_url):
-                return await embedder.embed(request)
+            async with self._client_for_request(api_key=api_key) as client:
+                async with wrap_connection_errors(base_url):
+                    return await embedder.embed(request, client=client)
 
         return Embedder(
             ollama_name(name),

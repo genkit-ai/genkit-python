@@ -144,11 +144,13 @@ class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
         embedder_meta['embedder'] = embedder_info
 
         # An unannotated request gets EmbedRequest[Cfg] when config_schema is a
-        # Pydantic class, so a Dev UI run's options arrive as Cfg, not a dict.
-        # Built at runtime, so checkers can't read EmbedRequest[options_class] as a type.
-        options_class = (
-            config_schema if isinstance(config_schema, type) and issubclass(config_schema, BaseModel) else None
-        )
+        # Pydantic class, so options arrive as Cfg on every call path (ai.embed,
+        # Dev UI, CLI); an explicit ``request: EmbedRequest`` annotation keeps
+        # dict options. Built at runtime, so checkers can't read
+        # EmbedRequest[options_class] as a type.
+        from genkit._ai._model import python_config_schema  # noqa: PLC0415
+
+        options_class = python_config_schema(config_schema)
         request_type = cast(Any, EmbedRequest)[options_class] if options_class is not None else EmbedRequest
         super().__init__(
             kind=ActionKind.EMBEDDER,

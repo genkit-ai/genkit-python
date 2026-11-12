@@ -383,11 +383,11 @@ ai = Genkit(plugins=[OpenAI(api_key=os.environ['OPENAI_API_KEY'])])
 await ai.generate(model=m, prompt=p, context={'secrets': {'api_key': user_key}})
 ```
 
-Vertex AI Model Garden authenticates with ADC and rejects a per-request key. `ai.embed()` takes no `context`, so embedders always use the plugin's key.
+Vertex AI Model Garden authenticates with ADC and rejects a per-request key. `ai.embed(..., context={'secrets': {'api_key': user_key}})` passes the same per-request key to embedder handlers via `EmbedContext`.
 
 ## Flow contexts
 
-`ActionRunContext` is replaced by a typed context for each kind of action. The chunk type moves from `@ai.flow(chunk_type=...)` into the context's type parameter.
+`ActionRunContext` is replaced by `ActionContext` (in `genkit.plugin_api`) and a typed context for each kind of action (`FlowContext`, `ToolContext`, `ModelContext`, `EmbedContext`, `AgentContext`). The chunk type moves from `@ai.flow(chunk_type=...)` into the context's type parameter.
 
 **Old:**
 

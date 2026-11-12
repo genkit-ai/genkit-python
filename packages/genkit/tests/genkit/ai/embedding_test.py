@@ -866,7 +866,7 @@ async def test_embedder_annotated_with_flow_context_still_runs() -> None:
 
 @pytest.mark.asyncio
 async def test_unannotated_embedder_with_config_schema_gets_typed_options() -> None:
-    """A raw JSON run (Dev UI, CLI) hands an unannotated embedder its options as config_schema."""
+    """Every call path (ai.embed, Dev UI, CLI) hands an unannotated embedder its options as config_schema."""
 
     class MenuEmbedConfig(BaseModel):
         dimensions: int = 8
@@ -877,7 +877,10 @@ async def test_unannotated_embedder_with_config_schema_gets_typed_options() -> N
         seen.append(request.options)
         return EmbedResponse(embeddings=[Embedding(embedding=[0.1]) for _ in request.input])
 
-    embedder = Embedder('menu', menu_embedder, config_schema=MenuEmbedConfig)
-    await embedder.run(cast(Any, {'input': [{'content': [{'text': 'tartine'}]}], 'options': {'dimensions': 4}}))
+    ai = Genkit()
+    embedder = ai.define_embedder('menu', menu_embedder, config_schema=MenuEmbedConfig)
 
-    assert seen == [MenuEmbedConfig(dimensions=4)]
+    await ai.embed(embedder='menu', content='tartine', config={'dimensions': 4})
+    await embedder.run(cast(Any, {'input': [{'content': [{'text': 'tartine'}]}], 'options': {'dimensions': 6}}))
+
+    assert seen == [MenuEmbedConfig(dimensions=4), MenuEmbedConfig(dimensions=6)]

@@ -23,6 +23,7 @@ import pytest
 from pydantic import BaseModel
 
 import genkit
+import genkit.embedder
 import genkit.exp.agent
 import genkit.model
 import genkit.plugin_api
@@ -57,8 +58,8 @@ from genkit.plugin_api import ActionContext, BackgroundAction
 
 
 def test_public_contexts_are_distinct_subclasses_of_action_run_context() -> None:
-    """FlowContext, ModelContext, ToolContext, and AgentContext are distinct subclasses of ActionContext."""
-    public_classes = (FlowContext, ModelContext, ToolContext, AgentContext)
+    """Each public context class is a distinct subclass of ActionContext."""
+    public_classes = (FlowContext, ModelContext, EmbedContext, ToolContext, AgentContext)
     for cls in public_classes:
         assert cls is not ActionContext
         assert issubclass(cls, ActionContext)
@@ -137,13 +138,16 @@ async def test_flow_and_tool_contexts_pass_shared_isinstance_check() -> None:
 
 
 def test_action_context_is_exported_in_plugin_api_only() -> None:
-    """`ActionContext` lives in `genkit.plugin_api`, not top-level `genkit` or domain modules."""
+    """`ActionContext` lives in `genkit.plugin_api`, and `EmbedContext` lives in `genkit.embedder`."""
     assert 'ActionContext' not in genkit.__all__
     assert not hasattr(genkit, 'ActionContext')
     assert 'ActionContext' in genkit.plugin_api.__all__
     assert hasattr(genkit.plugin_api, 'ActionContext')
     assert 'ActionContext' not in genkit.model.__all__
     assert 'ActionContext' not in genkit.exp.agent.__all__
+    assert 'EmbedContext' in genkit.embedder.__all__
+    assert hasattr(genkit.embedder, 'EmbedContext')
+    assert 'EmbedContext' not in genkit.__all__
 
 
 def test_contexts_subscript_at_runtime() -> None:
@@ -323,17 +327,21 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
         'FlowContext',
         'ToolContext',
         'ModelContext',
+        'EmbedContext',
         'AgentContext',
         'ActionContext',
         'FlowContext[str]',
         'ToolContext[int]',
         'FlowContext | None',
         'ModelContext | None',
+        'EmbedContext | None',
         'AgentContext | None',
         'Optional[ToolContext]',
         'Optional[ModelContext]',
+        'Optional[EmbedContext]',
         'genkit.FlowContext',
         'genkit.model.ModelContext',
+        'genkit.embedder.EmbedContext',
         'genkit.exp.agent.AgentContext',
         'genkit.ToolContext[int] | None',
     ],

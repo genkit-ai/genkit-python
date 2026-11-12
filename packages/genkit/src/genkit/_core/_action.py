@@ -715,17 +715,9 @@ def _is_context_annotation(annotation: object) -> bool:
     return isinstance(cls, type) and issubclass(cls, ActionContext)
 
 
-# Public run-context subclasses of ActionContext. ToolContext and
-# AgentContext live in submodules that may not be imported yet when
-# ActionContext.__subclasses__() runs, so list all four explicitly.
-_CONTEXT_ALIAS_NAMES = frozenset({
-    'ActionContext',
-    'FlowContext',
-    'ToolContext',
-    'AgentContext',
-    'ModelContext',
-    'EmbedContext',
-})
+# ToolContext and AgentContext live in submodules that may not be imported yet
+# when ActionContext.__subclasses__() runs, so list them explicitly.
+_CONTEXT_ALIAS_NAMES = frozenset({'ToolContext', 'AgentContext'})
 
 
 def _string_names_context(annotation: str) -> bool:
@@ -1538,10 +1530,12 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
           request validation fills defaults and checks values.
         - Untyped fn: non-None defaults < the request's config, folded to the
           keys the class accepts and validated against the class, so a bad
-          value raises INVALID_ARGUMENT the same as through ai.*. The fn gets
-          the merged dict as written, not pydantic's coerced values:
+          value raises INVALID_ARGUMENT the same as through ai.*. For models,
+          the fn gets the merged dict as written, not pydantic's coerced values:
           ModelConfig declares ``temperature`` as a float, and an untyped
-          plugin should still send the caller's ``1``, not ``1.0``.
+          plugin should still send the caller's ``1``, not ``1.0``. (Embedders
+          with an unannotated request parameter are upgraded to
+          ``EmbedRequest[Cfg]`` via ``with_request_annotation``.)
 
         An explicit None in the config is a value: it wins over the default
         and goes to validation.

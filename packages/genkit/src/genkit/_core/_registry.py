@@ -454,29 +454,41 @@ class Registry:
         parent_catalog = await self._parent.list_actions(dap_timeout_seconds=dap_timeout_seconds)
         return {**parent_catalog, **catalog}
 
-    def register_value(self, kind: str, name: str, value: object) -> None:
+    def register_value(
+        self,
+        kind: str,
+        name: str,
+        value: object,
+        *,
+        allow_overwrite: bool = False,
+    ) -> None:
         """Registers a value with a given kind and name.
 
         This method stores a value in a nested dictionary, where the first level
         is keyed by the 'kind' and the second level is keyed by the 'name'.
-        It prevents duplicate registrations for the same kind and name.
+        It prevents duplicate registrations for the same kind and name unless
+        ``allow_overwrite`` is set.
 
         Args:
             kind: The kind of the value (e.g., "format", "default-model").
             name: The name of the value (e.g., "json", "text").
             value: The value to be registered. Can be of any non-serializable
                 type.
+            allow_overwrite: Replace an existing value under the same kind and
+                name instead of raising.
 
         Raises:
-            ValueError: If a value with the given kind and name is already
-            registered.
+            ValueError: If ``allow_overwrite`` is ``False`` and a value with the
+                given kind and name is already registered.
         """
         with self._lock:
             if kind not in self._value_by_kind_and_name:
                 self._value_by_kind_and_name[kind] = {}
 
             if name in self._value_by_kind_and_name[kind]:
-                raise ValueError(f'value for kind "{kind}" and name "{name}" is already registered')
+                if not allow_overwrite:
+                    raise ValueError(f'value for kind "{kind}" and name "{name}" is already registered')
+                logger.debug(f'Overwriting value for kind "{kind}" and name "{name}"')
 
             self._value_by_kind_and_name[kind][name] = value
 
@@ -818,15 +830,17 @@ class Registry:
             schema: The schema data (JSON schema format).
             schema_type: Optional Pydantic model class for runtime validation.
 
-        Raises:
-            ValueError: If a schema with the given name is already registered.
+        Registering the same name again replaces the schema.
         """
         with self._lock:
             if name in self._schemas_by_name:
-                raise ValueError(f'Schema "{name}" is already registered')
+                # Re-running a notebook cell re-registers; overwrite like flows/tools do.
+                logger.debug(f'Overwriting schema "{name}"')
             self._schemas_by_name[name] = schema
             if schema_type is not None:
                 self._schema_types_by_name[name] = schema_type
+            else:
+                self._schema_types_by_name.pop(name, None)
             logger.debug(f'Registered schema "{name}"')
 
     def lookup_schema(self, name: str) -> dict[str, object] | None:

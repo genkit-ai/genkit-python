@@ -20,6 +20,7 @@ import math
 from collections.abc import Mapping
 from typing import Any, cast
 
+from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
 from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
@@ -36,6 +37,48 @@ def copy_http_options(opts: genai_types.HttpOptions) -> genai_types.HttpOptions:
     if opts.headers is None:
         return opts.model_copy()
     return opts.model_copy(update={'headers': dict(opts.headers)})
+
+
+def request_client_kwargs(
+    client_kwargs: Mapping[str, Any],
+    *,
+    api_key: str | None = None,
+    api_version: str | None = None,
+    base_url: str | None = None,
+    location: str | None = None,
+    base_url_pinned: bool = False,
+    default_vertexai: bool = False,
+) -> dict[str, Any]:
+    """Clone plugin ``client_kwargs`` for a per-request override or tenant key.
+
+    Copies ``HttpOptions`` so per-request host/version changes never mutate the
+    plugin's shared options. A tenant ``api_key`` drops Vertex ``credentials``,
+    ``project``, ``location``, and the plugin's ``base_url`` (keeping only an
+    explicit ``base_url`` set on this call).
+    """
+    kwargs = dict(client_kwargs)
+    if default_vertexai:
+        kwargs.setdefault('vertexai', True)
+    plugin_opts = kwargs.get('http_options')
+    opts = copy_http_options(plugin_opts) if plugin_opts is not None else genai_types.HttpOptions()
+
+    if api_version:
+        opts.api_version = api_version
+    if location and api_key is None:
+        kwargs['location'] = location
+        if not base_url_pinned and not base_url:
+            opts.base_url = multi_regional_base_url(location) if is_multi_regional_location(location) else None
+    if api_key is not None:
+        kwargs['api_key'] = api_key
+        kwargs['credentials'] = None
+        kwargs.pop('project', None)
+        kwargs.pop('location', None)
+        if not base_url:
+            opts.base_url = None
+    if base_url:
+        opts.base_url = base_url
+    kwargs['http_options'] = opts
+    return kwargs
 
 
 def unexpected_config_error(*, action_name: str) -> GenkitError:

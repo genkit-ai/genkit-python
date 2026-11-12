@@ -17,12 +17,17 @@
 """Tests for Vertex AI tuned Gemini endpoint routing helpers."""
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from genkit_google_genai import VertexAI
 from genkit_google_genai._models._gemini import (
+    google_model_info,
     is_tuned_gemini_name,
     resolve_vertex_model_name,
 )
+
+from genkit.model import ConstrainedSupport
 
 
 @pytest.mark.parametrize(
@@ -80,3 +85,17 @@ def test_resolve_without_project_or_location_leaves_name() -> None:
     """If the client lacks project/location, defer to the SDK rather than building a bad path."""
     client = _vertex_client(project='', location='')
     assert resolve_vertex_model_name(client, 'endpoints/1') == 'endpoints/1'
+
+
+def test_tuned_endpoint_action_metadata_matches_google_model_info() -> None:
+    """Vertex tuned endpoints resolve capabilities through google_model_info(name) (ConstrainedSupport.ALL)."""
+    plugin = VertexAI(project='my-proj', location='us-central1')
+    action = plugin._resolve_model('endpoints/1234567890')
+
+    assert action is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    supports = cast(dict[str, Any], model_meta['supports'])
+    assert supports['constrained'] == ConstrainedSupport.ALL
+    info = google_model_info('endpoints/1234567890')
+    assert info.supports is not None
+    assert info.supports.constrained == ConstrainedSupport.ALL

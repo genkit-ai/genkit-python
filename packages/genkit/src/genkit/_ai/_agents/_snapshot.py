@@ -24,7 +24,7 @@ from typing import Any
 from genkit._ai._agents._session import SessionStore
 from genkit._ai._agents._types import StateTransform
 from genkit._core._action import get_current_context
-from genkit._core._error import ErrorReason, GenkitError
+from genkit._core._error import ErrorReason, GenkitError, PublicError
 from genkit._core._model import SessionSnapshot
 from genkit._core._typing import SnapshotStatus
 
@@ -71,21 +71,21 @@ def parse_snapshot_lookup_kw(
 ) -> tuple[str | None, str | None]:
     """Require exactly one of ``snapshot_id`` or ``session_id``.
 
-    A bad selector is a caller mistake, so it raises ``INVALID_ARGUMENT`` — over a
-    transport that surfaces as a 400, not a 500 the way a bare ``ValueError`` would.
+    A bad selector is a caller mistake, so it raises ``PublicError``
+    ``INVALID_ARGUMENT`` — over a transport that surfaces as a 400, not a 500.
     Whitespace-only ids count as empty: they are not usable as document keys.
     """
     for name, value in (('snapshot_id', snapshot_id), ('session_id', session_id)):
         if value is not None and not value.strip():
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=f'{name} must not be empty or whitespace-only.',
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                f'{name} must not be empty or whitespace-only.',
                 reason=(ErrorReason.INVALID_SNAPSHOT_ID if name == 'snapshot_id' else ErrorReason.SESSION_ID_REQUIRED),
             )
     if bool(snapshot_id) == bool(session_id):
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=(
+        raise PublicError(
+            'INVALID_ARGUMENT',
+            (
                 "get_snapshot requires exactly one of 'snapshot_id' or 'session_id' "
                 f'(got snapshot_id={snapshot_id!r}, session_id={session_id!r}).'
             ),

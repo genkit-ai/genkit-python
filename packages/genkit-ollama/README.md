@@ -242,8 +242,8 @@ response = await ai.generate(
 - **Proxy auth**: if `request_headers` sets `Authorization` (a dict, or a
   callable that returns one), a per-request key fails with
   `FAILED_PRECONDITION` rather than replacing the proxy's token.
-- **Embedders**: `embed()` takes no context, so embedders always run on the
-  plugin's headers.
+- **Embedders**: the Ollama embedder ignores `context.secrets` and always runs
+  on the plugin's headers.
 
 ### Model capabilities
 

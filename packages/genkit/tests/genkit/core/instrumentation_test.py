@@ -35,12 +35,15 @@ class RecordedSpan:
         self.span_id = span_id
         self.metadata: list[Mapping[str, object]] = []
         self.states: list[str] = []
+        self.messages: list[str] = []
 
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         self.metadata.append(metadata)
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, message: str | None = None) -> None:
         self.states.append(state)
+        if message is not None:
+            self.messages.append(message)
 
 
 class FakeInstrumentation:
@@ -182,6 +185,25 @@ async def test_set_span_state_writes_to_every_backend() -> None:
     assert b.spans[0].states == ['error']
 
 
+@pytest.mark.asyncio
+async def test_set_span_state_forwards_message_to_every_backend() -> None:
+    """set_span_state('error', message=...) passes both state and message onto every configured backend."""
+    log: list[str] = []
+    a = FakeInstrumentation('a', log)
+    b = FakeInstrumentation('b', log)
+    configure_instrumentation(a)
+    configure_instrumentation(b)
+
+    async def body(_span: SpanContext) -> None:
+        set_span_state('error', message='tool exploded')
+
+    await run_in_new_span('op', body)
+    assert a.spans[0].states == ['error']
+    assert a.spans[0].messages == ['tool exploded']
+    assert b.spans[0].states == ['error']
+    assert b.spans[0].messages == ['tool exploded']
+
+
 def test_configure_rejects_a_non_instrumentation() -> None:
     """configure_instrumentation(object()) raises; it does not silently no-op."""
     with pytest.raises(TypeError, match='Instrumentation instance'):
@@ -320,7 +342,7 @@ def test_span_metadata_attributes_keep_bool_int_and_float() -> None:
 
 
 def test_telemetry_exports_provider_types() -> None:
-    """SpanNext, DisposableInstrumentation, FlushableInstrumentation import from genkit.telemetry."""
+    """Optional provider SPI protocols and SpanNext are exported on genkit.telemetry."""
     import genkit.telemetry as telemetry
 
     for name in ('SpanNext', 'DisposableInstrumentation', 'FlushableInstrumentation'):

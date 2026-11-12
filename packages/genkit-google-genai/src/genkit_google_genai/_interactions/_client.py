@@ -24,10 +24,10 @@ from urllib.parse import quote
 
 import httpx
 from genkit_google_genai._interactions._options import ClientOptions
-from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, transport_error
+from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, rejected_credentials, transport_error
 from google.genai.interactions import Interaction
 
-from genkit import GenkitError
+from genkit import ErrorReason, GenkitError
 from genkit.plugin_api import GENKIT_USER_AGENT, loop_local_client, provider_error
 
 DEFAULT_API_VERSION = 'v1beta'
@@ -198,7 +198,15 @@ async def request(
 
     message = f'Request to {url} failed with HTTP {response.status_code} {response.reason_phrase}: {error_message}'
     cause = httpx.HTTPStatusError(message, request=httpx.Request(method, url), response=response)
-    error = provider_error(cause, http_status=response.status_code, headers=response.headers, message=message)
+    invalid_credentials = rejected_credentials(response.status_code, error_detail)
+    error = provider_error(
+        cause,
+        http_status=response.status_code,
+        status='UNAUTHENTICATED' if invalid_credentials else None,
+        headers=response.headers,
+        message=message,
+        reason=ErrorReason.INVALID_CREDENTIALS if invalid_credentials else None,
+    )
     if isinstance(error_detail, Mapping):
         error.details.update(error_detail)
     raise error from cause

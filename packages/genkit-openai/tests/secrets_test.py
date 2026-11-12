@@ -38,7 +38,6 @@ from genkit.model import ModelConfig
         pytest.param({'secrets': {'api_key': 'sk-a', 'apiKey': 'sk-b'}}, 'sk-a', id='api_key-wins'),
         pytest.param({'secrets': {'api_key': '  sk-tenant\n'}}, 'sk-tenant', id='trimmed'),
         pytest.param({'secrets': {'db_password': 'x'}}, None, id='other-secrets-only'),
-        pytest.param({'secrets': {'api_key': None}}, None, id='null-key'),
         pytest.param({'secrets': {}}, None, id='empty-secrets'),
         pytest.param({'secrets': None}, None, id='null-secrets'),
         pytest.param({'api_key': 'app-key', 'apiKey': 'app-key'}, None, id='top-level-key-ignored'),
@@ -55,6 +54,8 @@ def test_context_api_key_reads_only_context_secrets(context: dict[str, Any] | No
     'context,reason',
     [
         pytest.param({'secrets': 'sk-tenant'}, 'context.secrets must be a dict', id='secrets-not-a-dict'),
+        pytest.param({'secrets': {'api_key': None}}, 'context.secrets.api_key must be a string', id='null-api_key'),
+        pytest.param({'secrets': {'apiKey': None}}, 'context.secrets.apiKey must be a string', id='null-apiKey'),
         pytest.param({'secrets': {'api_key': 42}}, 'context.secrets.api_key must be a string', id='not-a-string'),
         pytest.param({'secrets': {'apiKey': '   '}}, 'context.secrets.apiKey is blank', id='blank'),
         pytest.param({'secrets': {'api_key': ''}}, 'context.secrets.api_key is blank', id='empty-string'),

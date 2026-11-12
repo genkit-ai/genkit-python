@@ -20,6 +20,7 @@ This module contains all trace-specific exporters and span wrappers
 for Google Cloud Trace integration.
 """
 
+import warnings
 from collections.abc import Callable, Sequence
 
 from google.api_core import exceptions as core_exceptions, retry as retries
@@ -42,53 +43,63 @@ from ._constants import (
 logger = get_logger(__name__)
 
 
-class GenkitGCPExporter(CloudTraceSpanExporter):
-    """Exports spans to Google Cloud Trace with retry logic.
+# opentelemetry-exporter-gcp-trace 1.15 marks CloudTraceSpanExporter
+# @deprecated, which emits a DeprecationWarning attributed to this module when
+# subclassed. Default Python filters hide non-__main__ DeprecationWarnings, so
+# it only surfaces under pytest or -W default / -W error, where users still
+# can't act on it. Silence that message for this class statement; constructing
+# GenkitGCPExporter doesn't warn (upstream only warns for the base class).
+# Moving to the OTLP exporter upstream recommends is a separate change.
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', message='CloudTraceSpanExporter is deprecated', category=DeprecationWarning)
 
-    This exporter extends the base CloudTraceSpanExporter to add
-    robust retry handling for transient failures.
+    class GenkitGCPExporter(CloudTraceSpanExporter):
+        """Exports spans to Google Cloud Trace with retry logic.
 
-    Note:
-        The parent class uses google.auth.default() to get the project ID.
-    """
-
-    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        """Export the spans to Cloud Trace with retry logic.
-
-        Iterates through the provided spans and exports them to GCP.
+        This exporter extends the base CloudTraceSpanExporter to add
+        robust retry handling for transient failures.
 
         Note:
-            Leverages span transformation and formatting from opentelemetry-exporter-gcp-trace.
-            See: https://cloud.google.com/python/docs/reference/cloudtrace/latest
-
-        Args:
-            spans: A sequence of OpenTelemetry ReadableSpan objects to export.
-
-        Returns:
-            SpanExportResult.SUCCESS upon successful processing (does not guarantee
-            server-side success), or SpanExportResult.FAILURE if an error occurs.
+            The parent class uses google.auth.default() to get the project ID.
         """
-        try:
-            self.client.batch_write_spans(
-                request=BatchWriteSpansRequest(
-                    name=f'projects/{self.project_id}',
-                    spans=self._translate_to_cloud_trace(spans),
-                ),
-                retry=retries.Retry(
-                    initial=TRACE_RETRY_INITIAL,
-                    maximum=TRACE_RETRY_MAXIMUM,
-                    multiplier=TRACE_RETRY_MULTIPLIER,
-                    predicate=retries.if_exception_type(
-                        core_exceptions.DeadlineExceeded,
-                    ),
-                    deadline=TRACE_RETRY_DEADLINE,
-                ),
-            )
-        except Exception as ex:
-            logger.error('Error while writing to Cloud Trace', exc_info=ex)
-            return SpanExportResult.FAILURE
 
-        return SpanExportResult.SUCCESS
+        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+            """Export the spans to Cloud Trace with retry logic.
+
+            Iterates through the provided spans and exports them to GCP.
+
+            Note:
+                Leverages span transformation and formatting from opentelemetry-exporter-gcp-trace.
+                See: https://cloud.google.com/python/docs/reference/cloudtrace/latest
+
+            Args:
+                spans: A sequence of OpenTelemetry ReadableSpan objects to export.
+
+            Returns:
+                SpanExportResult.SUCCESS upon successful processing (does not guarantee
+                server-side success), or SpanExportResult.FAILURE if an error occurs.
+            """
+            try:
+                self.client.batch_write_spans(
+                    request=BatchWriteSpansRequest(
+                        name=f'projects/{self.project_id}',
+                        spans=self._translate_to_cloud_trace(spans),
+                    ),
+                    retry=retries.Retry(
+                        initial=TRACE_RETRY_INITIAL,
+                        maximum=TRACE_RETRY_MAXIMUM,
+                        multiplier=TRACE_RETRY_MULTIPLIER,
+                        predicate=retries.if_exception_type(
+                            core_exceptions.DeadlineExceeded,
+                        ),
+                        deadline=TRACE_RETRY_DEADLINE,
+                    ),
+                )
+            except Exception as ex:
+                logger.error('Error while writing to Cloud Trace', exc_info=ex)
+                return SpanExportResult.FAILURE
+
+            return SpanExportResult.SUCCESS
 
 
 class TimeAdjustedSpan(RedactedSpan):

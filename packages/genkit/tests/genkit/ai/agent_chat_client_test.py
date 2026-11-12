@@ -15,12 +15,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 import anyio
 import pytest
+import structlog
 from pydantic import BaseModel
+from structlog.testing import capture_logs
 
 from genkit import Part
 from genkit._ai._agents._base import Agent, define_custom_agent
@@ -36,7 +38,16 @@ from genkit._ai._agents._runtime import AgentInitError, SessionRunner, to_error_
 from genkit._ai._agents._types import StateManagement, TurnResult
 from genkit._ai._json_patch import apply_json_patch
 from genkit._core._channel import CloseableQueue
-from genkit._core._error import ErrorReason, Failure, GenkitError, Interrupt
+from genkit._core._error import (
+    ErrorReason,
+    Failure,
+    GenkitError,
+    Interrupt,
+    PublicError,
+    client_safe_failure,
+    mark_logged_failure,
+)
+from genkit._core._logger import GENKIT_LOG
 from genkit._core._model import (
     AgentInit,
     AgentInput,
@@ -1632,7 +1643,7 @@ def _flaky(
     *,
     store: InMemorySessionStore | None,
     reply: Message | None = None,
-    fail: Exception | None = None,
+    fail: BaseException | None = None,
 ) -> Agent:
     """'fail' raises, 'block' is blocked, 'pause' interrupts, anything else replies."""
     boom = fail or GenkitError(status='INTERNAL', message='boom')
@@ -1736,6 +1747,189 @@ async def test_send_on_failed_turn_with_reason_reads_reason() -> None:
     err = _assert_failed(res, message='tool died')
     assert err.status == 'INTERNAL'
     assert err.reason is ErrorReason.TOOL_FAILED
+
+
+def _logged_errors(entries: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [e for e in entries if e['log_level'] == 'error']
+
+
+@pytest.mark.asyncio
+async def test_custom_agent_raising_foreign_error_keeps_text_and_logs_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In process, res.error keeps the ValueError's text; the cause is logged on one line, traceback at debug.
+
+    Redaction happens where a served agent writes to HTTP (genkit.web), not here.
+    """
+    monkeypatch.setenv(GENKIT_LOG, 'debug')
+    structlog.reset_defaults()
+    agent = _flaky(
+        Genkit(),
+        'ordersDb',
+        store=InMemorySessionStore(),
+        fail=ValueError('db password=hunter2'),
+    )
+
+    with capture_logs() as entries:
+        res = await agent.chat().send('please fail now')
+
+    err = _assert_failed(res, message='db password=hunter2')
+    assert err.status == 'INTERNAL'
+    errors = _logged_errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['event'] == "agent 'ordersDb' raised, returning finish_reason=failed"
+    assert errors[0]['agent'] == 'ordersDb'
+    assert errors[0]['error'] == 'ValueError: db password=hunter2'
+    assert 'exc_info' not in errors[0]
+    details = [e for e in entries if e['event'] == "agent 'ordersDb' failure details"]
+    assert len(details) == 1
+    assert details[0]['log_level'] == 'debug'
+    assert str(details[0]['exc_info']) == 'db password=hunter2'
+
+
+@pytest.mark.asyncio
+async def test_custom_agent_raising_genkit_error_keeps_status_and_message() -> None:
+    """In process, res.error keeps status and message; the server logs once since HTTP redacts non-PublicError."""
+    structlog.reset_defaults()
+    agent = _flaky(
+        Genkit(),
+        'orderLookup',
+        store=InMemorySessionStore(),
+        fail=GenkitError(status='NOT_FOUND', message='no order A-17'),
+    )
+
+    with capture_logs() as entries:
+        res = await agent.chat().send('please fail now')
+
+    err = _assert_failed(res, message='no order A-17')
+    assert err.status == 'NOT_FOUND'
+    errors = _logged_errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['agent'] == 'orderLookup'
+    assert 'no order A-17' in errors[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_custom_agent_raising_internal_genkit_error_logs_once() -> None:
+    """A custom turn raising GenkitError(INTERNAL) without a cause still logs once since HTTP redacts it."""
+    structlog.reset_defaults()
+    agent = _flaky(
+        Genkit(),
+        'ordersDb',
+        store=InMemorySessionStore(),
+        fail=GenkitError(status='INTERNAL', message='db password=hunter2'),
+    )
+
+    with capture_logs() as entries:
+        res = await agent.chat().send('please fail now')
+
+    err = _assert_failed(res, message='db password=hunter2')
+    assert err.status == 'INTERNAL'
+    errors = _logged_errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['agent'] == 'ordersDb'
+    assert 'db password=hunter2' in errors[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_custom_agent_raising_public_error_or_escaped_interrupt_is_not_logged() -> None:
+    """PublicError reaches HTTP unredacted and escaped Interrupt is tool metadata; neither logs as dropped."""
+    structlog.reset_defaults()
+    public_agent = _flaky(
+        Genkit(),
+        'orderLookup',
+        store=InMemorySessionStore(),
+        fail=PublicError('NOT_FOUND', 'no order A-17'),
+    )
+    interrupt_agent = _flaky(
+        Genkit(),
+        'badPause',
+        store=InMemorySessionStore(),
+        fail=Interrupt({'step': 'confirm'}),
+    )
+
+    with capture_logs() as entries:
+        public_res = await public_agent.chat().send('please fail now')
+        intr_res = await interrupt_agent.chat().send('please fail now')
+
+    public_err = _assert_failed(public_res, message='no order A-17')
+    assert public_err.status == 'NOT_FOUND'
+    intr_err = _assert_failed(intr_res, message='Interrupt raised outside a tool')
+    assert intr_err.status == 'INTERNAL'
+    assert _logged_errors(entries) == []
+
+
+@pytest.mark.asyncio
+async def test_prompt_agent_with_crashing_tool_logs_cause_once() -> None:
+    """generate already boxed and logged the tool error; the agent runtime does not log it again."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='check_allergens')
+    async def check_allergens(_: dict) -> str:  # noqa: ARG001
+        raise RuntimeError('allergen db password=hunter2')
+
+    pm.responses = [
+        ModelResponse(
+            message=Message(
+                role=Role.MODEL,
+                content=[Part(tool_request=ToolRequest(name='check_allergens', input={}, ref='1'))],
+            ),
+            finish_reason=FinishReason.STOP,
+        )
+    ]
+    agent = ai.define_agent(name='allergyAgent', model='scriptedModel', tools=['check_allergens'])
+
+    with capture_logs() as entries:
+        res = await agent.chat().send('is the tartine nut-free?')
+
+    err = _assert_failed(res, message='internal error')
+    assert err.status == 'INTERNAL'
+    errors = _logged_errors(entries)
+    assert len(errors) == 1
+    assert errors[0]['tool'] == 'check_allergens'
+
+
+@pytest.mark.asyncio
+async def test_prompt_agent_tool_genkit_error_logs_once_and_public_error_skips_log() -> None:
+    """A tool's GenkitError is logged once at the tool site, not again by the agent; PublicError isn't logged."""
+    structlog.reset_defaults()
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+    mode = 'private'
+
+    @ai.tool(name='check_allergens')
+    async def check_allergens(_: dict) -> str:  # noqa: ARG001
+        if mode == 'public':
+            raise PublicError('INVALID_ARGUMENT', 'we do not serve peanuts')
+        raise GenkitError(status='NOT_FOUND', message='secret row missing')
+
+    tool_call = ModelResponse(
+        message=Message(
+            role=Role.MODEL,
+            content=[Part(tool_request=ToolRequest(name='check_allergens', input={}, ref='1'))],
+        ),
+        finish_reason=FinishReason.STOP,
+    )
+    pm.responses = [tool_call, tool_call]
+    agent = ai.define_agent(name='allergyAgent', model='scriptedModel', tools=['check_allergens'])
+
+    with capture_logs() as private_entries:
+        private_res = await agent.chat().send('is the tartine nut-free?')
+
+    private_err = _assert_failed(private_res, message='secret row missing')
+    assert private_err.status == 'NOT_FOUND'
+    private_errors = _logged_errors(private_entries)
+    assert len(private_errors) == 1
+    assert private_errors[0]['tool'] == 'check_allergens'
+    assert 'secret row missing' in private_errors[0]['error']
+
+    mode = 'public'
+    with capture_logs() as public_entries:
+        public_res = await agent.chat().send('what about peanut satay?')
+
+    public_err = _assert_failed(public_res, message='we do not serve peanuts')
+    assert public_err.status == 'INVALID_ARGUMENT'
+    assert _logged_errors(public_entries) == []
 
 
 @pytest.mark.asyncio
@@ -2306,6 +2500,13 @@ class _ClientResponseError(Exception):
             {'reason': 'TOOL_NOT_FOUND'},
         ),
         (GenkitError(status='ABORTED', message='stopped'), 'ABORTED', 'stopped', None),
+        (PublicError('PERMISSION_DENIED', 'table 12 is reserved'), 'PERMISSION_DENIED', 'table 12 is reserved', None),
+        (
+            GenkitError(status='INTERNAL', message='pos sync failed', cause=ValueError('dsn=pg://admin@10.0.0.4')),
+            'INTERNAL',
+            'pos sync failed',
+            None,
+        ),
         (asyncio.CancelledError(), 'CANCELLED', 'Internal failure', None),
         (TimeoutError('kitchen printer timed out'), 'DEADLINE_EXCEEDED', 'kitchen printer timed out', None),
         (asyncio.TimeoutError('kitchen printer timed out'), 'DEADLINE_EXCEEDED', 'kitchen printer timed out', None),
@@ -2316,9 +2517,38 @@ class _ClientResponseError(Exception):
 def test_to_error_details_classifies_status_like_go(
     exc: BaseException, status: str, message: str, details: dict[str, Any] | None
 ) -> None:
-    """Only a GenkitError names its status; a foreign int ``.status`` (aiohttp's 429) is INTERNAL."""
+    """Only a GenkitError names its status; a foreign int ``.status`` (aiohttp's 429) is INTERNAL.
+
+    The message is the exception's own text, as in JS and Go; genkit.web
+    redacts it for HTTP callers.
+    """
     failure = to_error_details(exc)
 
     assert failure.status == status
     assert failure.message == message
     assert failure.details == details
+
+
+def test_to_error_details_marks_only_a_public_error_safe_for_the_wire() -> None:
+    """A PublicError's Failure survives client_safe_failure; plain errors and deserialized snapshots do not."""
+    public = to_error_details(PublicError('PERMISSION_DENIED', 'table 12 is reserved'))
+    public_with_stack = to_error_details(
+        PublicError('INVALID_ARGUMENT', 'bad seat count', details={'field': 'seats', 'stack': 'Traceback...'})
+    )
+    private = to_error_details(GenkitError(status='NOT_FOUND', message='no row for key=hunter2'))
+    reloaded = Failure.model_validate_json(public.model_dump_json())
+
+    assert public == Failure(status='PERMISSION_DENIED', message='table 12 is reserved')
+    assert public == reloaded
+    assert mark_logged_failure(Failure(status='INTERNAL', message='internal error')) == Failure(
+        status='INTERNAL',
+        message='internal error',
+    )
+    assert client_safe_failure(public) is public
+    assert client_safe_failure(public_with_stack) == Failure(
+        status='INVALID_ARGUMENT',
+        message='bad seat count',
+        details={'field': 'seats'},
+    )
+    assert client_safe_failure(private) == Failure(status='NOT_FOUND', message='Not Found')
+    assert client_safe_failure(reloaded) == Failure(status='PERMISSION_DENIED', message='Permission Denied')

@@ -120,7 +120,7 @@ from genkit._core._reflection_config import (
 from genkit._core._reflection_v2 import ReflectionServerV2
 from genkit._core._registry import Registry, define_dynamic_action_provider as define_dap_block
 from genkit._core._telemetry._attrs import metadata_key
-from genkit._core._telemetry._http import maybe_inject_dev_instrumentation
+from genkit._core._telemetry._http import mark_already_sourced, maybe_inject_dev_instrumentation
 from genkit._core._telemetry._instrumentation import run_in_new_span
 from genkit._core._tool import Tool, ToolContext
 from genkit._core._typing import (
@@ -750,16 +750,18 @@ class Genkit:
     def define_value(self, *, kind: str, name: str, value: object) -> None:
         """Store ``value`` under ``kind`` and ``name`` for later ``lookup_value``.
 
+        Defining the same kind and name again replaces the value, so a
+        re-run notebook cell does not fail.
+
         Raises:
             ValueError: ``kind`` is one Genkit owns (use ``define_middleware``,
-                ``define_format``, or ``Genkit(model=...)``), ``value`` is None,
-                or a value is already defined under this kind and name.
+                ``define_format``, or ``Genkit(model=...)``), or ``value`` is None.
         """
         if kind in _CORE_VALUE_KINDS:
             raise ValueError(f'define_value kind {kind!r} is reserved; use {_CORE_VALUE_KINDS[kind]} instead.')
         if value is None:
             raise ValueError('define_value value must not be None; lookup_value returns None for "not defined".')
-        self._registry.register_value(kind, name, value)
+        self._registry.register_value(kind, name, value, allow_overwrite=True)
 
     # Overload 1: Both input_schema and output_schema typed -> Prompt[InputT, OutputT]
     @overload
@@ -1144,7 +1146,15 @@ class Genkit:
                 continue
             sock.listen(2048)
             return sock
-        raise last or OSError(f'no available port in range {port}-{port + 99}')
+        if pinned:
+            raise last or OSError(f'port {port} is not available')
+        # Each Genkit() with reflection on holds one port; a notebook that
+        # re-runs `ai = Genkit(...)` exhausts the range.
+        raise OSError(
+            f'No free reflection port in {port}-{port + 99}. Each Genkit() instance with the Dev UI '
+            'reflection server on (GENKIT_ENV=dev) holds one port; reuse one instance instead of '
+            'creating a new one per cell or request.'
+        ) from last
 
     def _start_reflection_background(self) -> None:
         """Start the Dev UI reflection server in a background daemon thread.
@@ -1324,6 +1334,19 @@ class Genkit:
             #    stays up for the Dev UI until you press Ctrl+C.
             ```
         """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            # Jupyter, IPython, and async frameworks already run a loop, and
+            # asyncio.run would fail with a raw RuntimeError plus an
+            # unawaited-coroutine warning.
+            coro.close()
+            raise RuntimeError(
+                'ai.run_main() cannot be called from a running event loop (Jupyter, IPython, or an async '
+                'framework). Use `await main()` instead.'
+            )
         if not self._reflection_config.enabled:
             return run_loop(coro)
 
@@ -1945,6 +1968,7 @@ class Genkit:
         content: str | Document,
         metadata: dict[str, object] | None = None,
         config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for a single document or string.
 
@@ -1985,7 +2009,8 @@ class Genkit:
                 EmbedRequest(
                     input=documents,
                     options=final_options,
-                )
+                ),
+                context=context,
             )
         ).response
         return response.embeddings
@@ -1997,10 +2022,11 @@ class Genkit:
         content: list[str] | list[Document],
         metadata: dict[str, object] | None = None,
         config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for multiple documents in a single batch call.
 
-        ``config`` and ``metadata`` work the same as on ``embed``.
+        ``config``, ``metadata`` and ``context`` work the same as on ``embed``.
         """
         if metadata is not None and any(isinstance(item, Document) for item in content):
             raise TypeError(_DOCUMENT_METADATA_CONFLICT)
@@ -2013,7 +2039,7 @@ class Genkit:
         embed_action, final_options = await self._embedder_and_options(embedder=embedder, config=config)
 
         response = (
-            await embed_action.run(EmbedRequest(input=documents, options=final_options))  # type: ignore[arg-type]
+            await embed_action.run(EmbedRequest(input=documents, options=final_options), context=context)  # type: ignore[arg-type]
         ).response
         return response.embeddings
 
@@ -2254,12 +2280,14 @@ class Genkit:
             # This call is "give me the ticket." A start that already
             # failed is not that ticket — while-not-done would poll it
             # as a live job.
-            raise GenkitError(
+            err = GenkitError(
                 status=response.error.status or 'INTERNAL',
                 message=response.error.message,
                 details=response.error.details,
                 reason=response.error.reason,
             )
+            mark_already_sourced(err)
+            raise err
         if not response.operation:
             raise missing_operation_error(name=model_action.name)
         return as_model_operation(response.operation, name=model_action.name, status='INTERNAL')

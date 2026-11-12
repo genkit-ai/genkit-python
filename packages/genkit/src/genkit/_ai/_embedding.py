@@ -51,9 +51,10 @@ class EmbedderInfo(BaseModel):
     dimensions: int | None = None
 
 
-# Invariant for the same reason as ModelRefConfigT: embed(embedder=EmbedderRef[T],
-# config=T) must not widen T to BaseModel. Defaults to Any so a bare
-# EmbedderRef annotation still accepts any typed ref.
+# Invariant so embed(embedder=EmbedderRef[T], config=T) pins T to the ref's
+# config class. Defaults to Any (not BaseModel) because invariant generics
+# forbid subtyping on the type parameter, so bare EmbedderRef must mean
+# EmbedderRef[Any] to accept any typed ref.
 EmbedderRefConfigT = TypeVar('EmbedderRefConfigT', bound=BaseModel, default=Any)
 
 

@@ -311,10 +311,11 @@ def reject_config_api_key(config: object) -> None:
 # TypeVars for generic types
 OutputT = TypeVar('OutputT', default=object)
 ConfigT = TypeVar('ConfigT', bound=ModelConfig, default=ModelConfig)
-# Bound to BaseModel so ModelRef is always parameterized with a concrete Pydantic config schema.
-# Invariant: generate(model=ModelRef[T], config=T) solves T from the ref. A
-# covariant T let checkers widen ModelRef[GeminiConfig] to ModelRef[BaseModel]
-# and accept any config class. Defaults to Any so bare ModelRef means ModelRef[Any].
+# Bound to BaseModel so ModelRef only accepts Pydantic config schemas.
+# Invariant so generate(model=ModelRef[T], config=T) pins T to the ref's config
+# class rather than widening to BaseModel. Defaults to Any (not BaseModel)
+# because invariant generics forbid subtyping on the type parameter: bare
+# ModelRef must mean ModelRef[Any] to accept any typed ref.
 ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, default=Any)
 # ModelRequest[X], EmbedRequest[X] and the evaluator requests take a pydantic
 # model class; __class_getitem__ rejects the rest. Not bound to BaseModel: type

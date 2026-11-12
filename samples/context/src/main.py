@@ -34,7 +34,7 @@ class AccountNeed(BaseModel):
     need: str
 
 
-@ai.tool()
+@ai.tool
 async def account_record(input: AccountNeed, ctx: ToolContext) -> str:
     # Tenant is not a tool argument, so a prompt cannot hop to another customer.
     key = (str(ctx.context.get('user_id', '')), str(ctx.context.get('tenant_id', '')))

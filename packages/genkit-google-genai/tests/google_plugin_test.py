@@ -48,7 +48,7 @@ from google.auth.exceptions import DefaultCredentialsError, RefreshError
 from google.genai.errors import APIError
 from pydantic import ValidationError
 
-from genkit import Document, Genkit, GenkitError, Message, Part, Role
+from genkit import Document, ErrorReason, Genkit, GenkitError, Message, Part, Role
 from genkit.embedder import EmbedRequest
 from genkit.model import BackgroundModel, ModelInfo, ModelRequest
 from genkit.plugin_api import GENKIT_USER_AGENT, Action, ActionKind
@@ -126,13 +126,11 @@ class TestGoogleAIInit(unittest.TestCase):
         self.assertFalse(plugin._vertexai)
         self.assertIsInstance(runtime_client, MagicMock)
 
-    def test_init_raises_value_error_no_api_key(self) -> None:
-        """Test using credentials parameter."""
-        with (
-            patch.dict(os.environ, {'GEMINI_API_KEY': ''}, clear=True),
-            self.assertRaisesRegex(ValueError, r'GEMINI_API_KEY environment variable not set'),
-        ):
-            GoogleAI()
+    def test_init_without_api_key_does_not_raise(self) -> None:
+        """No key and no credentials still constructs; calls need context.secrets."""
+        with patch.dict(os.environ, {'GEMINI_API_KEY': ''}, clear=True):
+            plugin = GoogleAI()
+        self.assertIsNone(plugin._client_kwargs['api_key'])
 
 
 @patch('google.genai.client.Client')
@@ -908,6 +906,8 @@ async def test_lazy_client_credential_failure_is_unauthenticated_in_action_body(
             await embedder_action.run(EmbedRequest(input=[Document.from_text('Smoked salmon tartine')]))
 
     assert raised.value.status == 'UNAUTHENTICATED'
+    # Nothing was sent, so nothing was rejected.
+    assert raised.value.reason is None
     assert raised.value.__cause__ is no_adc
 
 
@@ -957,20 +957,29 @@ async def test_googleai_list_actions_rejected_key_is_unauthenticated(googleai_pl
         await googleai_plugin_instance.list_actions()
 
     assert raised.value.status == 'UNAUTHENTICATED'
+    assert raised.value.reason is ErrorReason.INVALID_CREDENTIALS
     assert raised.value.__cause__ is rejected
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('failure', 'status'),
+    ('failure', 'status', 'reason'),
     [
-        (APIError(503, {'error': {'code': 503, 'message': 'overloaded', 'status': 'UNAVAILABLE'}}), 'UNAVAILABLE'),
-        (RefreshError('invalid_grant: Token has been expired or revoked.'), 'UNAUTHENTICATED'),
-        (httpx.ConnectError('[Errno 61] Connection refused'), 'UNAVAILABLE'),
+        (
+            APIError(503, {'error': {'code': 503, 'message': 'overloaded', 'status': 'UNAVAILABLE'}}),
+            'UNAVAILABLE',
+            None,
+        ),
+        (
+            RefreshError('invalid_grant: Token has been expired or revoked.'),
+            'UNAUTHENTICATED',
+            ErrorReason.INVALID_CREDENTIALS,
+        ),
+        (httpx.ConnectError('[Errno 61] Connection refused'), 'UNAVAILABLE', None),
     ],
 )
 async def test_vertexai_list_actions_classifies_model_listing_failure(
-    vertexai_plugin_instance: VertexAI, failure: Exception, status: str
+    vertexai_plugin_instance: VertexAI, failure: Exception, status: str, reason: ErrorReason | None
 ) -> None:
     """Model listing in list_actions maps provider, credential, and connection failures like a generate call."""
     mock_client = MagicMock()
@@ -981,6 +990,7 @@ async def test_vertexai_list_actions_classifies_model_listing_failure(
         await vertexai_plugin_instance.list_actions()
 
     assert raised.value.status == status
+    assert raised.value.reason is reason
     assert raised.value.__cause__ is failure
 
 
@@ -1115,7 +1125,7 @@ async def test_failed_listing_keeps_static_catalog_and_retries() -> None:
     catalog = await ai._registry.list_actions()
     await ai._registry.list_actions()
 
-    assert '/model/googleai/gemini-2.5-flash' in catalog
+    assert '/model/googleai/gemini-flash-latest' in catalog
     assert '/embedder/googleai/gemini-embedding-001' in catalog
     assert mock_client.aio.models.list.call_count == 2
 
@@ -1196,14 +1206,17 @@ async def test_vertexai_resolves_unlisted_and_tuned_models_without_listing(verte
 async def test_static_init_catalog_matches_backend_capabilities(
     googleai_plugin_instance: GoogleAI, vertexai_plugin_instance: VertexAI
 ) -> None:
-    """GoogleAI init registers Gemma 3/4 and -latest; VertexAI skips them; neither registers retired previews."""
+    """GoogleAI init registers Gemma 4 and -latest; VertexAI keeps 2.5 Flash/Pro and skips Gemma/-latest."""
     google_names = {a.name for a in await googleai_plugin_instance.init()}
     vertex_names = {a.name for a in await vertexai_plugin_instance.init()}
 
-    assert {'googleai/gemma-3-12b-it', 'googleai/gemma-4-31b-it', 'googleai/gemini-flash-latest'} <= google_names
+    assert {'googleai/gemma-4-26b-a4b-it', 'googleai/gemma-4-31b-it', 'googleai/gemini-flash-latest'} <= google_names
+    assert 'googleai/gemma-3-12b-it' not in google_names
+    assert 'googleai/gemini-2.5-flash' not in google_names
     assert 'googleai/gemini-2.5-pro-exp-03-25' not in google_names
     assert 'googleai/gemini-2.5-flash-image-preview' not in google_names
 
+    assert 'vertexai/gemini-2.5-flash' in vertex_names
     assert not any('gemma-' in name for name in vertex_names)
     assert not any(name.endswith('-latest') for name in vertex_names)
     assert 'vertexai/gemini-2.5-pro-exp-03-25' not in vertex_names

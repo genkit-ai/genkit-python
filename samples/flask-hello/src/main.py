@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.post('/say_hi')
 @genkit_flask_handler(ai)
-@ai.flow()
+@ai.flow
 async def say_hi(name: str, ctx: FlowContext) -> str:
     # generate_stream + send_chunk is how the Flask handler streams tokens.
     stream = ai.generate_stream(prompt=f'tell a short joke about {name}')

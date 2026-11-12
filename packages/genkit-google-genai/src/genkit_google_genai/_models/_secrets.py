@@ -26,6 +26,24 @@ from genkit import GenkitError
 
 SECRETS_SLOT = "Pass the key as context={'secrets': {'api_key': ...}}."
 
+# One line: GoogleAI() logs it at construction and a keyless call raises it, so
+# it has to read cleanly both as a log line and inside str()/repr() of an error.
+MISSING_API_KEY_MESSAGE = (
+    'No Gemini API key found. Set GEMINI_API_KEY (or GOOGLE_API_KEY), pass GoogleAI(api_key=...), '
+    "or send context={'secrets': {'api_key': ...}} per request. "
+    'Get a key: https://aistudio.google.com/apikey'
+)
+
+
+def missing_api_key_error() -> GenkitError:
+    """No plugin key, no credentials, and no ``context.secrets.api_key``.
+
+    ``FAILED_PRECONDITION`` matches JS ``MISSING_API_KEY_ERROR``. A key the
+    API rejects is a different failure: the provider's 4xx comes back as
+    ``UNAUTHENTICATED`` with reason ``INVALID_CREDENTIALS`` (see ``_provider_errors``).
+    """
+    return GenkitError(status='FAILED_PRECONDITION', message=MISSING_API_KEY_MESSAGE)
+
 
 def misplaced_key_error() -> GenkitError:
     return GenkitError(
@@ -34,23 +52,30 @@ def misplaced_key_error() -> GenkitError:
     )
 
 
-def string_secret(value: object) -> str | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, str):
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        if any(c in cleaned for c in ('\r', '\n', '\0', ' ', '\t')):
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=f'context.secrets.api_key contains invalid whitespace or control characters. {SECRETS_SLOT}',
-            )
-        return cleaned
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f'context.secrets.api_key must be a string. {SECRETS_SLOT}',
-    )
+_KEY_SLOTS = ('api_key', 'apiKey')
+
+
+def string_secret(value: object, slot: str = 'api_key') -> str:
+    # An explicit None or blank key is a tenant that meant to bring one and
+    # didn't (request.headers.get('x-gemini-key') returning None, say). Raise
+    # instead of falling back, which would bill the plugin key.
+    if not isinstance(value, str):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} must be a string. {SECRETS_SLOT}',
+        )
+    cleaned = value.strip()
+    if not cleaned:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} is blank. {SECRETS_SLOT}',
+        )
+    if any(c in cleaned for c in ('\r', '\n', '\0', ' ', '\t')):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'context.secrets.{slot} contains invalid whitespace or control characters. {SECRETS_SLOT}',
+        )
+    return cleaned
 
 
 def context_api_key(context: dict[str, Any]) -> str | None:
@@ -58,14 +83,20 @@ def context_api_key(context: dict[str, Any]) -> str | None:
 
     Documented slot is ``api_key``; ``apiKey`` is accepted so either
     spelling works. A key on ``context['config']`` or the top-level
-    context is rejected so it cannot silently fall through to the
-    plugin client. ``generate(..., config={'api_key': ...})`` is the
-    same leftover — reject it on the request too.
+    context (even ``None``) is rejected so an explicit override in the
+    wrong place cannot silently fall through to the plugin client.
+    ``generate(..., config={'api_key': ...})`` is the same leftover —
+    reject it on the request too.
+
+    Returns ``None`` only when ``secrets`` omits ``api_key`` / ``apiKey``
+    (e.g. holding other app secrets); the call then falls back to the
+    plugin key, as in genkit-openai and genkit-anthropic. An explicit
+    ``None`` or blank key raises instead of billing the plugin key.
     """
     extra = context.get('config')
-    if isinstance(extra, dict) and (extra.get('api_key') is not None or extra.get('apiKey') is not None):
+    if isinstance(extra, dict) and any(slot in extra for slot in _KEY_SLOTS):
         raise misplaced_key_error()
-    if context.get('api_key') is not None or context.get('apiKey') is not None:
+    if any(slot in context for slot in _KEY_SLOTS):
         raise misplaced_key_error()
 
     if 'secrets' not in context:
@@ -76,15 +107,10 @@ def context_api_key(context: dict[str, Any]) -> str | None:
             status='INVALID_ARGUMENT',
             message=f'context.secrets must be a dict. {SECRETS_SLOT}',
         )
-    key = string_secret(secrets.get('api_key'))
-    if key is None:
-        key = string_secret(secrets.get('apiKey'))
-    if key is None:
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'context.secrets is set but has no api_key. {SECRETS_SLOT}',
-        )
-    return key
+    for slot in _KEY_SLOTS:
+        if slot in secrets:
+            return string_secret(secrets[slot], slot)
+    return None
 
 
 def _bag_has_api_key(bag: dict[str, Any]) -> bool:

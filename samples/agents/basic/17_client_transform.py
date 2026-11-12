@@ -27,8 +27,10 @@ touched, only the client's view:
     drop it.
 
 Here the agent keeps an api_key in its custom state and emits an internal
-artifact, but the client sees neither: state strips the key, chunk drops the
-artifact. Requires GEMINI_API_KEY.
+artifact. state_transform strips the key from every state the client reads.
+chunk_transform drops the artifact chunk from the stream, but the settled
+output still lists session artifacts, so filter those in the agent fn if they
+must never leave the server. Requires GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -116,7 +118,7 @@ async def main() -> None:
             assert 'api_key' not in chunk.custom
 
     res = await turn.response
-    # chunk hook dropped every artifact chunk before it reached us.
+    # chunk hook dropped the artifact chunk from the stream (res.artifacts still lists it).
     assert not saw_artifact_chunk
     # state hook stripped the secret but kept the public counter.
     assert res.state is not None

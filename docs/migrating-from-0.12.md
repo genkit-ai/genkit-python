@@ -204,7 +204,7 @@ If you're a coding agent, replace each enum member with its string value. The va
 
 Every removed name, and what to use instead:
 
-- **Model enums** (`KnownGemini*`, `KnownGpt`, `KnownClaude`, `*Version`, `GeminiEmbeddingModels`, `VertexEmbeddingModels`): pass the model name as a string, such as `'openai/gpt-4o'`.
+- **Model enums** (`KnownGeminiModels`, `KnownGemini*`, `KnownGpt`, `KnownClaude`, `*Version`, `GeminiEmbeddingModels`, `VertexEmbeddingModels`): pass a typed ref such as `GoogleAI.gemini('gemini-flash-latest')` or `OpenAI.gpt('gpt-4o')`, or the model name as a string, such as `'openai/gpt-4o'`.
 - **Name helpers** (`bedrock_name`, `anthropic_name`, `ollama_name`, `openai_model`, `genkit_eval_name`, `package_name`): use the full `'plugin/model'` string.
 - **`Candidate`**: use the response's `message`.
 - **`Document.data`, `Document.data_type`, `Document.from_data()`**: build a `Document` with its constructor.
@@ -404,7 +404,7 @@ async def run(n: int, ctx: ActionRunContext) -> str:
 ```python
 from genkit import FlowContext
 
-@ai.flow()
+@ai.flow
 async def run(n: int, ctx: FlowContext[Status]) -> str:
     ctx.send_chunk(Status(step='search'))
 ```
@@ -427,7 +427,7 @@ async def prepare(dish: str, ctx: ToolRunContext) -> str: ...
 ```python
 from genkit import ToolContext
 
-@ai.tool()
+@ai.tool
 async def prepare(dish: str, ctx: ToolContext[Progress]) -> str:
     ctx.send_chunk(Progress(stage='searing', percent=40))
 ```
@@ -472,7 +472,7 @@ async def slow(x: dict, ctx: ToolRunContext) -> dict:
 **New:**
 
 ```python
-@ai.tool()
+@ai.tool
 async def slow(x: dict) -> dict:
     while not done:
         await step()   # cancellation raises asyncio.CancelledError here
@@ -485,7 +485,7 @@ task = asyncio.create_task(ai.generate(prompt=p))
 task.cancel()
 ```
 
-To stop a stream early, use `async with` (or call `aclose()`). A bare `break` without it leaves the flow running.
+To stop a stream early, use `async with` (or call `aclose()`). After a bare `break`, the flow keeps running until the stream object is garbage-collected.
 
 ```python
 stream = my_flow.stream(x)
@@ -498,7 +498,7 @@ async with stream:
 Cancellation can now land at any `await` in your tool, so put cleanup for partial work in `finally`. If you catch `asyncio.CancelledError` yourself, re-raise it.
 
 ```python
-@ai.tool()
+@ai.tool
 async def book_trip(trip: Trip) -> Booking:
     hold = await reserve_seats(trip)
     try:
@@ -660,7 +660,7 @@ async def get_order(order_id: str) -> Order:
 ```python
 from genkit import PublicError
 
-@ai.flow()
+@ai.flow
 async def get_order(order_id: str) -> Order:
     order = await db.find(order_id)
     if order is None:
@@ -783,7 +783,10 @@ model = openai_model('gpt-4o')
 **New:**
 
 ```python
-model = 'openai/gpt-4o'
+from genkit_openai import OpenAI
+
+model = OpenAI.gpt('gpt-4o')  # typed ref; autocompletes and binds OpenAIConfig
+model = 'openai/gpt-4o'       # plain string also works
 ```
 
 ## Ollama
@@ -912,8 +915,10 @@ from genkit.middleware import Middleware, MiddlewareContext
 @ai.middleware
 class PiiRedact(Middleware[Cfg]):
     name = 'pii_redact'
-    async def model(self, params, ctx: MiddlewareContext, next_fn): ...
+    async def wrap_model(self, params, ctx: MiddlewareContext, next_fn): ...
 ```
+
+Hooks are now `wrap_generate`, `wrap_model`, and `wrap_tool`. A method still named `model` is never called; the class inherits the pass-through `wrap_model` and the request goes to the provider unchanged, with no error.
 
 `tools()` returns `Tool` handles. `GenerateMiddleware`, `MiddlewareRef`, `MiddlewarePlugin` and `new_middleware` are removed.
 

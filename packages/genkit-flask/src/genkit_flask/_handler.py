@@ -144,12 +144,13 @@ def genkit_flask_handler(
 
     @app.post('/chat')
     @genkit_flask_handler(ai)
-    @ai.flow()
+    @ai.flow
     async def say_hi(name: str, ctx: FlowContext) -> str:
         stream = ai.generate_stream(prompt=f'tell a joke about {name}')
-        async for chunk in stream.stream:
-            if chunk.text:
-                ctx.send_chunk(chunk.text)
+        async with stream.stream as chunks:
+            async for chunk in chunks:
+                if chunk.text:
+                    ctx.send_chunk(chunk.text)
         res = await stream.response
         return res.text
     ```

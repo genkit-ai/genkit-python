@@ -619,3 +619,145 @@ async def test_dev_ui_run_of_public_error_flow_returns_its_status_and_trace_id(h
     assert error['message'] == 'no order 99'
     assert error['code'] == 5
     assert error['details']['traceId'] == response.headers['x-genkit-trace-id']
+
+
+@pytest.mark.asyncio
+async def test_run_action_flushes_dev_ui_collector_only() -> None:
+    """v1 flushes DevUIInstrumentation before responding and leaves remote backends untouched."""
+    from genkit._core._telemetry._http import DevUIInstrumentation
+    from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
+
+    events: list[str] = []
+
+    class RecordingSink:
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            events.append('dev_flush')
+
+        def shutdown(self) -> None:
+            pass
+
+    class SlowRemoteBackend:
+        async def run_in_new_span(self, metadata: Any, next: Any) -> Any:  # noqa: ANN401
+            return await next(MagicMock())
+
+        def flush(self) -> None:
+            events.append('remote_flush')
+            raise RuntimeError('remote exporter timed out')
+
+    reset_instrumentation()
+    try:
+        configure_instrumentation(DevUIInstrumentation(RecordingSink()))  # type: ignore[arg-type]
+        configure_instrumentation(SlowRemoteBackend())
+        ai = Genkit()
+
+        @ai.flow()
+        async def order_dish(dish: str) -> str:
+            events.append('run')
+            return dish
+
+        app = create_reflection_asgi_app(ai._registry)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/runAction', json={'key': '/flow/order_dish', 'input': 'Tartine'})
+
+        assert response.status_code == 200
+        assert response.json()['result'] == 'Tartine'
+        assert events == ['run', 'dev_flush']
+    finally:
+        reset_instrumentation()
+
+
+@pytest.mark.asyncio
+async def test_run_action_succeeds_when_dev_ui_collector_flush_raises() -> None:
+    """A broken Dev UI trace collector flush does not turn a completed action into an error response."""
+    from genkit._core._telemetry._http import DevUIInstrumentation
+    from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
+
+    class BrokenSink:
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            raise OSError('collector unreachable')
+
+        def shutdown(self) -> None:
+            pass
+
+    reset_instrumentation()
+    try:
+        configure_instrumentation(DevUIInstrumentation(BrokenSink()))  # type: ignore[arg-type]
+        ai = Genkit()
+
+        @ai.flow()
+        async def order_dish(dish: str) -> str:
+            return dish
+
+        @ai.flow()
+        async def fail_dish(dish: str) -> str:
+            raise ValueError(f'sold out: {dish}')
+
+        app = create_reflection_asgi_app(ai._registry)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+            ok_resp = await client.post('/api/runAction', json={'key': '/flow/order_dish', 'input': 'Tartine'})
+            err_resp = await client.post('/api/runAction', json={'key': '/flow/fail_dish', 'input': 'Tartine'})
+
+        assert ok_resp.status_code == 200
+        assert ok_resp.json()['result'] == 'Tartine'
+        assert 'sold out: Tartine' in err_resp.json()['error']['message']
+    finally:
+        reset_instrumentation()
+
+
+@pytest.mark.asyncio
+async def test_run_action_error_carries_python_traceback() -> None:
+    ai = Genkit()
+
+    @ai.flow()
+    async def check_allergens(dish: str) -> str:
+        raise ValueError(f'unknown allergen profile for {dish}')
+
+    app = create_reflection_asgi_app(ai._registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.post('/api/runAction', json={'key': '/flow/check_allergens', 'input': 'Tartine'})
+
+    stack = response.json()['error']['details']['stack']
+    assert 'Traceback (most recent call last)' in stack
+    assert 'check_allergens' in stack
+    assert 'ValueError: unknown allergen profile for Tartine' in stack
+
+
+@pytest.mark.asyncio
+async def test_run_action_missing_key_is_400(asgi_client: AsyncClient) -> None:
+    response = await asgi_client.post('/api/runAction', json={'input': 'Tartine'})
+    assert response.status_code == 400
+    assert response.json() == {'error': 'key is required'}
+
+
+@pytest.mark.asyncio
+async def test_health_rejects_foreign_runtime_id(asgi_client: AsyncClient) -> None:
+    """Matches JS: `?id=` for another runtime answers 503."""
+    assert (await asgi_client.get('/api/__health', params={'id': 'not-me'})).status_code == 503
+    assert (await asgi_client.get('/api/__health')).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_notify_enables_log_export_and_warns_on_old_cli(
+    asgi_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from genkit._core import _reflection
+
+    calls: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    monkeypatch.setattr(_reflection, 'connect_developer_ui_collector', lambda url: calls.append(('connect', url)))
+    monkeypatch.setattr(_reflection, 'enable_log_export', lambda url: calls.append(('logs', url)))
+    monkeypatch.setattr(_reflection.logger, 'warning', lambda msg, *a, **k: warnings.append(msg))
+
+    response = await asgi_client.post(
+        '/api/notify', json={'telemetryServerUrl': 'http://localhost:4033', 'reflectionApiSpecVersion': 0}
+    )
+
+    assert response.status_code == 200
+    assert calls == [('connect', 'http://localhost:4033'), ('logs', 'http://localhost:4033')]
+    assert any('outdated' in w for w in warnings)

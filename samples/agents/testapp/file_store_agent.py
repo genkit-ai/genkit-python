@@ -70,7 +70,7 @@ class FileStoreResult(BaseModel):
     reply2: str
 
 
-@ai.flow()
+@ai.flow
 async def test_file_store_agent(user_name: str, ctx: FlowContext) -> FileStoreResult:
     """Two turns on one chat: the note logged in turn 1 is recalled in turn 2."""
     chat = file_store_agent.chat()
@@ -90,7 +90,7 @@ async def test_file_store_agent(user_name: str, ctx: FlowContext) -> FileStoreRe
     return FileStoreResult(snapshot_id1=res1.snapshot_id, reply1=reply_text(res1), reply2=reply_text(res2))
 
 
-@ai.flow()
+@ai.flow
 async def test_file_store_chain_pruning(user_name: str, ctx: FlowContext) -> dict[str, Any]:
     """Run four turns against the capped store and report what survived on disk.
 

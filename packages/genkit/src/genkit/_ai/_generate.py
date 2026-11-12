@@ -80,6 +80,8 @@ from genkit._core._error import (
     PublicError,
     _StreamingCallbackError,
     attached_cause,
+    mark_logged_failure,
+    mark_public_failure,
 )
 from genkit._core._logger import get_logger, is_debug_enabled
 from genkit._core._middleware import (
@@ -793,6 +795,13 @@ def start_generate_stream(
     return StoppableStream(chunks=channel, stop=stop_model), task
 
 
+def failed_span_message(response: ModelResponse) -> str | None:
+    """Status text for a generate span whose response came back failed."""
+    if response._failure is not None:
+        return response._failure.trace_message or response._failure.message
+    return response.error.message if response.error is not None else None
+
+
 def define_generate_action(ai: _aio.Genkit) -> None:
     """Register the generation action triggered by the Dev UI."""
 
@@ -808,7 +817,7 @@ def define_generate_action(ai: _aio.Genkit) -> None:
             context=dict(ctx.context),
         )
         if response.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(response))
         return response
 
     _ = ai._registry.register_action(
@@ -851,7 +860,7 @@ async def generate_action(
             context=context,
         )
         if result.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(result))
         return result
 
     return await run_in_new_span('generate', body, action_type='util', input=options)
@@ -1368,45 +1377,83 @@ def boxed_finish_message(*, exc: BaseException, pipe_failed: bool) -> str:
     return INTERNAL_FINISH_MESSAGE
 
 
-# Set on an exception once log_dropped_failure has logged it, so the tool site
-# and the generate-level box never log the same failure twice.
+# Set on an exception once log_dropped_failure has logged it, so the tool site,
+# the generate-level box, and an outer agent never log the same failure twice.
 _LOGGED_ATTR = '_genkit_failure_logged'
 
 
-def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: str | None = None) -> None:
-    """Log a failure whose cause boxing hides behind ``internal error``.
+def mark_failure_logged(exc: BaseException) -> None:
+    """Stamp ``exc`` as already logged so an outer handler skips it."""
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, _LOGGED_ATTR, True)
 
-    The caller only gets ``finish_reason=failed`` with ``internal error``, so
-    without this line the cause lives only in an exported trace. Failures that
-    keep their own message (``PublicError``, a ``GenkitError`` without a
-    foreign cause) are already on ``response.error`` and are not logged.
+
+def log_dropped_failure(
+    exc: BaseException,
+    *,
+    model: str | None = None,
+    tool: str | None = None,
+    agent: str | None = None,
+    redacted: bool = False,
+) -> bool:
+    """Log an unraised turn failure boxed onto ``ModelResponse`` or redacted on the agent wire.
+
+    ``generate()`` returns ``finish_reason=failed`` instead of raising once a
+    turn has started, so callers reading ``response.text`` would otherwise get
+    an empty string with no log output. ``PublicError`` is an intentional
+    caller-facing rejection on ``response.error`` and is not logged. A served
+    agent's wire (``client_safe_failure``) hides every message not raised as a
+    ``PublicError`` itself and passes ``redacted=True``, so a ``PublicError``
+    wrapped as a cause is still logged there. Returns True once ``exc`` has
+    been logged (on this call or an earlier inner one).
 
     Args:
         exc: The exception about to be boxed.
         model: Model the turn was calling, when known.
         tool: Tool that raised, when known. Named over ``model``.
+        agent: Agent whose turn raised, when known. ``tool`` and ``model``
+            are named over it.
+        redacted: Caller's boundary hides ``exc`` even when it wraps a
+            ``PublicError`` cause.
     """
     if getattr(exc, _LOGGED_ATTR, False):
-        return
-    if boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
-        return
-    with contextlib.suppress(AttributeError, TypeError):
-        setattr(exc, _LOGGED_ATTR, True)
+        return True
+    if not redacted and public_error(exc) is not None:
+        return False
+    mark_failure_logged(exc)
     fields: dict[str, object] = {}
     if model:
         fields['model'] = model
     if tool:
         fields['tool'] = tool
+    if agent:
+        fields['agent'] = agent
     span = current_span.get()
     if span is not None and span.trace_id:
         fields['trace_id'] = span.trace_id
+    message = str(exc)
+    fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        fields['at'] = f'{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
         culprit = f'model {model!r}'
+    elif agent:
+        culprit = f'agent {agent!r}'
     else:
-        culprit = 'generate'
-    logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+        culprit = 'agent' if redacted else 'generate'
+    # one line, no traceback: a pretty-printed traceback with locals costs
+    # hundreds of ms per failed turn and dumps frame locals into the logs.
+    logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
+    # The box hides the cause and no span keeps the stack, so a bug in Genkit
+    # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug
+    # brings it back.
+    logger.debug('%s failure details', culprit, exc_info=exc, **fields)
+    return True
 
 
 def stamp_cancelled_error(
@@ -1468,14 +1515,16 @@ def box_from_exc(
     """Box a failure after generate has entered: closed history, unanswered turn dropped."""
     callback_cause = streaming_callback_cause(exc=exc)
     pipe_failed = False
+    logged = bool(getattr(exc, _LOGGED_ATTR, False))
     if callback_cause is not None:
         # The stream pipe is framework plumbing, not a tool or model
         # sentinel. Keep the sink's wording; replace any loop reason.
         exc = callback_cause
         reason = ErrorReason.STREAM_CALLBACK_FAILED
         pipe_failed = True
+        logged = False
     elif not caller_stopped:
-        log_dropped_failure(exc, model=model)
+        logged = log_dropped_failure(exc, model=model)
     finish_message = boxed_finish_message(exc=exc, pipe_failed=pipe_failed)
     if caller_stopped:
         finish_message = 'Generation aborted.'
@@ -1495,12 +1544,17 @@ def box_from_exc(
         details['reason'] = reason.value
     # Failure.details is a JSON object (Go's map[string]any); drop an empty one.
     failure_details = dict(cast(Mapping[str, Any], details)) if isinstance(details, Mapping) and details else None
+    failure = Failure(status=status, message=finish_message, details=failure_details)
+    if not caller_stopped and not pipe_failed and isinstance(exc, PublicError):
+        mark_public_failure(failure)
+    if logged:
+        mark_logged_failure(failure)
     out = box_dead_turn(
         response=response,
         messages=messages,
         finish_reason=FinishReason.ABORTED if caller_stopped else FinishReason.FAILED,
         finish_message=finish_message,
-        error=Failure(status=status, message=finish_message, details=failure_details),
+        error=failure,
         request=request,
     )
     if not caller_stopped:
@@ -1835,7 +1889,7 @@ async def generate_turn(
             resolved=resolved,
         )
         if result.error is not None:
-            set_span_state('error')
+            set_span_state('error', message=failed_span_message(result))
         return result
 
     return await hop(
@@ -2710,9 +2764,9 @@ async def resolve_resume_options(
     last_message = messages[-1] if messages else None
     tool_requests = [p for p in last_message.content if p.tool_request is not None] if last_message else []
     if last_message is None or last_message.role != Role.MODEL or len(tool_requests) == 0:
-        raise GenkitError(
-            status='FAILED_PRECONDITION',
-            message=(
+        raise PublicError(
+            'FAILED_PRECONDITION',
+            (
                 "Cannot 'resume' generation unless the previous message is a model "
                 'message with at least one tool request.'
             ),
@@ -2763,9 +2817,9 @@ async def resolve_resume_options(
         return (options, interrupted, None)
 
     if len(tool_responses) != len(tool_requests):
-        raise GenkitError(
-            status='FAILED_PRECONDITION',
-            message=f'Expected {len(tool_requests)} responses, but resolved to {len(tool_responses)}',
+        raise PublicError(
+            'FAILED_PRECONDITION',
+            f'Expected {len(tool_requests)} responses, but resolved to {len(tool_responses)}',
             reason=ErrorReason.INVALID_RESUME,
         )
 
@@ -2912,9 +2966,9 @@ async def resolve_resumed_tool(
             executed,
         )
 
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f"Unresolved tool request '{tool_req.name}' "
+    raise PublicError(
+        'INVALID_ARGUMENT',
+        f"Unresolved tool request '{tool_req.name}' "
         + "was not handled by the 'resume' argument. You must supply replies or "
         + 'restarts for all interrupted tool requests.',
         reason=ErrorReason.UNRESOLVED_TOOL_REQUEST,

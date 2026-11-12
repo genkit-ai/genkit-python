@@ -95,9 +95,8 @@ def context_api_key(context: Mapping[str, object] | None) -> str | None:
         )
     bag = cast(Mapping[str, object], secrets)
     for slot in _KEY_SLOTS:
-        value = bag.get(slot)
-        if value is not None:
-            return _clean_key(value, slot)
+        if slot in bag:
+            return _clean_key(bag[slot], slot)
     return None
 
 

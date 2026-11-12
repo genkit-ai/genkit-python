@@ -39,7 +39,24 @@ from genkit._ai._agents._session_stores._util import (
     session_id_of,
     subscribe,
 )
+from genkit._core._error import Failure
 from genkit._core._model import SessionSnapshot
+
+
+def _copy_snapshot(snap: SessionSnapshot) -> SessionSnapshot:
+    """Deep-copy ``snap`` without in-process ``Failure`` provenance, matching JSON stores."""
+    copied = snap.model_copy(deep=True)
+    if copied.error is not None:
+        copied = copied.model_copy(
+            update={
+                'error': Failure(
+                    status=copied.error.status,
+                    message=copied.error.message,
+                    details=copied.error.details,
+                )
+            }
+        )
+    return copied
 
 
 class InMemorySessionStore(SessionStoreLock, SessionStore[StateT], SnapshotSubscriber, Generic[StateT]):
@@ -69,12 +86,12 @@ class InMemorySessionStore(SessionStoreLock, SessionStore[StateT], SnapshotSubsc
         async with self.lock:
             if snapshot_id is not None:
                 snap = self.snapshots.get(snapshot_id)
-                return snap.model_copy(deep=True) if snap is not None else None
+                return _copy_snapshot(snap) if snap is not None else None
 
             assert session_id is not None
             owned = [snap for snap in self.snapshots.values() if session_id_of(snap) == session_id]
             leaf = select_leaf(snapshots=owned, session_id=session_id, reject_ambiguous=self.reject_ambiguous)
-            return leaf.model_copy(deep=True) if leaf is not None else None
+            return _copy_snapshot(leaf) if leaf is not None else None
 
     async def save_snapshot(
         self,
@@ -87,10 +104,14 @@ class InMemorySessionStore(SessionStoreLock, SessionStore[StateT], SnapshotSubsc
         _ = context
         async with self.lock:
             existing = self.snapshots.get(snapshot_id)
-            next_snapshot = apply_save(existing=existing, snapshot_id=snapshot_id, fn=fn)
+            next_snapshot = apply_save(
+                existing=_copy_snapshot(existing) if existing is not None else None,
+                snapshot_id=snapshot_id,
+                fn=fn,
+            )
             if next_snapshot is None:
                 return None
-            self.snapshots[next_snapshot.snapshot_id] = next_snapshot.model_copy(deep=True)
+            self.snapshots[next_snapshot.snapshot_id] = _copy_snapshot(next_snapshot)
             notify(subs=self.subs, snapshot_id=next_snapshot.snapshot_id, status=next_snapshot.status)
             return next_snapshot
 

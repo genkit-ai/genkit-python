@@ -40,7 +40,12 @@ from genkit._ai._agents._session import (
 from genkit._ai._agents._session_stores._util import session_id_of
 from genkit._ai._agents._snapshot import walk_back_to_resumable
 from genkit._ai._agents._types import ChunkTransform, StateTransform, TurnContext, TurnResult
-from genkit._ai._generate import CallScope, generate_action
+from genkit._ai._generate import (
+    CallScope,
+    generate_action,
+    log_dropped_failure,
+    mark_failure_logged,
+)
 from genkit._ai._json_patch import diff_json
 from genkit._core._action import ActionRunContext, get_current_context
 from genkit._core._channel import CloseableQueue, QueueShutDown
@@ -53,7 +58,11 @@ from genkit._core._error import (
     PublicError,
     StatusName,
     TaskGroupError,
+    attached_cause,
     interrupt_escape_error,
+    is_logged_failure,
+    is_public_failure,
+    mark_public_failure,
 )
 from genkit._core._logger import get_logger
 from genkit._core._model import (
@@ -70,6 +79,7 @@ from genkit._core._model import (
     SessionSnapshot,
     SessionState,
 )
+from genkit._core._telemetry._http import mark_already_sourced
 from genkit._core._telemetry._instrumentation import SpanContext, run_in_new_span
 from genkit._core._typing import (
     AgentFinishReason,
@@ -105,8 +115,11 @@ class SessionRunner(Generic[StateT]):
         get_parent_snapshot_id: Callable[[], str | None] | None = None,
         on_begin_turn: Callable[[], Awaitable[None]] | None = None,
         on_end_turn: Callable[[AgentFinishReason | None], Awaitable[str | None]] | None = None,
+        agent_name: str | None = None,
     ) -> None:
         self.session = session
+        # Names the agent in the server-side log when a turn error is redacted.
+        self._agent_name = agent_name
         self.turn_inputs = turn_inputs
         self.store = store
         self.get_parent_snapshot_id = get_parent_snapshot_id
@@ -220,7 +233,7 @@ class SessionRunner(Generic[StateT]):
                 else:
                     raise
                 self.last_turn_finish_reason = AgentFinishReason.FAILED
-                self.last_turn_error = to_error_details(turn_error)
+                self.last_turn_error = to_error_details(turn_error, agent=self._agent_name)
 
                 if self.on_end_turn is not None:
                     await self.on_end_turn(AgentFinishReason.FAILED)
@@ -317,9 +330,9 @@ class AgentInitError(PublicError):
 
     Covers calling an agent with an init that does not match its state-management
     mode (e.g. sending ``state`` to a server-managed agent). Recoverable pre-turn
-    problems (missing snapshot, non-resumable snapshot, invalid custom state)
-    stay as plain ``GenkitError`` so the caller can absorb them into
-    ``finish_reason='failed'``.
+    problems (missing or non-resumable snapshot, invalid custom state) are not
+    subclasses of ``AgentInitError``, so ``define_custom_agent`` absorbs them
+    into ``finish_reason='failed'``.
 
     It is a ``PublicError``: the message names only the init fields and ids the
     caller sent, so a served agent returns its status, message, and
@@ -335,7 +348,7 @@ class AgentInitError(PublicError):
             message: Caller-facing sentence; must not include server-side data.
             reason: Stable reason, sent on the wire as ``details.reason``.
         """
-        super().__init__(status, message, details={'reason': reason.value} if reason is not None else None)
+        super().__init__(status, message, reason=reason)
 
 
 def seeded_init_fields(state: SessionState) -> str:
@@ -406,8 +419,9 @@ async def load_session(
     client is validated against it before the session is built.
 
     State-management mismatches raise ``AgentInitError`` (must propagate).
-    Missing/non-resumable snapshots and invalid custom state raise plain
-    ``GenkitError`` for the caller to turn into ``finish_reason='failed'``.
+    Missing/non-resumable snapshots raise ``PublicError`` and invalid custom
+    state raises ``GenkitError``; the agent boundary turns both into
+    ``finish_reason='failed'``.
     """
     name = agent_name or 'agent'
 
@@ -418,9 +432,9 @@ async def load_session(
     if store is not None and init.snapshot_id:
         snap = await store.get_snapshot(snapshot_id=init.snapshot_id, context=ctx)
         if snap is None:
-            raise GenkitError(
-                status='NOT_FOUND',
-                message=f'Snapshot {init.snapshot_id!r} not found',
+            raise PublicError(
+                'NOT_FOUND',
+                f'Snapshot {init.snapshot_id!r} not found',
                 reason=ErrorReason.SNAPSHOT_NOT_FOUND,
             )
         # When init carries both ids, the snapshot id picks the row and the
@@ -438,9 +452,9 @@ async def load_session(
         # A failed/aborted/pending snapshot is kept for inspection but isn't a
         # valid place to continue a conversation from.
         if snap.status != SnapshotStatus.COMPLETED:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
+            raise PublicError(
+                'INVALID_ARGUMENT',
+                (
                     f'Snapshot {init.snapshot_id!r} is not resumable '
                     f'(status: {snap.status.value if snap.status else "unknown"}). '
                     "Only 'completed' snapshots can be resumed."
@@ -523,6 +537,7 @@ class AgentRuntime:
             get_parent_snapshot_id=lambda: self.last_snapshot.snapshot_id if self.last_snapshot else None,
             on_begin_turn=self.reset_custom_patch_turn,
             on_end_turn=self.emit_turn_end,
+            agent_name=name,
         )
 
         session.on_custom_changed(self.emit_custom_patch)
@@ -846,7 +861,7 @@ class AgentRuntime:
                 parent_id=pending_snap.parent_id or '',
                 status=SnapshotStatus.FAILED if is_failed else SnapshotStatus.COMPLETED,
                 state=state,
-                error=(to_error_details(fn_err) if fn_err else turn_err),
+                error=(to_error_details(fn_err, agent=self.name) if fn_err else turn_err),
                 finish_reason=finish_reason,
                 created_at=existing.created_at if existing else now,
             )
@@ -1151,11 +1166,23 @@ async def generate_prompt_agent_turn(
 
     # Bad JSON is not a dead turn — generate already kept the model text.
     if response.error is not None and response.error.reason is not ErrorReason.INVALID_OUTPUT:
-        raise GenkitError(
+        if is_public_failure(response.error):
+            public_err = PublicError(
+                response.error.status or 'INTERNAL',
+                response.error.message,
+                details=response.error.details,
+            )
+            mark_already_sourced(public_err)
+            raise public_err
+        err = GenkitError(
             message=response.error.message,
             status=response.error.status,
             details=response.error.details,
         )
+        mark_already_sourced(err)
+        if is_logged_failure(response.error):
+            mark_failure_logged(err)
+        raise err
 
     # Return the turn result wrapping the model finish reason
     finish_reason = to_agent_finish_reason(response.finish_reason) if response.finish_reason is not None else None
@@ -1167,7 +1194,7 @@ async def generate_prompt_agent_turn(
 # ---------------------------------------------------------------------------
 
 
-def to_error_details(exc: BaseException) -> Failure:
+def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure:
     """A turn failure as data, with the status classified like Go's ``status.Classified``.
 
     Classifies the top-level exception; Go also walks the wrapped chain
@@ -1176,12 +1203,31 @@ def to_error_details(exc: BaseException) -> Failure:
     Only a GenkitError names its own status. A third-party ``.status``
     attribute (aiohttp's ``status=429``) isn't a Genkit status, so it never
     leaks through.
+
+    The Failure keeps the exception's own text, like JS ``toErrorDetails``
+    and Go ``convertKeepText``, so in-process callers, the session store and
+    the Dev UI see what went wrong. A served agent's HTTP caller doesn't:
+    outside ``GENKIT_ENV=dev``, ``genkit.web`` swaps in a generic message
+    unless the turn raised a ``PublicError`` (see ``client_safe_failure``). Every non-``PublicError``
+    failure (except an escaped ``Interrupt``) is logged here unless
+    ``generate`` already logged it, so the server log has what the wire
+    redacts.
+
+    Args:
+        exc: The exception that ended the turn or invocation.
+        agent: Agent name for the server-side log line, when known.
     """
     status: StatusName
     details: dict[str, Any] | None = None
     if isinstance(exc, GenkitError):
         status = exc.status
         message = exc.message
+        cause = attached_cause(exc)
+        # interrupt_escape_error's sentence isn't foreign text: the attached
+        # Interrupt is tool metadata. A prompt agent stamps mark_failure_logged
+        # on the GenkitError it re-raises when generate already logged it.
+        escaped_interrupt = cause is not None and interrupt_escape_error(cause) is not None
+        hides_cause = not isinstance(exc, PublicError) and not escaped_interrupt
         if isinstance(exc.details, Mapping) and exc.details:
             details = dict(cast(Mapping[str, Any], exc.details))
     else:
@@ -1193,7 +1239,13 @@ def to_error_details(exc: BaseException) -> Failure:
         else:
             status = 'INTERNAL'
         message = str(exc) or 'Internal failure'
-    return Failure(status=status, message=message, details=details)
+        hides_cause = True
+    if hides_cause:
+        log_dropped_failure(exc, agent=agent, redacted=True)
+    failure = Failure(status=status, message=message, details=details)
+    if isinstance(exc, PublicError):
+        mark_public_failure(failure)
+    return failure
 
 
 def to_agent_finish_reason(fr: FinishReason) -> AgentFinishReason:

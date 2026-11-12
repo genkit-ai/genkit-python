@@ -25,7 +25,7 @@ from functools import cached_property
 from typing import Annotated, Any, Any as JsonAny, Literal, TypeAlias, cast, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
+from genkit_google_genai._constants import is_multi_regional_location
 from genkit_google_genai._models._context_caching._constants import DEFAULT_TTL
 from genkit_google_genai._models._context_caching._utils import generate_cache_key, validate_context_cache_request
 from genkit_google_genai._models._sdk_config import (
@@ -35,14 +35,18 @@ from genkit_google_genai._models._sdk_config import (
     attach_config_extra,
     attach_leftovers,
     check_timeout_seconds,
-    copy_http_options,
     dump_family_config,
     reject_bool_timeout,
+    request_client_kwargs,
     sdk_config_error,
     split_sdk_fields,
     timeout_seconds_to_ms,
 )
-from genkit_google_genai._models._secrets import context_api_key, reject_request_config_api_key
+from genkit_google_genai._models._secrets import (
+    context_api_key,
+    missing_api_key_error,
+    reject_request_config_api_key,
+)
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, api_error, transport_error
 from google import genai
 from google.auth import default as google_auth_default
@@ -377,6 +381,28 @@ def _tool_config(tool_choice: str, function_tools: list[genai_types.Tool]) -> ge
     return genai_types.ToolConfig(function_calling_config=calling)
 
 
+def _effective_tool_choice(request: ModelRequest) -> str | None:
+    """The request's tool_choice, with 'required' relaxed to 'auto' once tools have answered.
+
+    Gemini's ANY mode only allows a function call, so keeping 'required' on
+    the turn after the tool responses loops until max_turns and never
+    produces the final answer. 'required' forces the first call of a user
+    turn; if any message after the most recent model turn carries a tool
+    response (even when middleware appended a trailing user message), later
+    turns may answer.
+    """
+    choice = request.tool_choice
+    if choice != 'required':
+        return choice
+    saw_tool_response = False
+    for msg in reversed(request.messages):
+        if msg.role == Role.MODEL:
+            return 'auto' if saw_tool_response else choice
+        if msg.role == Role.TOOL or any(p.tool_response is not None for p in msg.content):
+            saw_tool_response = True
+    return choice
+
+
 def _pop_prefixed(config: dict[str, Any], prefix: str) -> dict[str, Any]:
     """Pop every ``<prefix>name`` key from *config*, returned as ``{name: value}``."""
     return {key[len(prefix) :]: config.pop(key) for key in [k for k in config if k.startswith(prefix)]}
@@ -651,7 +677,9 @@ class GeminiConfig(ModelConfig):
         default=None,
         description=(
             'For Gemini 3 and later - the thinking level. A higher level is associated with more '
-            'detailed thinking, which is needed for solving more complex tasks. Not with thinking_budget.'
+            'detailed thinking, which is needed for solving more complex tasks. Not with thinking_budget. '
+            'Supported levels vary by model: gemini-3.8-flash and gemini-3.1-pro-preview reject MINIMAL '
+            'with INVALID_ARGUMENT. Gemini 2.5 models reject thinking_level; use thinking_budget.'
         ),
     )
     thinking_budget: int | None = Field(
@@ -739,7 +767,7 @@ class GeminiTtsConfig(GeminiConfig):
 
         # 3. Access synthesized audio parts
         print(res.media.url if res.media else '')
-        # => data:audio/wav;base64,UklGRiQAAABXQVZFZ...
+        # => data:audio/L16;codec=pcm;rate=24000;base64,AAAAAP7/AQD+/w...
         ```
     """
 
@@ -778,7 +806,7 @@ class GeminiImageConfig(GeminiConfig):
 
         # 2. Generate architectural artwork with specified aspect ratio and size
         res = await ai.generate(
-            model=GoogleAI.gemini_image('gemini-2.5-flash-preview-image-generation'),
+            model=GoogleAI.gemini_image('gemini-3.1-flash-image'),
             prompt='A modern minimalist espresso bar with warm cedar accents.',
             config=GeminiImageConfig(
                 aspect_ratio='16:9',
@@ -787,8 +815,9 @@ class GeminiImageConfig(GeminiConfig):
         )
 
         # 3. Access generated image media
-        print(res.media.url if res.media else '')
-        # => data:image/png;base64,iVBORw0KGgoAAAANSU...
+        if res.media:
+            print(res.media.url[:40])
+            # => data:image/jpeg;base64,/9j/4AAQSkZJRgABA
         ```
     """
 
@@ -823,118 +852,61 @@ GEMINI_TEXT_SUPPORTS = ModelSupports(
     output=['text', 'json'],
 )
 
+# Gemini 2.5 HTTP-400s on response_mime_type='application/json' alongside tools,
+# and gemini-3.7/3.8-flash (including gemini-flash-latest) loops tool calls or
+# 504s when response_json_schema is sent next to function declarations.
+GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS = GEMINI_TEXT_SUPPORTS.model_copy(
+    update={'constrained': ConstrainedSupport.NO_TOOLS}
+)
+
 GEMINI_2_5_PRO_EXP_03_25 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Exp 03-25',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO_PREVIEW_03_25 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Preview 03-25',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO_PREVIEW_05_06 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Preview 05-06',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH_PREVIEW_04_17 = ModelInfo(
     label='Google AI - Gemini 2.5 Flash Preview 04-17',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO = ModelInfo(
     label='Google AI - Gemini 2.5 Pro',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH = ModelInfo(
     label='Google AI - Gemini 2.5 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH_LITE = ModelInfo(
     label='Google AI - Gemini 2.5 Flash Lite',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.NO_TOOLS,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_FLASH_PREVIEW = ModelInfo(
     label='Google AI - Gemini 3 Flash Preview',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_3_PRO_PREVIEW = ModelInfo(
     label='Google AI - Gemini 3 Pro Preview',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_3_5_FLASH = ModelInfo(
     label='Google AI - Gemini 3.5 Flash',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_3_6_FLASH = ModelInfo(
@@ -944,70 +916,56 @@ GEMINI_3_6_FLASH = ModelInfo(
 
 GEMINI_3_7_FLASH = ModelInfo(
     label='Google AI - Gemini 3.7 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_8_FLASH = ModelInfo(
     label='Google AI - Gemini 3.8 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
+)
+
+GEMINI_FLASH_LATEST = ModelInfo(
+    label='Google AI - Gemini Flash Latest',
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_1_PRO_PREVIEW = ModelInfo(
     label='Google AI - Gemini 3.1 Pro Preview',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 # customtools is registered identically to pro-preview (no distinct config in JS).
 GEMINI_3_1_PRO_PREVIEW_CUSTOMTOOLS = ModelInfo(
     label='Google AI - Gemini 3.1 Pro Preview (Custom Tools)',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_3_1_FLASH_LITE_PREVIEW = ModelInfo(
     label='Google AI - Gemini 3.1 Flash Lite Preview',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GEMINI_3_1_FLASH_LITE = ModelInfo(
     label='Google AI - Gemini 3.1 Flash Lite',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
+)
+
+GEMINI_3_5_FLASH_LITE = ModelInfo(
+    label='Google AI - Gemini 3.5 Flash Lite',
+    supports=GEMINI_3_1_FLASH_LITE.supports,
 )
 
 GEMINI_FLASH_LITE_LATEST = ModelInfo(
     label='Google AI - Gemini Flash Lite Latest',
     supports=GEMINI_TEXT_SUPPORTS,
+)
+
+# The ``-latest`` aliases rotate server side, so their labels name the alias,
+# not a generation. Capabilities match the generation they point at today
+# (GEMINI_FLASH_LATEST, above, shares the 3.7/3.8 tool-loop restriction).
+GEMINI_PRO_LATEST = ModelInfo(
+    label='Google AI - Gemini Pro Latest',
+    supports=GEMINI_3_PRO_PREVIEW.supports,
 )
 
 GEMINI_IMAGE_SUPPORTS = ModelSupports(
@@ -1084,13 +1042,15 @@ GEMINI_3_8_FLASH_LITE_TTS = ModelInfo(
     supports=GEMINI_TTS_SUPPORTS,
 )
 
+# Gemma 4 504s or skips tool calls when native JSON mode is sent alongside
+# function declarations; NO_TOOLS uses prompt-instructed JSON when tools are attached.
 GEMMA_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
     tool_choice=True,
     system_role=True,
-    constrained=ConstrainedSupport.ALL,
+    constrained=ConstrainedSupport.NO_TOOLS,
     output=['text', 'json'],
 )
 
@@ -1106,15 +1066,7 @@ GEMMA_4_31B_IT = ModelInfo(
 
 GENERIC_GEMINI_MODEL = ModelInfo(
     label='Google AI - Gemini',
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        tool_choice=True,
-        system_role=True,
-        constrained=ConstrainedSupport.ALL,
-        output=['text', 'json'],
-    ),
+    supports=GEMINI_TEXT_SUPPORTS,
 )
 
 GENERIC_TTS_MODEL = ModelInfo(
@@ -1146,8 +1098,6 @@ GENERIC_GEMMA_MODEL = ModelInfo(
 # Constructors take ``Known* | str``, so an unlisted id still type-checks
 # and routes.
 KnownSharedGemini: TypeAlias = Literal[
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
     'gemini-2.5-flash-lite',
     'gemini-3-flash-preview',
     'gemini-3.1-flash-lite',
@@ -1161,11 +1111,18 @@ KnownSharedGemini: TypeAlias = Literal[
 # Vertex AI does not serve the rotating ``-latest`` aliases.
 KnownGoogleAIGemini: TypeAlias = Literal[
     KnownSharedGemini,
+    'gemini-3.5-flash-lite',
     'gemini-flash-latest',
     'gemini-flash-lite-latest',
     'gemini-pro-latest',
 ]
-KnownVertexAIGemini: TypeAlias = KnownSharedGemini
+# The Gemini API (v1beta) returns 404 for the 2.5 Flash and Pro ids; Vertex AI
+# still lists them.
+KnownVertexAIGemini: TypeAlias = Literal[
+    KnownSharedGemini,
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+]
 KnownGeminiTts: TypeAlias = Literal[
     'gemini-2.5-flash-preview-tts',
     'gemini-2.5-pro-preview-tts',
@@ -1179,11 +1136,6 @@ KnownGeminiImage: TypeAlias = Literal[
     'gemini-3.1-flash-image',
 ]
 KnownGemma: TypeAlias = Literal[
-    'gemma-3-1b-it',
-    'gemma-3-4b-it',
-    'gemma-3-12b-it',
-    'gemma-3-27b-it',
-    'gemma-3n-e4b-it',
     'gemma-4-26b-a4b-it',
     'gemma-4-31b-it',
 ]
@@ -1209,8 +1161,11 @@ _add_model(GEMINI_2_5_FLASH, ['gemini-2.5-flash'])
 _add_model(GEMINI_2_5_FLASH_LITE, ['gemini-2.5-flash-lite'])
 _add_model(GEMINI_FLASH_LITE_LATEST, ['gemini-flash-lite-latest'])
 _add_model(GEMINI_3_FLASH_PREVIEW, ['gemini-3-flash-preview'])
-_add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview', 'gemini-pro-latest'])
-_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash', 'gemini-flash-latest'])
+_add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview'])
+_add_model(GEMINI_PRO_LATEST, ['gemini-pro-latest'])
+_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash'])
+_add_model(GEMINI_FLASH_LATEST, ['gemini-flash-latest'])
+_add_model(GEMINI_3_5_FLASH_LITE, ['gemini-3.5-flash-lite'])
 _add_model(GEMINI_3_6_FLASH, ['gemini-3.6-flash'])
 _add_model(GEMINI_3_7_FLASH, ['gemini-3.7-flash'])
 _add_model(GEMINI_3_8_FLASH, ['gemini-3.8-flash'])
@@ -1428,6 +1383,29 @@ def get_model_config_schema(name: str) -> type[GeminiConfig]:
     return GeminiConfig
 
 
+_LEGACY_NO_TOOLS_GEMINI_PREFIXES = ('gemini-1.', 'gemini-2.0-', 'gemini-2.5-')
+
+
+def _json_schema_instruction(schema: Mapping[str, Any]) -> str:
+    """Prompt instruction matching JsonFormat when native constrained output is unavailable."""
+    return (
+        'Output should be in JSON format and conform to the following schema:\n\n'
+        f'```\n{json.dumps(schema, indent=2)}\n```\n'
+    )
+
+
+def _has_instruction_text(
+    messages: Iterable[Message],
+    system_parts: Iterable[genai_types.Part],
+    instruction: str,
+) -> bool:
+    """Whether *instruction* already appears in request messages or system parts."""
+    needle = instruction.strip()
+    if any(part.text and needle in part.text for msg in messages for part in msg.content):
+        return True
+    return any(part.text and needle in part.text for part in system_parts)
+
+
 def google_model_info(
     version: str,
 ) -> ModelInfo:
@@ -1444,6 +1422,9 @@ def google_model_info(
     """
     if version in SUPPORTED_MODELS:
         return SUPPORTED_MODELS[version]
+    local = version.split('/')[-1]
+    if local in SUPPORTED_MODELS:
+        return SUPPORTED_MODELS[local]
 
     if is_tts_model(version):
         return GENERIC_TTS_MODEL
@@ -1451,6 +1432,12 @@ def google_model_info(
         return GENERIC_IMAGE_MODEL
     if is_gemma_model(version):
         return GENERIC_GEMMA_MODEL
+
+    if local.lower().startswith(_LEGACY_NO_TOOLS_GEMINI_PREFIXES):
+        return ModelInfo(
+            label=f'Google AI - {version}',
+            supports=DEFAULT_SUPPORTS_MODEL.model_copy(update={'constrained': ConstrainedSupport.NO_TOOLS}),
+        )
 
     return ModelInfo(
         label=f'Google AI - {version}',
@@ -1488,7 +1475,7 @@ class GeminiModel:
     def __init__(
         self,
         version: str,
-        client: genai.Client,
+        client: genai.Client | None,
         client_kwargs: dict[str, Any] | None = None,
         base_url_pinned: bool = False,
         legacy_response_schema: bool = False,
@@ -1497,7 +1484,7 @@ class GeminiModel:
 
         Args:
             version: Gemini version
-            client: Google AI client
+            client: Google AI client, or None when the plugin booted keyless
             client_kwargs: The plugin-level kwargs the client was constructed
                 from. Required for a per-request tenant key or client knobs
                 (api_version, base_url, location).
@@ -1852,6 +1839,8 @@ class GeminiModel:
         """
         validate_context_cache_request(request=request, model_name=model_name)
         cache_client = client if client is not None else self._client
+        if cache_client is None:
+            raise missing_api_key_error()
 
         ttl = _cache_ttl_seconds(cache_config)
         cache_key = generate_cache_key(contents=contents, model_name=model_name)
@@ -1901,8 +1890,12 @@ class GeminiModel:
         """
         model_name = self._version
         if request.config:
-            version = getattr(request.config, 'version', None)
-            if version:
+            version = (
+                cast(Mapping[str, Any], request.config).get('version')
+                if isinstance(request.config, Mapping)
+                else getattr(request.config, 'version', None)
+            )
+            if isinstance(version, str) and version:
                 model_name = version
 
         declared_tools, tool_table = self._declare_tools(request)
@@ -1974,6 +1967,11 @@ class GeminiModel:
 
         return response
 
+    def _is_vertex(self) -> bool:
+        if self._client is not None:
+            return bool(self._client.vertexai)
+        return bool((self._client_kwargs or {}).get('vertexai'))
+
     def _tts_needs_default_voice(self, model_name: str) -> bool:
         """Whether a TTS request that names no voice is sent the default voice.
 
@@ -1983,7 +1981,7 @@ class GeminiModel:
         Returns:
             True on Vertex AI, and for the Gemini API models in ``_GEMINI_API_TTS_MODELS_NEEDING_VOICE``.
         """
-        if self._client.vertexai:
+        if self._is_vertex():
             return True
         return model_name.split('/')[-1].lower() in _GEMINI_API_TTS_MODELS_NEEDING_VOICE
 
@@ -2003,6 +2001,8 @@ class GeminiModel:
         location_override = None
         bag = context if isinstance(context, dict) else {}
         secret_key = context_api_key(bag)
+        if self._client is None and not secret_key:
+            raise missing_api_key_error()
 
         if request.config:
             if isinstance(request.config, dict):
@@ -2014,11 +2014,12 @@ class GeminiModel:
                 base_url_override = getattr(request.config, 'base_url', None)
                 location_override = getattr(request.config, 'location', None)
 
-        if location_override and not self._client.vertexai:
+        if location_override and not self._is_vertex():
             # Location is a Vertex AI concept; ignore it for the Gemini API backend.
             location_override = None
 
         if not (api_version or secret_key or base_url_override or location_override):
+            assert self._client is not None
             return self._client
 
         if self._client_kwargs is None:
@@ -2028,45 +2029,23 @@ class GeminiModel:
                 'a model constructed with client_kwargs.',
             )
 
-        # Clone the plugin-level client kwargs so the temporary client keeps the
-        # plugin's credentials, endpoint, headers, and timeouts.
-        kwargs = dict(self._client_kwargs)
-        plugin_opts = kwargs.get('http_options')
-        opts = copy_http_options(plugin_opts) if plugin_opts is not None else genai_types.HttpOptions()
-
-        if api_version:
-            opts.api_version = api_version
-        if location_override:
-            kwargs['location'] = location_override
-            if not self._base_url_pinned and not base_url_override:
-                if is_multi_regional_location(location_override):
-                    # Multi-regions are served from dedicated endpoints the SDK
-                    # does not derive itself.
-                    opts.base_url = multi_regional_base_url(location_override)
-                else:
-                    opts.base_url = None
-        if base_url_override:
-            opts.base_url = base_url_override
-        if secret_key:
-            # Express / tenant keys are not a regional Vertex host. Drop
-            # project, location, and the plugin base_url unless this call
-            # set one.
-            kwargs['api_key'] = secret_key
-            kwargs['credentials'] = None
-            kwargs.pop('project', None)
-            kwargs.pop('location', None)
-            if not base_url_override:
-                opts.base_url = None
-        kwargs['http_options'] = opts
+        kwargs = request_client_kwargs(
+            self._client_kwargs,
+            api_key=secret_key,
+            api_version=api_version,
+            base_url=base_url_override,
+            location=location_override,
+            base_url_pinned=self._base_url_pinned,
+        )
 
         # The plugin's kwargs may carry project=None when the project comes
         # from ADC. Resolve it here, off the event loop: the SDK's own
         # resolution would block the loop, and it skips resolution entirely
         # when a base_url is set. Express mode (api_key) takes no project --
         # the SDK rejects the two together -- so the probe is skipped there.
-        if self._client.vertexai and not kwargs.get('project') and not kwargs.get('api_key'):
+        if self._is_vertex() and not kwargs.get('project') and not kwargs.get('api_key'):
             kwargs['project'] = getattr(kwargs.get('credentials'), 'project_id', None) or await _adc_project()
-        if self._client.vertexai and not kwargs.get('project') and is_multi_regional_location(kwargs.get('location')):
+        if self._is_vertex() and not kwargs.get('project') and is_multi_regional_location(kwargs.get('location')):
             if kwargs.get('api_key'):
                 raise GenkitError(
                     status='FAILED_PRECONDITION',
@@ -2114,10 +2093,12 @@ class GeminiModel:
         Returns:
             genai response.
         """
-        client = client or self._client
+        active_client = client or self._client
+        if active_client is None:
+            raise missing_api_key_error()
         try:
-            response = await client.aio.models.generate_content(
-                model=resolve_vertex_model_name(client, model_name),
+            response = await active_client.aio.models.generate_content(
+                model=resolve_vertex_model_name(active_client, model_name),
                 contents=cast(genai_types.ContentListUnion, request_contents),
                 config=request_cfg,
             )
@@ -2175,7 +2156,9 @@ class GeminiModel:
         Returns:
             genai response.
         """
-        client = client or self._client
+        active_client = client or self._client
+        if active_client is None:
+            raise missing_api_key_error()
         accumulated_content: list[Part] = []
         finish_reason = FinishReason.UNKNOWN
         usage_metadata: Any = None
@@ -2183,8 +2166,8 @@ class GeminiModel:
         saw_chunk = False
         saw_candidates = False
         try:
-            generator = await client.aio.models.generate_content_stream(
-                model=resolve_vertex_model_name(client, model_name),
+            generator = await active_client.aio.models.generate_content_stream(
+                model=resolve_vertex_model_name(active_client, model_name),
                 contents=cast(genai_types.ContentListUnion, request_contents),
                 config=request_cfg,
             )
@@ -2404,6 +2387,7 @@ class GeminiModel:
         tools.extend(function_tools)
 
         has_output = bool(request.output_format or request.output_schema or request.output_content_type)
+        tool_choice = _effective_tool_choice(request) if function_tools else None
 
         if cfg is not None or tools or system_instruction or has_output or leftovers or extra or timeout is not None:
             if cfg is None:
@@ -2412,8 +2396,12 @@ class GeminiModel:
             if has_output:
                 model_name = self._version
                 if request.config:
-                    version = getattr(request.config, 'version', None)
-                    if version:
+                    version = (
+                        cast(Mapping[str, Any], request.config).get('version')
+                        if isinstance(request.config, Mapping)
+                        else getattr(request.config, 'version', None)
+                    )
+                    if isinstance(version, str) and version:
                         model_name = version
 
                 # Check if the model supports constrained generation with this configuration
@@ -2426,14 +2414,28 @@ class GeminiModel:
                 supports_constrained = model_supports_constrained == ConstrainedSupport.ALL or (
                     model_supports_constrained == ConstrainedSupport.NO_TOOLS and not request.tools
                 )
-                if supports_constrained:
+                # In ANY mode the turn can only be a function call, and Gemini
+                # rejects JSON mode next to it. The schema applies on the
+                # follow-up turn, where tool_choice is back to 'auto'.
+                if supports_constrained and tool_choice != 'required':
                     self._apply_output_config(cfg, request)
+                elif (
+                    not supports_constrained
+                    and request.output_constrained
+                    and request.output_schema
+                    and request.output_format in (None, 'json')
+                    and (request.output_format == 'json' or request.output_content_type == 'application/json')
+                    and (model_info.supports is None or model_info.supports.system_role is not False)
+                ):
+                    fallback_instruction = _json_schema_instruction(request.output_schema)
+                    if not _has_instruction_text(request.messages, system_instruction, fallback_instruction):
+                        system_instruction.append(genai_types.Part(text=fallback_instruction))
 
             if tools:
                 cfg.tools = cast(genai_types.ToolListUnion, tools)
 
-            if request.tool_choice and function_tools:
-                cfg.tool_config = _tool_config(request.tool_choice, function_tools)
+            if tool_choice:
+                cfg.tool_config = _tool_config(tool_choice, function_tools)
 
             cfg.system_instruction = genai_types.Content(parts=system_instruction) if system_instruction else None
             cfg = attach_leftovers(cfg, leftovers, nest='generationConfig')
@@ -2477,7 +2479,10 @@ class GeminiModel:
 
         JSON output turns on JSON mode, and constrained JSON output also sends
         the schema verbatim as ``response_json_schema``, or as a converted
-        ``response_schema`` when ``legacy_response_schema`` is set. Constrained
+        ``response_schema`` when ``legacy_response_schema`` is set. When tools
+        are attached and a schema was explicitly marked unconstrained
+        (``output_constrained=False``), JSON mode is omitted so prompt-instructed
+        schema generation does not collide with function calling. Constrained
         enum output sends ``text/x.enum`` with a converted ``response_schema``;
         enum output without a constrained schema sends neither.
         """
@@ -2486,7 +2491,8 @@ class GeminiModel:
         enum_mode = request.output_format == 'enum' or request.output_content_type == 'text/enum'
 
         if json_mode:
-            cfg.response_mime_type = 'application/json'
+            if not (schema and not request.output_constrained and request.tools):
+                cfg.response_mime_type = 'application/json'
             if schema and request.output_constrained:
                 if self._legacy_response_schema:
                     cfg.response_schema = self._output_response_schema(schema)
@@ -2528,7 +2534,7 @@ class GeminiModel:
         google-genai raises its own ValueError for these, with the nested
         SDK path; the plugin knows the backend, so it raises first.
         """
-        if self._client.vertexai:
+        if self._is_vertex():
             fields = [
                 *(('file_search_store_names',) if present_items(config.get('file_search_store_names')) else ()),
                 *(

@@ -37,7 +37,7 @@ client = define_mcp_client(
 )
 
 
-@ai.flow()
+@ai.flow
 async def browse_shelves(topic: str) -> str:
     """Shop for a book on a topic with every bookshop tool on offer."""
     res = await ai.generate(
@@ -47,7 +47,7 @@ async def browse_shelves(topic: str) -> str:
     return res.text
 
 
-@ai.flow()
+@ai.flow
 async def ask_opening_hours(day: str) -> str:
     """Ask about a day's opening hours with just the one tool that answers it."""
     res = await ai.generate(

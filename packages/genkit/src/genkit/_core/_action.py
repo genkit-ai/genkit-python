@@ -243,7 +243,7 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
 
     Example:
         ```python
-        @ai.flow()
+        @ai.flow
         async def track_order(order_id: str, ctx: FlowContext[str]) -> str:
             ctx.send_chunk('Out for delivery')
             return f'Order {order_id} delivered'
@@ -869,7 +869,7 @@ class ActionRunContext(Generic[ChunkT]):
     ``genkit.model.ModelContext``, and ``genkit.exp.agent.AgentContext``.
     ``ChunkT`` is the type ``send_chunk`` accepts.
 
-        @ai.flow()
+        @ai.flow
         async def plate_dish(dish: str, ctx: FlowContext[str]) -> str:
             ctx.send_chunk('searing')
             return f'{dish} for {ctx.context.get("table", "walk-in")}'
@@ -937,11 +937,11 @@ class FlowContext(ActionRunContext[ChunkT]):
             return ctx.context['auth']['uid']
 
         # 2. Call it from a flow and from a tool
-        @ai.flow()
+        @ai.flow
         async def reorder_last(dish: str, ctx: FlowContext) -> str:
             return f'{dish} for {user_id(ctx)}'
 
-        @ai.tool()
+        @ai.tool
         async def check_allergies(dish: str, ctx: ToolContext) -> str:
             return f'{dish}: nut-free for {user_id(ctx)}'
 
@@ -1655,8 +1655,9 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 else:
                     output = await self._invoke(input, ctx)
             except Interrupt as e:
-                if e.metadata:
-                    span.set_metadata({'interrupt': e.metadata})
+                # the Dev UI shows the interrupted icon off this key, so a bare
+                # interrupt with nothing to say still needs it.
+                span.set_metadata({'interrupt': e.metadata or True})
                 # Only generate's tool loop turns an Interrupt into a pause.
                 # With no tool above, it is a BaseException that `except
                 # Exception` handlers (web adapters, agent transports) would

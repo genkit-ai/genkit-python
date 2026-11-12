@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,20 +21,38 @@ from genkit_fastapi.exp import serve_agent
 
 from genkit import (
     ErrorReason,
+    Failure,
     FinishReason,
+    GenkitError,
+    Interrupt,
     Message,
     ModelResponse,
     ModelResponseChunk,
     Part,
+    PublicError,
     Role,
 )
 
-# error_from_http is private: this test pins the client-side HTTP error mapping.
-from genkit._ai._agents._client import error_from_http  # noqa: TID251
+# error_from_http / error_from_wire are private: this test pins client-side HTTP error mapping.
+from genkit._ai._agents._client import error_from_http, error_from_wire  # noqa: TID251
 from genkit.exp import Genkit
-from genkit.exp.agent import AgentInit, InMemorySessionStore
+from genkit.exp.agent import (
+    AgentContext,
+    AgentInit,
+    AgentInput,
+    AgentResult,
+    FileSessionStore,
+    InMemorySessionStore,
+    SessionRunner,
+    SessionSnapshot,
+    SessionState,
+    SnapshotStatus,
+    TurnContext,
+    TurnResult,
+)
+from genkit.plugin_api import provider_error
 from genkit.testing import define_scripted_model
-from genkit.web import to_sse
+from genkit.web import error_json, to_sse
 
 
 def build_agent(name: str, *, server_managed: bool = True) -> Any:
@@ -340,3 +360,373 @@ def test_hand_rolled_routes_send_the_same_frames_as_serve_agent() -> None:
     assert frames(served.text) == expected
     assert frames(hand.post('/request?stream=true', json=wire_body).text) == expected
     assert frames(hand.post('/to_sse').text) == expected
+
+
+class _ProviderHttpError(Exception):
+    """Stands in for an SDK's HTTP error whose text carries the request URL."""
+
+
+def _failing_agent(name: str, exc: Exception) -> Any:
+    """A server-managed custom agent whose every turn raises ``exc``."""
+    ai = Genkit()
+
+    async def fn(session_runner: SessionRunner, _ctx: AgentContext) -> AgentResult:
+        async def turn(_inp: AgentInput, _tc: TurnContext) -> TurnResult | None:
+            raise exc
+
+        await session_runner.run(turn)
+        return await session_runner.result()
+
+    return ai.define_custom_agent(name=name, fn=fn, store=InMemorySessionStore())
+
+
+@pytest.mark.parametrize(
+    ('exc', 'expected'),
+    [
+        (ValueError('db password=hunter2'), {'status': 'INTERNAL', 'message': 'Internal Error'}),
+        (
+            PublicError('PERMISSION_DENIED', 'table 12 is reserved'),
+            {'status': 'PERMISSION_DENIED', 'message': 'table 12 is reserved'},
+        ),
+        (
+            GenkitError(status='NOT_FOUND', message='no row in tenant_secrets for key=hunter2'),
+            {'status': 'NOT_FOUND', 'message': 'Not Found'},
+        ),
+        (
+            provider_error(_ProviderHttpError('429 https://api.example.com/v1?key=hunter2'), http_status=429),
+            {'status': 'RESOURCE_EXHAUSTED', 'message': 'Resource Exhausted'},
+        ),
+    ],
+    ids=['foreign', 'public', 'genkit_not_found', 'provider_429'],
+)
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+def test_failed_turn_sends_only_public_error_text(exc: Exception, expected: dict[str, str], stream: bool) -> None:
+    """A failed turn is a 200; its error follows error_body's rule, so only a PublicError's text goes out."""
+    response = client(_failing_agent('ordersDb', exc)).post(
+        f'/api/chat?stream={str(stream).lower()}', json={'message': 'refund A-17'}
+    )
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    assert result['error'] == expected
+    assert 'hunter2' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_keeps_error_text_in_process_and_in_the_store() -> None:
+    """Redaction is at the wire: res.error and the stored snapshot keep the exception's text."""
+    agent = _failing_agent('ordersDb', RuntimeError('pos sync failed: dsn=pg://admin@10.0.0.4'))
+
+    # 1. Detach so the background finalize writes the failure into the store.
+    out = await agent.run(
+        input=AgentInput(message=Message(role=Role.USER, content=[Part.from_text('refund A-17')]), detach=True),
+        init=AgentInit(),
+    )
+    snapshot_id = out.response.snapshot_id
+    assert snapshot_id is not None
+    for _ in range(200):
+        snap = await agent.get_snapshot_data(snapshot_id=snapshot_id)
+        if snap is not None and snap.status == SnapshotStatus.FAILED:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError('detached turn never finalized')
+
+    # 2. In process, the stored snapshot keeps the exception's text.
+    assert snap.error is not None
+    assert snap.error.message == 'pos sync failed: dsn=pg://admin@10.0.0.4'
+
+    # 3. Over HTTP, getSnapshot sends the generic message.
+    served = client(agent).post('/api/chat/getSnapshot', json={'snapshotId': snapshot_id})
+    assert served.json()['result']['error'] == {'status': 'INTERNAL', 'message': 'Internal Error'}
+
+
+@pytest.mark.parametrize(
+    ('tool_exc', 'expected'),
+    [
+        (
+            PublicError('PERMISSION_DENIED', 'table 12 is reserved'),
+            {
+                'status': 'PERMISSION_DENIED',
+                'message': 'table 12 is reserved',
+                'details': {'reason': ErrorReason.TOOL_FAILED.value},
+            },
+        ),
+        (
+            RuntimeError('allergen db password=hunter2'),
+            {'status': 'INTERNAL', 'message': 'Internal Error'},
+        ),
+    ],
+    ids=['public_tool_error', 'private_tool_error'],
+)
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+def test_prompt_agent_tool_error_preserves_public_error_over_http(
+    tool_exc: Exception,
+    expected: dict[str, Any],
+    stream: bool,
+) -> None:
+    """A prompt agent whose tool raises PublicError sends that sentence over HTTP; private tool crashes redact."""
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='reserve_table')
+    async def reserve_table(table: int) -> str:  # noqa: ARG001
+        raise tool_exc
+
+    pm.responses = [
+        ModelResponse(
+            message=Message(
+                role=Role.MODEL,
+                content=[Part.from_tool_request('reserve_table', 12, ref='call_1')],
+            ),
+            finish_reason=FinishReason.STOP,
+        )
+    ]
+    agent = ai.define_agent(
+        name='reservations',
+        model='scriptedModel',
+        tools=['reserve_table'],
+        store=InMemorySessionStore(),
+    )
+
+    response = client(agent).post(f'/api/chat?stream={str(stream).lower()}', json={'message': 'book table 12'})
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    assert result['error'] == expected
+    assert 'hunter2' not in response.text
+
+
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+def test_missing_snapshot_id_over_http_returns_public_error_with_reason(stream: bool) -> None:
+    """A stale snapshotId returns a 200 failed turn whose message and SNAPSHOT_NOT_FOUND reason survive HTTP."""
+    agent = build_agent('ordersAgent')
+    body = {
+        'data': {'message': {'role': 'user', 'content': [{'text': 'status?'}]}},
+        'init': {'snapshotId': 'snap-missing'},
+    }
+
+    response = client(agent).post(f'/api/chat?stream={str(stream).lower()}', json=body)
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    assert result['error'] == {
+        'status': 'NOT_FOUND',
+        'message': "Snapshot 'snap-missing' not found",
+        'details': {'reason': 'SNAPSHOT_NOT_FOUND'},
+    }
+    assert Failure.model_validate(result['error']).reason is ErrorReason.SNAPSHOT_NOT_FOUND
+    assert error_from_wire(result['error']).reason is ErrorReason.SNAPSHOT_NOT_FOUND
+
+    thrown_body = error_json(
+        PublicError('NOT_FOUND', "Snapshot 'snap-missing' not found", reason=ErrorReason.SNAPSHOT_NOT_FOUND)
+    )
+    assert error_from_http(status_code=404, body=thrown_body).reason is ErrorReason.SNAPSHOT_NOT_FOUND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stream', [False, True], ids=['json', 'sse'])
+async def test_non_resumable_snapshot_over_http_returns_public_error_with_reason(stream: bool) -> None:
+    """Resuming a failed snapshot by snapshotId over HTTP keeps SNAPSHOT_NOT_RESUMABLE on error.details."""
+    ai = Genkit()
+    store: InMemorySessionStore[Any] = InMemorySessionStore()
+    define_scripted_model(
+        ai,
+        name='scriptedModel',
+        responses=[
+            ModelResponse(
+                finish_reason=FinishReason.STOP,
+                message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
+            )
+        ],
+    )
+    ai.define_prompt(name='ordersAgent', model='scriptedModel', system='You echo things.')
+    agent = ai.define_prompt_agent(name='ordersAgent', store=store)
+
+    failed_row = SessionSnapshot(
+        snapshot_id='snap-failed',
+        session_id='sess-1',
+        created_at='2026-06-18T12:00:00Z',
+        status=SnapshotStatus.FAILED,
+        state=SessionState(session_id='sess-1', messages=[], artifacts=[]),
+    )
+    await store.save_snapshot(failed_row.snapshot_id, lambda _existing: failed_row)
+
+    body = {
+        'data': {'message': {'role': 'user', 'content': [{'text': 'continue'}]}},
+        'init': {'snapshotId': 'snap-failed'},
+    }
+    response = client(agent).post(f'/api/chat?stream={str(stream).lower()}', json=body)
+
+    assert response.status_code == 200
+    result = sse_events(response.text)[-1]['result'] if stream else response.json()['result']
+    assert result['finishReason'] == 'failed'
+    err = result['error']
+    assert err['status'] == 'INVALID_ARGUMENT'
+    assert "Snapshot 'snap-failed' is not resumable" in err['message']
+    assert err['details'] == {'reason': 'SNAPSHOT_NOT_RESUMABLE'}
+    assert Failure.model_validate(err).reason is ErrorReason.SNAPSHOT_NOT_RESUMABLE
+
+
+def test_invalid_resume_and_unresolved_tool_request_over_http_keep_reason() -> None:
+    """Caller resume mistakes return PublicError text and INVALID_RESUME / UNRESOLVED_TOOL_REQUEST over HTTP."""
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='approve_refund')
+    async def approve_refund(order_id: str) -> str:
+        raise Interrupt({'order_id': order_id})
+
+    pm.responses = [
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('How can I help?')]),
+        ),
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(
+                role=Role.MODEL,
+                content=[Part.from_tool_request('approve_refund', 'A-17', ref='call_1')],
+            ),
+        ),
+    ]
+    agent = ai.define_agent(
+        name='refunds',
+        model='scriptedModel',
+        tools=['approve_refund'],
+        store=InMemorySessionStore(),
+    )
+    http = client(agent)
+
+    # 1. Complete a plain text turn, then try to resume an unknown tool response and an empty resume.
+    first = http.post('/api/chat', json={'message': 'hi'}).json()['result']
+    snap_1 = first['snapshotId']
+
+    bad_ref = http.post(
+        '/api/chat',
+        json={
+            'data': {
+                'resume': {
+                    'respond': [{'toolResponse': {'name': 'approve_refund', 'ref': 'bogus', 'output': 'ok'}}],
+                }
+            },
+            'init': {'snapshotId': snap_1},
+        },
+    ).json()['result']
+    assert bad_ref['finishReason'] == 'failed'
+    assert bad_ref['error']['status'] == 'INVALID_ARGUMENT'
+    assert "resume.respond references tool 'approve_refund'" in bad_ref['error']['message']
+    assert bad_ref['error']['details'] == {'reason': 'INVALID_RESUME'}
+
+    no_tool_turn = http.post(
+        '/api/chat',
+        json={'data': {'resume': {'metadata': {'by': 'caller'}}}, 'init': {'snapshotId': snap_1}},
+    ).json()['result']
+    assert no_tool_turn['finishReason'] == 'failed'
+    assert no_tool_turn['error']['status'] == 'FAILED_PRECONDITION'
+    assert "Cannot 'resume' generation" in no_tool_turn['error']['message']
+    assert no_tool_turn['error']['details'] == {'reason': 'INVALID_RESUME'}
+
+    # 2. Pause on an interrupt, then send a resume that omits the interrupted tool request.
+    paused = http.post(
+        '/api/chat',
+        json={
+            'data': {'message': {'role': 'user', 'content': [{'text': 'refund A-17'}]}},
+            'init': {'snapshotId': snap_1},
+        },
+    ).json()['result']
+    assert paused['finishReason'] == 'interrupted'
+
+    unresolved = http.post(
+        '/api/chat',
+        json={'data': {'resume': {'metadata': {'by': 'caller'}}}, 'init': {'snapshotId': paused['snapshotId']}},
+    ).json()['result']
+    assert unresolved['finishReason'] == 'failed'
+    assert unresolved['error']['status'] == 'INVALID_ARGUMENT'
+    assert "Unresolved tool request 'approve_refund'" in unresolved['error']['message']
+    assert unresolved['error']['details'] == {'reason': 'UNRESOLVED_TOOL_REQUEST'}
+
+
+@pytest.mark.asyncio
+async def test_private_tool_failure_keeps_reason_in_process_but_strips_details_over_http() -> None:
+    """A non-public TOOL_FAILED failure exposes .reason in process, while HTTP omits details."""
+    ai = Genkit()
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='charge_card')
+    async def charge_card(amount: int) -> str:  # noqa: ARG001
+        raise RuntimeError('gateway key=sk_live_hunter2')
+
+    call_msg = ModelResponse(
+        message=Message(
+            role=Role.MODEL,
+            content=[Part.from_tool_request('charge_card', 42, ref='call_1')],
+        ),
+        finish_reason=FinishReason.STOP,
+    )
+    pm.responses = [call_msg, call_msg]
+    agent = ai.define_agent(
+        name='billing',
+        model='scriptedModel',
+        tools=['charge_card'],
+        store=InMemorySessionStore(),
+    )
+
+    in_proc = await agent.chat().send('charge $42')
+    assert in_proc.error is not None
+    assert in_proc.error.reason is ErrorReason.TOOL_FAILED
+
+    http_res = client(agent).post('/api/chat', json={'message': 'charge $42'}).json()['result']
+    assert http_res['finishReason'] == 'failed'
+    assert http_res['error'] == {'status': 'INTERNAL', 'message': 'Internal Error'}
+    assert 'details' not in http_res['error']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('store_kind', ['memory', 'file'])
+async def test_detached_public_error_redacts_on_http_get_snapshot_across_stores(
+    store_kind: str,
+    tmp_path: Path,
+) -> None:
+    """Direct HTTP turns keep PublicError text; stored snapshots read via HTTP getSnapshot redact across all stores."""
+    ai = Genkit()
+    store: Any = InMemorySessionStore() if store_kind == 'memory' else FileSessionStore(str(tmp_path))
+
+    async def fn(session_runner: SessionRunner, _ctx: AgentContext) -> AgentResult:
+        async def turn(_inp: AgentInput, _tc: TurnContext) -> TurnResult | None:
+            raise PublicError('PERMISSION_DENIED', 'table 12 is reserved')
+
+        await session_runner.run(turn)
+        return await session_runner.result()
+
+    agent = ai.define_custom_agent(name='reservations', fn=fn, store=store)
+    http = client(agent)
+
+    # 1. Direct non-detached HTTP turn still returns the PublicError text.
+    live = http.post('/api/chat', json={'message': 'book table 12'}).json()['result']
+    assert live['finishReason'] == 'failed'
+    assert live['error'] == {'status': 'PERMISSION_DENIED', 'message': 'table 12 is reserved'}
+
+    # 2. Detached turn persists the failure; in-process keeps the text, HTTP getSnapshot redacts it.
+    out = await agent.run(
+        input=AgentInput(message=Message(role=Role.USER, content=[Part.from_text('book table 12')]), detach=True),
+        init=AgentInit(),
+    )
+    snapshot_id = out.response.snapshot_id
+    assert snapshot_id is not None
+    for _ in range(200):
+        snap = await agent.get_snapshot_data(snapshot_id=snapshot_id)
+        if snap is not None and snap.status == SnapshotStatus.FAILED:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError('detached turn never finalized')
+
+    assert snap.error is not None
+    assert snap.error.message == 'table 12 is reserved'
+
+    served = http.post('/api/chat/getSnapshot', json={'snapshotId': snapshot_id}).json()['result']
+    assert served['error'] == {'status': 'PERMISSION_DENIED', 'message': 'Permission Denied'}

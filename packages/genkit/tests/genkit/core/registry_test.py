@@ -194,6 +194,14 @@ def test_register_value() -> None:
 
     assert registry.lookup_value('format', 'json') == [1, 2, 3]
 
+    with pytest.raises(ValueError, match='value for kind "format" and name "json" is already registered'):
+        registry.register_value('format', 'json', [4, 5, 6])
+
+    assert registry.lookup_value('format', 'json') == [1, 2, 3]
+
+    registry.register_value('format', 'json', [4, 5, 6], allow_overwrite=True)
+    assert registry.lookup_value('format', 'json') == [4, 5, 6]
+
 
 @pytest.mark.asyncio
 async def test_trigger_lazy_loading_reentrant_guard() -> None:

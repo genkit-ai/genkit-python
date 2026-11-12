@@ -24,7 +24,7 @@ dependencies = [
   "genkit-django",
   "genkit-fastapi",
   "genkit-flask",
-  "genkit-google-cloud",
+  "genkit-google-cloud[firestore]",
   "genkit-google-genai",
   "genkit-mcp",
   "genkit-middleware",
@@ -150,7 +150,7 @@ anthropic-sample     = { workspace = true }
 basic-flows          = { workspace = true }
 context              = { workspace = true }
 django-hello         = { workspace = true }
-dynamic-tools        = { workspace = true }
+multipart-tools      = { workspace = true }
 flask-hello          = { workspace = true }
 gemini-code-execution = { workspace = true }
 gemini-context-caching = { workspace = true }
@@ -382,7 +382,7 @@ aiohappyeyeballs      = "2.6.1"    # Python Software Foundation (transitive dep 
 aiohttp               = "3.13.3"   # Apache-2.0 AND MIT (transitive dep of xai-sdk)
 certifi               = "2026.1.4" # TODO: Verify.
 dependencies          = true
-dotpromptz-handlebars = "0.2.0"    # Apache-2.0 "https://github.com/google/dotprompt/blob/main/LICENSE"
+dotpromptz-handlebars = "1.0.0"    # Apache-2.0 "https://github.com/google/dotprompt/blob/main/LICENSE"
 google-crc32c         = "1.8.0"    # Apache-2.0
 mistralai             = ">=1.9.11" # Apache-2.0 "https://github.com/mistralai/client-python/blob/main/LICENSE"
 multidict             = "6.7.0"    # Apache-2.0

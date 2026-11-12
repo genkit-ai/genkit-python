@@ -65,6 +65,7 @@ def test_error_reasons_are_the_ones_helpers_write() -> None:
         'INVALID_SNAPSHOT_ID',
         'CONNECTION_CLOSED',
         'STREAM_CALLBACK_FAILED',
+        'INVALID_CREDENTIALS',
     }
 
 
@@ -264,6 +265,28 @@ def test_public_error() -> None:
     assert error.message == 'Please log in'
     assert error.details['extra_msg'] == 'Session expired'
 
+    classified = PublicError(
+        'NOT_FOUND',
+        "Snapshot 'snap-1' not found",
+        reason=ErrorReason.SNAPSHOT_NOT_FOUND,
+    )
+    assert classified.reason is ErrorReason.SNAPSHOT_NOT_FOUND
+    assert classified.details == {'reason': 'SNAPSHOT_NOT_FOUND'}
+    assert error_body(classified) == {
+        'status': 'NOT_FOUND',
+        'message': "Snapshot 'snap-1' not found",
+        'details': {'reason': 'SNAPSHOT_NOT_FOUND'},
+    }
+
+    merged = PublicError(
+        'INVALID_ARGUMENT',
+        'Bad request',
+        details={'field': 'snapshotId'},
+        reason=ErrorReason.INVALID_INPUT,
+    )
+    assert merged.reason is ErrorReason.INVALID_INPUT
+    assert merged.details == {'field': 'snapshotId', 'reason': 'INVALID_INPUT'}
+
 
 def test_genkit_error_message_is_the_sentence_they_passed() -> None:
     """err.message is the text passed as message=, without the status prefix."""
@@ -418,6 +441,22 @@ def test_error_status_matches_error_body_status() -> None:
     assert (error_status(not_found), error_body(not_found)['status']) == (404, 'NOT_FOUND')
     assert (error_status(bad_input), error_body(bad_input)['status']) == (400, 'INVALID_ARGUMENT')
     assert (error_status(crash), error_body(crash)['status']) == (500, 'INTERNAL')
+
+
+def test_error_body_under_genkit_env_dev_keeps_text_but_not_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GENKIT_ENV=dev swaps only the message, so error_status and the body's status still agree."""
+    monkeypatch.setenv('GENKIT_ENV', 'dev')
+    unavailable = GenkitError(status='UNAVAILABLE', message='overloaded', cause=RuntimeError('503 from provider'))
+    public = PublicError('NOT_FOUND', 'no order 99')
+
+    assert error_body(ValueError('secret')) == {'message': 'secret', 'status': 'INTERNAL'}
+    assert error_body(ValueError()) == {'message': 'ValueError', 'status': 'INTERNAL'}
+    assert error_body(unavailable) == {'message': 'overloaded: 503 from provider', 'status': 'INTERNAL'}
+    assert error_status(unavailable) == 500
+    assert error_body(public) == {'message': 'no order 99', 'status': 'NOT_FOUND'}
+
+    monkeypatch.setenv('GENKIT_ENV', 'prod')
+    assert error_body(ValueError('secret')) == {'message': 'Internal Error', 'status': 'INTERNAL'}
 
 
 def test_served_error_body_for_internal_wrapper_around_wrapped_raw_error_is_internal_error() -> None:

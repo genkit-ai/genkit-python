@@ -27,11 +27,19 @@ from genkit_openai import OpenAI
 
 ai = Genkit(plugins=[OpenAI()])
 
-res = await ai.generate(
-    model=OpenAI.gpt('gpt-5.2'),
-    prompt='Suggest 2 catchy names for an AI newsletter.',
-)
-print(res.text)
+
+async def main() -> None:
+    res = await ai.generate(
+        model=OpenAI.gpt('gpt-5.2'),
+        prompt='Suggest 2 catchy names for an AI newsletter.',
+    )
+    print(res.text)
+    # => 1. The Neural Brief
+    #    2. Prompt & Circumstance
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 Set `OPENAI_API_KEY` in the environment, or pass `api_key=` to `OpenAI()`.
@@ -103,21 +111,22 @@ before the request is sent, so a typo fails by name:
 
 ```python
 res = await ai.generate(
-    model='openai/gpt-4o',
+    model=OpenAI.gpt('gpt-4o'),
     prompt='Write a haiku about the sea.',
     config={
         'temperature': 0.2,
         'max_output_tokens': 200,  # caps reply length
-        'extra': {'reasoning': {'effort': 'low'}},  # fields OpenAIConfig doesn't declare
+        'extra': {'user': 'diner-42'},  # a field OpenAIConfig doesn't declare
     },
 )
 ```
 
 - `max_output_tokens` (`maxOutputTokens` in the Dev UI) caps reply length.
   It goes out as `max_tokens`, or as `max_completion_tokens` on reasoning
-  models. `stop_sequences` goes out as `stop`. OpenAI's own names
-  (`max_tokens`, `max_completion_tokens`, `stop`) are not declared on
-  `OpenAIConfig`, so passing them at the top level raises `INVALID_ARGUMENT`.
+  models and whenever `reasoning_effort` is set. `stop_sequences` goes out as
+  `stop`. OpenAI's own names (`max_tokens`, `max_completion_tokens`, `stop`)
+  are not declared on `OpenAIConfig`, so passing them at the top level raises
+  `INVALID_ARGUMENT`.
 - `extra` goes out as top-level request body fields. A key in `extra`
   replaces a setting of the same name (including `max_tokens` or
   `max_completion_tokens` for OpenAI-compatible servers). An API key in
@@ -127,12 +136,12 @@ res = await ai.generate(
 ## Per-request API key
 
 To bill a call to someone else's OpenAI account, pass their key in
-`context.secrets`. It's used for that call only, on chat, image,
-text-to-speech, and transcription models:
+`context.secrets`. It's used for that call only, on every model and embedder
+the plugin serves:
 
 ```python
 res = await ai.generate(
-    model='openai/gpt-4o',
+    model=OpenAI.gpt('gpt-4o'),
     prompt='hi',
     context={'secrets': {'api_key': tenant_key}},
 )
@@ -146,9 +155,10 @@ res = await ai.generate(
   timeouts and other `default_headers` carry over. A plugin whose
   `default_headers` pin `Authorization` refuses a tenant key with
   `FAILED_PRECONDITION`.
-- The plugin doesn't need a key of its own for chat, image, text-to-speech,
-  and transcription models: `OpenAI()` with no `OPENAI_API_KEY` serves every
-  call that brings a key in `context.secrets`, and a call without one fails
-  with `FAILED_PRECONDITION`.
-- Embedders run on the plugin's key only, since `ai.embed()` takes no
-  `context`. On a plugin without a key they fail with `FAILED_PRECONDITION`.
+- The plugin doesn't need a key of its own: `OpenAI()` with no
+  `OPENAI_API_KEY` serves every `generate()` or `embed()` call that brings a
+  key in `context.secrets`, and a call without one fails with
+  `FAILED_PRECONDITION`.
+- Embedders read the same key:
+  `ai.embed(..., context={'secrets': {'api_key': tenant_key}})`. A call
+  without one runs on the plugin's key.

@@ -455,10 +455,10 @@ class GenAiSpanContext(SpanContext):
             # Keep ad-hoc metadata out of the reserved gen_ai.* namespace.
             self._span.set_attribute(f'genkit:metadata:{key}', value_string)
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, message: str | None = None) -> None:
         self._span.set_attribute('genkit:state', state)
         if state == 'error':
-            self._span.set_status(StatusCode.ERROR)
+            self._span.set_status(StatusCode.ERROR, message or None)
 
 
 def _content_capturing_mode_from_env() -> ContentCapturingMode:

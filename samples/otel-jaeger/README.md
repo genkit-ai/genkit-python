@@ -1,15 +1,15 @@
 # Genkit OpenTelemetry sample (Jaeger)
 
-Demonstrates `genkit-otel`: OpenTelemetry GenAI semantic-conventions
-instrumentation for Genkit. Traces go to Jaeger, metrics (token usage and
-operation duration) go to a local collector's debug log.
+`genkit-otel` emitting OpenTelemetry GenAI semantic-convention spans. Traces
+go to Jaeger; token-usage and operation-duration metrics go to a local
+collector's debug log.
 
 The telemetry stack runs from downloaded release binaries.
 
 ## What it wires up
 
 ```
-python src/main.py --OTLP:4318--> otelcol-contrib --OTLP:14317--> Jaeger (UI :16686)
+uv run src/main.py --OTLP:4318--> otelcol-contrib --OTLP:14317--> Jaeger (UI :16686)
                                          \--debug--> .otel/collector.log (metrics)
 ```
 
@@ -37,9 +37,10 @@ app-facing `4317`/`4318`.
 2. In another terminal, run the sample:
 
    ```sh
-   export GEMINI_API_KEY=your-key
+   export GEMINI_API_KEY=your-api-key
    export OTEL_SERVICE_NAME=genkit-otel-sample   # optional; names the service
-   python src/main.py
+   uv sync
+   uv run src/main.py
    ```
 
 3. Open Jaeger at http://localhost:16686, pick your service, and inspect the

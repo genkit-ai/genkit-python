@@ -25,8 +25,16 @@ from pydantic_core import to_jsonable_python
 
 from genkit._ai._agents._client import AgentChunk, AgentResponse
 from genkit._ai._prompt import ModelStreamResponse
-from genkit._core._error import GenkitError, Interrupt, TaskGroupError, error_body, error_status, interrupt_escape_error
-from genkit._core._model import ModelResponse
+from genkit._core._error import (
+    GenkitError,
+    Interrupt,
+    TaskGroupError,
+    client_safe_failure,
+    error_body,
+    error_status,
+    interrupt_escape_error,
+)
+from genkit._core._model import AgentOutput, ModelResponse, SessionSnapshot
 from genkit._core._typing import FinishReason
 
 # Compact JSON, the same bytes the FastAPI, Flask and Django adapters send.
@@ -60,6 +68,10 @@ def _frame_value(obj: object) -> object:
     # Gated on the wrapper types, so a user model with a `raw` field goes out whole.
     if isinstance(obj, (AgentChunk, AgentResponse)) and obj.raw is not None:
         obj = obj.raw
+    # A failed turn is a 200 with the failure as data, so error_body never
+    # sees it. Apply the same rule here: only a PublicError's text leaves.
+    if isinstance(obj, (AgentOutput, SessionSnapshot)) and obj.error is not None:
+        obj = obj.model_copy(update={'error': client_safe_failure(obj.error)})
     return to_jsonable_python(obj, by_alias=True, exclude_none=True)
 
 
@@ -72,7 +84,11 @@ def _frame(key: str, value: object) -> str:
 
 
 def result_json(result: object) -> str:
-    """Encode a one-shot result as compact ``{"result": ...}`` JSON, the bytes every adapter sends."""
+    """Encode a one-shot result as compact ``{"result": ...}`` JSON, the bytes every adapter sends.
+
+    A failed agent turn's ``error`` keeps its status but only a PublicError's
+    message; anything else goes out as a generic message for that status.
+    """
     # Same encoding as to_sse frames: aliases, no null model fields.
     return _dumps({'result': _frame_value(result)})
 
@@ -95,7 +111,8 @@ async def to_sse(handle: StreamHandle) -> AsyncGenerator[str, None]:
     If the run fails, it yields one ``data: {"error": ...}`` instead of the rest
     and logs the failure with Python's logging module (5xx with a traceback,
     4xx as a warning). Only a ``PublicError``'s text reaches the client; anything else goes out as
-    ``Internal Error``. These are the frames ``serve_flow``,
+    ``Internal Error``. A failed agent turn's ``error`` in the result frame
+    follows the same rule (see ``result_json``). These are the frames ``serve_flow``,
     ``handle_genkit_request`` and ``serve_agent`` send.
 
     The result goes out as the run returned it. ``ai.generate_stream()``,

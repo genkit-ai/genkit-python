@@ -4,8 +4,6 @@ OpenTelemetry instrumentation and backend for [Genkit](https://github.com/genkit
 
 It provides `GenAiInstrumentation`: OpenTelemetry GenAI semantic-conventions instrumentation emitting `gen_ai.*` spans and metrics.
 
-Pass `tracer` to mint on that tracer instead of the process-global one.
-
 ## GenAI Semantic Conventions Instrumentation
 
 Plugs into Genkit's pluggable instrumentation system and emits telemetry that follows the
@@ -26,7 +24,7 @@ The application owns the OpenTelemetry SDK and picks its exporter. Install
 them alongside this package:
 
 ```sh
-pip install genkit-otel opentelemetry-sdk opentelemetry-exporter-otlp
+uv add genkit-otel opentelemetry-sdk opentelemetry-exporter-otlp
 ```
 
 Initialize the SDK, then register the provider before creating `Genkit`:
@@ -82,12 +80,10 @@ provider you built them from. `GenAiInstrumentation` can't reach it.
 Prompt and response content may contain PII, so capture is off by default.
 `content_capturing_mode` is one of the spec tokens:
 
-| Mode | Where content goes |
-| --- | --- |
-| `NO_CONTENT` (default) | not captured |
-| `SPAN_ONLY` | span attributes (`gen_ai.*.messages`) as JSON strings |
-| `EVENT_ONLY` | a `gen_ai.client.inference.operation.details` log event |
-| `SPAN_AND_EVENT` | both |
+- **`NO_CONTENT`** (default): not captured.
+- **`SPAN_ONLY`**: span attributes (`gen_ai.*.messages`) as JSON strings.
+- **`EVENT_ONLY`**: a `gen_ai.client.inference.operation.details` log event.
+- **`SPAN_AND_EVENT`**: both.
 
 ```python
 from genkit_otel import GenAiInstrumentation
@@ -125,14 +121,12 @@ mode: ContentCapturingMode = 'SPAN_ONLY'
 
 ### Options
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `content_capturing_mode` | env var, else `NO_CONTENT` | Where spec-shaped `gen_ai.*` message content is recorded. |
-| `capture_action_io` | `False` | Capture raw Genkit input/output as `genkit.input`/`genkit.output` on every span (debugging / Dev UI). |
-| `emit_metrics` | `True` | Emit token-usage and operation-duration metrics. |
-| `emit_tool_spans` | `False` | Emit `execute_tool` spans for tool actions. |
-| `scope_name` | `genkit-genai` | Instrumentation scope for tracer/meter/logger. |
-| `tracer` / `meter` / `otel_logger` | resolved lazily | Escape hatches to inject explicit instances. |
+- **`content_capturing_mode`** (env var, else `NO_CONTENT`): where spec-shaped `gen_ai.*` message content is recorded.
+- **`capture_action_io`** (`False`): records raw Genkit input/output as `genkit.input`/`genkit.output` on every span (debugging / Dev UI).
+- **`emit_metrics`** (`True`): emits token-usage and operation-duration metrics.
+- **`emit_tool_spans`** (`False`): emits `execute_tool` spans for tool actions.
+- **`scope_name`** (`genkit-genai`): instrumentation scope for the tracer, meter and logger.
+- **`tracer` / `meter` / `otel_logger`** (resolved lazily): explicit instances to use instead of the process-global ones.
 
 ## Example
 

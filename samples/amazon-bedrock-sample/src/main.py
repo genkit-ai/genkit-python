@@ -38,7 +38,7 @@ class CityInput(BaseModel):
     city: str
 
 
-@ai.tool()
+@ai.tool
 async def current_weather(input: CityInput) -> str:
     return f'The weather in {input.city} is 31C and humid.'
 

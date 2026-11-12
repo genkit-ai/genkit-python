@@ -70,6 +70,7 @@ from genkit._core._model import (
     SessionSnapshot,
     SessionState,
 )
+from genkit._core._telemetry._http import mark_already_sourced
 from genkit._core._telemetry._instrumentation import SpanContext, run_in_new_span
 from genkit._core._typing import (
     AgentFinishReason,
@@ -1151,11 +1152,13 @@ async def generate_prompt_agent_turn(
 
     # Bad JSON is not a dead turn — generate already kept the model text.
     if response.error is not None and response.error.reason is not ErrorReason.INVALID_OUTPUT:
-        raise GenkitError(
+        err = GenkitError(
             message=response.error.message,
             status=response.error.status,
             details=response.error.details,
         )
+        mark_already_sourced(err)
+        raise err
 
     # Return the turn result wrapping the model finish reason
     finish_reason = to_agent_finish_reason(response.finish_reason) if response.finish_reason is not None else None

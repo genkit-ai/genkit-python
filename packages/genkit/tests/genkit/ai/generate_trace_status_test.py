@@ -23,11 +23,12 @@ from collections.abc import Sequence
 
 import pytest
 
-from genkit import Genkit, Interrupt, Message, ModelResponse, Part, PublicError
+from genkit import Genkit, GenkitError, Interrupt, Message, ModelResponse, Operation, Part, PublicError
 from genkit._core._model import ModelRequest
 from genkit._core._telemetry._attrs import Attr, metadata_key
 from genkit._core._telemetry._http import ActiveSpan
 from genkit._core._typing import FinishReason, Role, ToolRequest
+from genkit.exp import Genkit as ExpGenkit
 from genkit.model import ModelContext
 
 INTERRUPT_ATTR = metadata_key('interrupt')
@@ -369,3 +370,136 @@ async def test_parent_flow_wrapping_child_error_without_from_keeps_child_as_fail
     assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'bad kitchen input')
     assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'outer wrapper')
     assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['inner_flow']
+
+
+@pytest.mark.asyncio
+async def test_flow_raising_after_interrupted_generate_marks_the_flow_as_failure_source(exporter) -> None:
+    """A flow that raises its own error after generate paused on an Interrupt claims isFailureSource too."""
+    ai = Genkit()
+    _define_tools(ai)
+    _fake_model(ai, [_calls_tool('approve_refund')])
+
+    @ai.flow(name='refund_flow')
+    async def refund_flow(_: str) -> str:
+        resp = await ai.generate(model='fake', prompt='issue refund', tools=['approve_refund'])
+        if resp.finish_reason == FinishReason.INTERRUPTED:
+            raise ValueError('approval required')
+        return resp.text
+
+    @ai.flow(name='checkout_flow')
+    async def checkout_flow(x: str) -> str:
+        return await refund_flow(x)
+
+    with pytest.raises(ValueError, match='approval required'):
+        await checkout_flow('order-42')
+
+    spans = exporter.get_finished_spans()
+    checkout, refund, generate, tool = (
+        _span(spans, 'checkout_flow'),
+        _span(spans, 'refund_flow'),
+        _span(spans, 'generate'),
+        _span(spans, 'approve_refund'),
+    )
+    assert (generate.attributes[Attr.STATE], generate.status_message) == ('success', None)
+    assert json.loads(str(tool.attributes[INTERRUPT_ATTR])) == {'reason': 'approve'}
+    assert (refund.attributes[Attr.STATE], refund.status_message) == ('error', 'approval required')
+    assert (checkout.attributes[Attr.STATE], checkout.status_message) == ('error', 'approval required')
+    # Both the interrupted tool and refund_flow (which authored ValueError) are marked;
+    # checkout_flow only re-raised refund_flow's marked ValueError, so it is not.
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['refund_flow', 'approve_refund']
+
+
+@pytest.mark.asyncio
+async def test_flow_raising_new_error_after_caught_child_failure_marks_flow_as_failure_source(exporter) -> None:
+    """A flow that catches a child failure and later raises an unchained error claims isFailureSource."""
+    ai = Genkit()
+
+    @ai.flow(name='primary_kitchen')
+    async def primary_kitchen(_: str) -> str:
+        raise ValueError('oven offline')
+
+    @ai.flow(name='dispatch_order')
+    async def dispatch_order(x: str) -> str:
+        kitchen_failed = False
+        try:
+            return await primary_kitchen(x)
+        except ValueError:
+            kitchen_failed = True
+        if kitchen_failed:
+            raise RuntimeError('no backup kitchen available')
+        return 'ok'
+
+    with pytest.raises(RuntimeError, match='no backup kitchen available'):
+        await dispatch_order('table-7')
+
+    spans = exporter.get_finished_spans()
+    outer, inner = _span(spans, 'dispatch_order'), _span(spans, 'primary_kitchen')
+    assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'oven offline')
+    assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'no backup kitchen available')
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['dispatch_order', 'primary_kitchen']
+
+
+@pytest.mark.asyncio
+async def test_flow_raising_with_from_none_marks_flow_as_new_failure_source(exporter) -> None:
+    """Explicit `raise ... from None` severs the child chain so the parent claims its new error."""
+    ai = Genkit()
+
+    @ai.flow(name='inner_flow')
+    async def inner_flow(_: str) -> str:
+        raise ValueError('bad kitchen input')
+
+    @ai.flow(name='outer_flow')
+    async def outer_flow(x: str) -> str:
+        try:
+            return await inner_flow(x)
+        except ValueError:
+            raise RuntimeError('clean break') from None
+
+    with pytest.raises(RuntimeError, match='clean break'):
+        await outer_flow('go')
+
+    spans = exporter.get_finished_spans()
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['outer_flow', 'inner_flow']
+
+
+@pytest.mark.asyncio
+async def test_generate_operation_re_raising_boxed_failure_keeps_model_as_sole_failure_source(exporter) -> None:
+    """generate_operation unboxing response.error does not make the enclosing flow reclaim isFailureSource."""
+    ai = Genkit()
+
+    async def start(_request: ModelRequest, _ctx: ModelContext) -> Operation[ModelResponse]:
+        raise GenkitError(status='UNAVAILABLE', message='renderer quota exhausted')
+
+    async def check(op: Operation[ModelResponse], _ctx: ModelContext) -> Operation[ModelResponse]:
+        return op
+
+    ai.define_background_model(name='video_renderer', start=start, check=check)
+
+    @ai.flow(name='promo_flow')
+    async def promo_flow(_: str) -> str:
+        op = await ai.generate_operation(model='video_renderer', prompt='render promo')
+        return op.id
+
+    with pytest.raises(GenkitError, match='renderer quota exhausted'):
+        await promo_flow('go')
+
+    spans = exporter.get_finished_spans()
+    flow = _span(spans, 'promo_flow')
+    assert flow.attributes[Attr.STATE] == 'error'
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['video_renderer']
+
+
+@pytest.mark.asyncio
+async def test_prompt_agent_turn_re_raising_boxed_failure_keeps_model_as_sole_failure_source(exporter) -> None:
+    """A prompt-backed agent turn unboxing response.error turns runTurn-1 red without reclaiming isFailureSource."""
+    ai = ExpGenkit()
+    _fake_model(ai, [RuntimeError('kitchen printer jammed')])
+    waiter = ai.define_agent(name='waiter', model='fake', system='Take the order.')
+
+    reply = await waiter.chat().send('two espressos')
+
+    assert reply.error is not None
+    spans = exporter.get_finished_spans()
+    turn_span = _span(spans, 'runTurn-1')
+    assert turn_span.attributes[Attr.STATE] == 'error'
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['fake']

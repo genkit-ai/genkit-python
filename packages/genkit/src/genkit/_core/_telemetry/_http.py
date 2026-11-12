@@ -309,6 +309,7 @@ class DirectHttpInstrumentation:
                 span.attributes[Attr.ERROR] = err_text
                 span.status_code = 2
                 span.status_message = str(actual)
+                note_child_failed(span)
                 mark_failure_source(span=span, exc=actual)
                 raise
         finally:
@@ -340,7 +341,6 @@ FAILURE_SOURCE_MARK = '_genkit_failure_source'
 
 
 def mark_failure_source(*, span: ActiveSpan, exc: BaseException) -> None:
-    note_child_failed(span)
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -352,8 +352,15 @@ def mark_failure_source(*, span: ActiveSpan, exc: BaseException) -> None:
             if current.__cause__ is not None
             else (None if current.__suppress_context__ else current.__context__)
         )
-    if not span.has_failed_child:
-        span.attributes[Attr.IS_FAILURE_SOURCE] = True
+    span.attributes[Attr.IS_FAILURE_SOURCE] = True
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, FAILURE_SOURCE_MARK, True)
+
+
+def mark_already_sourced(exc: BaseException) -> None:
+    """Stamp an error rebuilt from a boxed response whose span already claimed the failure."""
+    if not is_instrumented_by(DirectHttpInstrumentation):
+        return
     with contextlib.suppress(AttributeError, TypeError):
         setattr(exc, FAILURE_SOURCE_MARK, True)
 

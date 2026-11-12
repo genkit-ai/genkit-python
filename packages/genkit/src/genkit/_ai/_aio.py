@@ -120,7 +120,7 @@ from genkit._core._reflection_config import (
 from genkit._core._reflection_v2 import ReflectionServerV2
 from genkit._core._registry import Registry, define_dynamic_action_provider as define_dap_block
 from genkit._core._telemetry._attrs import metadata_key
-from genkit._core._telemetry._http import maybe_inject_dev_instrumentation
+from genkit._core._telemetry._http import mark_already_sourced, maybe_inject_dev_instrumentation
 from genkit._core._telemetry._instrumentation import run_in_new_span
 from genkit._core._tool import Tool, ToolContext
 from genkit._core._typing import (
@@ -2181,12 +2181,14 @@ class Genkit:
             # This call is "give me the ticket." A start that already
             # failed is not that ticket — while-not-done would poll it
             # as a live job.
-            raise GenkitError(
+            err = GenkitError(
                 status=response.error.status or 'INTERNAL',
                 message=response.error.message,
                 details=response.error.details,
                 reason=response.error.reason,
             )
+            mark_already_sourced(err)
+            raise err
         if not response.operation:
             raise missing_operation_error(name=model_action.name)
         return as_model_operation(response.operation, name=model_action.name, status='INTERNAL')

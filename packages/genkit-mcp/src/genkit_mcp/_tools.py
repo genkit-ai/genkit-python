@@ -197,7 +197,11 @@ def mcp_tool_to_action(
 
     The returned action carries its own name under the ``name`` metadata key,
     which is what a dynamic action provider matches a wildcard selector against,
-    and the server's own tool name under ``metadata['mcp']['tool']``.
+    the server's own tool name under ``metadata['mcp']['tool']``, its display
+    title and behaviour hints under ``metadata['mcp']['title']`` and
+    ``metadata['mcp']['annotations']``, and the server's output schema, if
+    any, as its ``model_output_schema``. A title or hint the server left out is
+    left out of the metadata too.
 
     Args:
         tool: Tool as listed by the server.
@@ -241,7 +245,14 @@ def mcp_tool_to_action(
         input_schema=tool.inputSchema,
     )
     action.metadata['name'] = action.name
-    action.metadata['mcp'] = {'prefix': prefix, 'tool': tool.name, '_meta': mcp_meta}
+    action.model_output_schema = dict(tool.outputSchema) if tool.outputSchema is not None else None
+    mcp: dict[str, object] = {'prefix': prefix, 'tool': tool.name, '_meta': mcp_meta}
+    if tool.title is not None:
+        mcp['title'] = tool.title
+    annotations = tool.annotations.model_dump(exclude_none=True) if tool.annotations is not None else {}
+    if annotations:
+        mcp['annotations'] = annotations
+    action.metadata['mcp'] = mcp
     return action
 
 
@@ -277,30 +288,3 @@ def mcp_tools_to_actions(
         for tool in tools
         if len(server_tools_by_name[mcp_tool_name(prefix, tool.name)]) == 1
     ]
-
-
-def mcp_tools_to_handles(
-    tools: Sequence[McpTool],
-    prefix: str,
-    call: McpToolCall,
-) -> list[Tool]:
-    """Build one Genkit tool handle per tool in a server listing.
-
-    A handle is what ``generate`` accepts in ``tools``, and what a caller can
-    invoke directly. Its ``model_output_schema`` is the one the server declared.
-
-    Args:
-        tools: Tools as listed by the server.
-        prefix: Namespace for the Genkit tool names.
-        call: Coroutine function invoking a tool on the live session.
-
-    Returns:
-        Handles in listing order, leaving out the tools
-        :func:`mcp_tools_to_actions` leaves out.
-    """
-    by_name = {mcp_tool_name(prefix, tool.name): tool for tool in tools}
-    handles = mcp_tools_to_actions(tools, prefix, call)
-    for handle in handles:
-        output_schema = by_name[handle.name].outputSchema
-        handle.model_output_schema = dict(output_schema) if output_schema is not None else None
-    return handles

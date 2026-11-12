@@ -25,7 +25,6 @@ from genkit_mcp._tools import (
     mcp_tool_name,
     mcp_tool_to_action,
     mcp_tools_to_actions,
-    mcp_tools_to_handles,
     validate_provider_name,
     validate_tool_prefix,
 )
@@ -39,11 +38,13 @@ from mcp.types import (
     TextContent,
     TextResourceContents,
     Tool,
+    ToolAnnotations,
 )
 from pydantic import AnyUrl
 from structlog.testing import capture_logs
 
 from genkit import MultipartToolResponse, Part
+from genkit._ai._generate import to_tool_definition  # noqa: TID251
 from genkit.plugin_api import Action
 
 
@@ -372,6 +373,75 @@ def test_mcp_tool_to_action_warns_about_a_name_longer_than_a_model_accepts() -> 
     assert logs[0]['tool'] == f'catalog_{tool_name}'
 
 
+def test_mcp_tool_to_action_keeps_the_server_title_and_annotations() -> None:
+    """Hints the server sent are kept as given, including ones the SDK has no field for."""
+    tool = Tool(
+        name='delete_record',
+        title='Delete record',
+        inputSchema={'type': 'object'},
+        annotations=ToolAnnotations.model_validate({
+            'title': 'Delete a record',
+            'destructiveHint': True,
+            'openWorldHint': False,
+            'costHint': 'high',
+        }),
+    )
+
+    action = mcp_tool_to_action(tool, 'catalog', no_content)
+
+    mcp = action.metadata['mcp']
+    assert isinstance(mcp, dict)
+    assert mcp['title'] == 'Delete record'
+    assert mcp['annotations'] == {
+        'title': 'Delete a record',
+        'destructiveHint': True,
+        'openWorldHint': False,
+        'costHint': 'high',
+    }
+
+
+@pytest.mark.parametrize('annotations', [None, ToolAnnotations()])
+def test_mcp_tool_to_action_leaves_out_a_title_and_hints_the_server_did_not_send(
+    annotations: ToolAnnotations | None,
+) -> None:
+    """No title and no hints means no ``title`` or ``annotations`` key, rather than a None."""
+    tool = Tool(name='lookup', inputSchema={'type': 'object'}, annotations=annotations)
+
+    mcp = mcp_tool_to_action(tool, 'catalog', no_content).metadata['mcp']
+
+    assert isinstance(mcp, dict)
+    assert 'title' not in mcp
+    assert 'annotations' not in mcp
+
+
+@pytest.mark.parametrize(
+    ('title', 'annotations', 'kept'),
+    [('Look up', None, {'title'}), (None, ToolAnnotations(readOnlyHint=True), {'annotations'})],
+)
+def test_mcp_tool_to_action_keeps_a_title_or_hints_on_their_own(
+    title: str | None,
+    annotations: ToolAnnotations | None,
+    kept: set[str],
+) -> None:
+    """A title without hints, or hints without a title, is kept on its own."""
+    tool = Tool(name='lookup', title=title, inputSchema={'type': 'object'}, annotations=annotations)
+
+    mcp = mcp_tool_to_action(tool, 'catalog', no_content).metadata['mcp']
+
+    assert isinstance(mcp, dict)
+    assert {'title', 'annotations'} & mcp.keys() == kept
+
+
+@pytest.mark.parametrize('output_schema', [{'type': 'object', 'properties': {'hits': {'type': 'integer'}}}, None])
+def test_mcp_tool_to_action_sends_the_server_output_schema_to_the_model(output_schema: dict[str, Any] | None) -> None:
+    """The model is told what the server said the tool returns, not the multipart envelope."""
+    action = mcp_tool_to_action(
+        Tool(name='lookup', inputSchema={'type': 'object'}, outputSchema=output_schema), 'catalog', no_content
+    )
+
+    assert to_tool_definition(action).output_schema == output_schema
+
+
 def test_mcp_tools_to_actions_maps_a_listing_in_order() -> None:
     tools = [Tool(name='lookup', inputSchema={'type': 'object'}), Tool(name='look.up', inputSchema={'type': 'object'})]
 
@@ -382,8 +452,8 @@ def test_mcp_tools_to_actions_maps_a_listing_in_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mcp_tools_to_handles_wraps_each_action_with_the_server_output_schema() -> None:
-    """A handle carries the Genkit name, the server's output schema, and runs the tool."""
+async def test_mcp_tools_to_actions_carry_the_server_output_schema() -> None:
+    """An action carries the Genkit name, the server's output schema, and runs the tool."""
     output_schema: dict[str, Any] = {'type': 'object', 'properties': {'hits': {'type': 'integer'}}}
     tools = [
         Tool(name='lookup', inputSchema={'type': 'object'}, outputSchema=output_schema),
@@ -393,7 +463,7 @@ async def test_mcp_tools_to_handles_wraps_each_action_with_the_server_output_sch
     async def call(name: str, arguments: dict[str, Any], meta: dict[str, Any] | None) -> CallToolResult:
         return CallToolResult(content=[text(name)])
 
-    handles = mcp_tools_to_handles(tools, 'catalog', call)
+    handles = mcp_tools_to_actions(tools, 'catalog', call)
 
     assert [handle.name for handle in handles] == ['catalog_lookup', 'catalog_look_up']
     assert [handle.definition().output_schema for handle in handles] == [output_schema, None]
@@ -413,7 +483,7 @@ def test_mcp_tool_handle_exposes_output_schema_on_definition() -> None:
         Tool(name='ping', inputSchema={'type': 'object'}),
     ]
 
-    handles = mcp_tools_to_handles(tools, 'lab', no_content)
+    handles = mcp_tools_to_actions(tools, 'lab', no_content)
 
     assert handles[0].definition().output_schema == output_schema
     assert handles[1].definition().output_schema is None

@@ -15,6 +15,7 @@ This Genkit plugin provides a unified interface for Google AI (Gemini) and Verte
 ## Setup environment
 
 ```bash
+uv init my-genkit-app && cd my-genkit-app
 uv add genkit genkit-google-genai
 ```
 
@@ -28,7 +29,7 @@ To use Google AI models, obtain an API key from [Google AI Studio](https://aistu
 export GEMINI_API_KEY='<your-api-key>'
 ```
 
-`GOOGLE_API_KEY` and `GOOGLE_GENAI_API_KEY` are read next, in that order. For a per-tenant key, start `GoogleAI()` with no key and pass `context={'secrets': {'api_key': tenant_key}}` on each `generate`, `generate_operation`, `embed`, or `embed_many` call. With no key from any of these, `GoogleAI()` logs one warning when it's constructed (to stderr unless your app configures `logging`), and a call with no plugin key and no secret fails with `FAILED_PRECONDITION`. A key the API rejects fails with `UNAUTHENTICATED` and the API's message.
+`GOOGLE_API_KEY` and `GOOGLE_GENAI_API_KEY` are read next, in that order. For a per-tenant key, start `GoogleAI()` with no key and pass `context={'secrets': {'api_key': tenant_key}}` on each `generate`, `generate_operation`, `check_operation`, `embed`, or `embed_many` call. With no key from any of these, `GoogleAI()` logs one warning when it's constructed (to stderr unless your app configures `logging`), and a call with no plugin key and no secret fails with `FAILED_PRECONDITION`. A key the API rejects fails with `UNAUTHENTICATED` and `reason=ErrorReason.INVALID_CREDENTIALS`, carrying the API's message.
 
 ### Vertex AI (Google Cloud)
 
@@ -49,15 +50,20 @@ ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 
 # 2. Define a typed flow
-@ai.flow()
+@ai.flow
 async def greet(name: str) -> str:
     res = await ai.generate(prompt=f'Say hello to {name}.')
     return res.text
 
 
-# 3. Execute and inspect output
-print(await greet('Grace'))
-# => Hello Grace! How can I help you today?
+# 3. Call the flow from main and run it
+async def main() -> None:
+    print(await greet('Grace'))
+    # => Hello Grace! How can I help you today?
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 ## Features
@@ -85,28 +91,33 @@ ai = Genkit(plugins=[GoogleAI()])
 
 
 # 2. Define a function tool
-@ai.tool()
+@ai.tool
 async def check_inventory(ingredient: str) -> dict[str, int]:
     return {'pesto': 12, 'pine_nuts': 4}
 
 
-# 3. Generate with flat thinking, safety, search grounding, and a tool
-res = await ai.generate(
-    model=GoogleAI.gemini('gemini-flash-latest'),
-    prompt='Check pesto inventory and cite current safety storage guidelines.',
-    tools=[check_inventory],
-    config=GeminiConfig(
-        thinking_level='HIGH',
-        include_thoughts=True,
-        safety_settings=[
-            {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_ONLY_HIGH'},
-        ],
-        google_search=True,
-    ),
-)
+# 3. Generate with flat thinking and safety settings, and let the model call the tool
+async def main() -> None:
+    res = await ai.generate(
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        prompt='How many jars of pesto do we have, and how should opened jars be stored?',
+        tools=[check_inventory],
+        tool_choice='auto',
+        config=GeminiConfig(
+            thinking_level='HIGH',
+            include_thoughts=True,
+            safety_settings=[
+                {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_ONLY_HIGH'},
+            ],
+        ),
+    )
+    print(res.text)
+    # => We have 12 jars of pesto in stock. Refrigerate opened jars and use
+    #    them within 7 to 10 days.
 
-print(res.text)
-# => Inventory verified: 12 jars of pesto in stock. Storage guidelines require refrigeration at 40°F (4°C) or below after opening.
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 #### Audio generation with GeminiTtsConfig
@@ -117,19 +128,27 @@ from genkit_google_genai import GeminiTtsConfig, GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])
 
-# Generate multi-speaker audio dialog
-res = await ai.generate(
-    model=GoogleAI.gemini_tts('gemini-2.5-flash-preview-tts'),
-    prompt='Host: Welcome to Morning Roaster. Chef: Today we review Ethiopian beans.',
-    config=GeminiTtsConfig(
-        speakers={'Host': 'Kore', 'Chef': 'Puck'},
-        language_code='en-US',
-    ),
-)
 
-print(res.media.url)
-# => data:audio/wav;base64,UklGRiQAAABXQVZFZ...
+# Generate multi-speaker audio dialog
+async def main() -> None:
+    res = await ai.generate(
+        model=GoogleAI.gemini_tts('gemini-2.5-flash-preview-tts'),
+        prompt='Host: Welcome to Morning Roaster. Chef: Today we review Ethiopian beans.',
+        config=GeminiTtsConfig(
+            speakers={'Host': 'Kore', 'Chef': 'Puck'},
+            language_code='en-US',
+        ),
+    )
+
+    print(res.media.url if res.media else '')
+    # => data:audio/L16;codec=pcm;rate=24000;base64,AAAAAP7/AQD+/w...
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
+
+Gemini returns raw 16-bit PCM at 24 kHz. Wrap it in a WAV header (stdlib `wave`) before saving to `.wav`.
 
 #### Image generation with GeminiImageConfig
 
@@ -139,18 +158,25 @@ from genkit_google_genai import GeminiImageConfig, GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()])
 
-# Generate high-resolution image with specified aspect ratio and size
-res = await ai.generate(
-    model=GoogleAI.gemini_image('gemini-2.5-flash-preview-image-generation'),
-    prompt='A modern minimalist espresso bar with warm cedar accents.',
-    config=GeminiImageConfig(
-        aspect_ratio='16:9',
-        image_size='2K',
-    ),
-)
 
-print(res.media.url)
-# => data:image/png;base64,iVBORw0KGgoAAAANSU...
+# Generate high-resolution image with specified aspect ratio and size
+async def main() -> None:
+    res = await ai.generate(
+        model=GoogleAI.gemini_image('gemini-3.1-flash-image'),
+        prompt='A modern minimalist espresso bar with warm cedar accents.',
+        config=GeminiImageConfig(
+            aspect_ratio='16:9',
+            image_size='2K',
+        ),
+    )
+
+    if res.media:
+        print(res.media.url[:40])
+        # => data:image/jpeg;base64,/9j/4AAQSkZJRgABA
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 #### Default config on model references
@@ -184,10 +210,17 @@ Function calling mode is controlled by `ai.generate(tool_choice=...)`, not confi
 `'auto'`, `'required'`, or `'none'`. In `'required'` mode, Gemini binds the request's
 function tools as `allowedFunctionNames`.
 
-Settings that can't be combined raise before anything is sent:
+Settings that can't be combined never reach Gemini:
 
-- `thinking_level` with `thinking_budget`, and `voice` with `speakers`. When
-  one comes from a model reference default, pass `None` for it on the call.
+- `thinking_level` with `thinking_budget`, and `voice` with `speakers`, raise
+  `INVALID_ARGUMENT` from `generate` (`GeminiConfig(...)` raises a Pydantic
+  `ValidationError` on construction). When one comes from a model reference
+  default, pass `None` for it on the call.
+
+The model checks the rest when it builds the request. These don't raise: the
+call returns `finish_reason='failed'` with
+`response.error.status == 'INVALID_ARGUMENT'`:
+
 - `google_search_start_time` without `google_search_end_time`, and
   `file_search_top_k` or `file_search_metadata_filter` without
   `file_search_store_names`.
@@ -251,8 +284,7 @@ function tools (`generate(tools=...)` raises). Blocks with defaults, such as
 `agent_config` and `environment`, merge key by key.
 
 `timeout` on these three configs (and in Deep Research's `check_operation` /
-`cancel_operation` `config`) is the HTTP timeout in seconds. It used to be
-milliseconds: `config={'timeout': 30000}` becomes `config={'timeout': 30}`.
+`cancel_operation` `config`) is the HTTP timeout in seconds.
 
 ```python
 op = await ai.generate_operation(
@@ -273,6 +305,11 @@ bounds reach the model as written.
 ```python
 from pydantic import BaseModel
 
+from genkit import Genkit
+from genkit_google_genai import GoogleAI
+
+ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
+
 
 class Country(BaseModel):
     name: str
@@ -280,8 +317,14 @@ class Country(BaseModel):
     population: int
 
 
-response = await ai.generate(prompt='Give quick facts about Japan.', output_schema=Country)
-print(response.output)
+async def main() -> None:
+    response = await ai.generate(prompt='Give quick facts about Japan.', output_schema=Country)
+    print(response.output)
+    # => name='Japan' capital='Tokyo' population=123000000
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 To send the schema as the older OpenAPI-style `responseSchema` field instead,
@@ -309,45 +352,63 @@ download URL, Vertex often sends the mp4 inline.
 **With `GoogleAI`:**
 
 ```python
+import asyncio
+
 from genkit import Genkit
 from genkit_google_genai import GoogleAI
 
 # 1. Initialize Genkit with GoogleAI
 ai = Genkit(plugins=[GoogleAI()])
 
-# 2. Launch background video generation
-operation = await ai.generate_operation(
-    model=GoogleAI.veo('veo-3.1-fast-generate-preview'),
-    prompt='A paper airplane gliding through a bright classroom',
-)
-while not operation.done:
-    operation = await ai.check_operation(operation)
+# 2. Launch background video generation and poll until it finishes
+async def main() -> None:
+    operation = await ai.generate_operation(
+        model=GoogleAI.veo('veo-3.1-lite-generate-preview'),
+        prompt='A paper airplane gliding through a bright classroom',
+    )
+    while not operation.done:
+        await asyncio.sleep(5)
+        operation = await ai.check_operation(operation)
 
-# 3. Access output media artifact
-print(operation.output.message.content[0].media.url)
-# => https://generativelanguage.googleapis.com/v1beta/files/preview.mp4
+    # 3. Read the finished video off the response
+    if operation.output and operation.output.media:
+        print(operation.output.media.url)
+        # => https://generativelanguage.googleapis.com/v1beta/files/preview.mp4
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 **With `VertexAI`:**
 
 ```python
+import asyncio
+
 from genkit import Genkit
 from genkit_google_genai import VertexAI
 
 # 1. Initialize Genkit with VertexAI
 ai = Genkit(plugins=[VertexAI()])
 
-# 2. Launch background video generation
-operation = await ai.generate_operation(
-    model=VertexAI.veo('veo-3.1-generate-001'),
-    prompt='A paper airplane gliding through a bright classroom',
-)
-while not operation.done:
-    operation = await ai.check_operation(operation)
+# 2. Launch background video generation and poll until it finishes
+async def main() -> None:
+    operation = await ai.generate_operation(
+        model=VertexAI.veo('veo-3.1-generate-001'),
+        prompt='A paper airplane gliding through a bright classroom',
+    )
+    while not operation.done:
+        await asyncio.sleep(5)
+        operation = await ai.check_operation(operation)
 
-# 3. Access output media artifact
-print(operation.output.message.content[0].media.url)
-# => gs://my-bucket/videos/output.mp4
+    # 3. Read the finished video off the response
+    if operation.output and operation.output.media:
+        print(operation.output.media.url)
+        # => data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y...
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 Runnable version: [google-genai-media](https://github.com/genkit-ai/genkit-python/tree/main/samples/google-genai-media).
@@ -366,24 +427,31 @@ from genkit_google_genai import VertexAI
 
 ai = Genkit(plugins=[VertexAI()])
 
-response = await ai.generate(
-    model=VertexAI.virtual_try_on('virtual-try-on-001'),
-    messages=[
-        Message(
-            role=Role.USER,
-            content=[
-                Part.from_media(
-                    'gs://my-bucket/person.png', content_type='image/png', metadata={'type': 'personImage'}
-                ),
-                Part.from_media(
-                    'gs://my-bucket/shirt.png', content_type='image/png', metadata={'type': 'productImage'}
-                ),
-            ],
-        )
-    ],
-)
-for part in response.message.content:
-    print(part.media.url)
+
+async def main() -> None:
+    response = await ai.generate(
+        model=VertexAI.virtual_try_on('virtual-try-on-001'),
+        messages=[
+            Message(
+                role=Role.USER,
+                content=[
+                    Part.from_media(
+                        'gs://my-bucket/person.png', content_type='image/png', metadata={'type': 'personImage'}
+                    ),
+                    Part.from_media(
+                        'gs://my-bucket/shirt.png', content_type='image/png', metadata={'type': 'productImage'}
+                    ),
+                ],
+            )
+        ],
+    )
+    for media in response.media_parts:
+        print(media.url)
+        # => data:image/png;base64,iVBORw0KGgoAAAANSU...
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 Runnable snippets are in [`samples`](../../samples).

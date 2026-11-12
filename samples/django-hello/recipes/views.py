@@ -39,7 +39,7 @@ async def auth_context(request: RequestData) -> dict[str, object]:
 
 
 @genkit_django_handler(ai, context_provider=auth_context)
-@ai.flow()
+@ai.flow
 async def say_hi(input: SayHiInput, ctx: FlowContext) -> ModelResponse:
     username = ctx.context.get('username', 'guest')
     stream = ai.generate_stream(

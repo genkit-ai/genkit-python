@@ -58,7 +58,7 @@ class RequestData:
 
         # 2. The flow reads it from ctx.context
         @genkit_django_handler(ai, context_provider=django_user)
-        @ai.flow()
+        @ai.flow
         async def reorder(order_id: str, ctx: FlowContext) -> str:
             return f'reordered {order_id} for {ctx.context["user_id"]}'
             # => reordered ORD-9921 for 42

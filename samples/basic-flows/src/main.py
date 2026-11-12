@@ -32,7 +32,7 @@ class StatusChunk(BaseModel):
     label: str
 
 
-@ai.flow()
+@ai.flow
 async def welcome(name: str) -> str:
     # ai.run names a step so it shows up as its own span when something
     # looks wrong. Nested flows nest the same way.
@@ -47,7 +47,7 @@ async def welcome(name: str) -> str:
     return await ai.run(name='draft', fn=draft)
 
 
-@ai.flow()
+@ai.flow
 async def status(count: int, ctx: FlowContext[StatusChunk]) -> str:
     # send_chunk is what Dev UI and the HTTP stream paint as progress.
     for i in range(count):
@@ -56,7 +56,7 @@ async def status(count: int, ctx: FlowContext[StatusChunk]) -> str:
     return f'done after {count} updates'
 
 
-@ai.flow()
+@ai.flow
 async def whoami(name: str, ctx: FlowContext) -> str:
     # Request context (auth, tenant) lands here, not as extra args.
     return f'{name} as {ctx.context}'

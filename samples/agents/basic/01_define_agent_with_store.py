@@ -21,7 +21,7 @@ Run a turn, keep ``snapshot_id``, drop the chat. After a reconnect or a process
 restart, ``load_chat(snapshot_id=...)`` rehydrates the conversation and the
 agent still remembers turn 1.
 
-These samples use ``InMemorySessionStore`` so they run tonight. The same
+These samples use ``InMemorySessionStore`` so they run without GCP. The same
 ``store=`` slot takes ``FirestoreSessionStore`` from ``genkit_google_cloud.exp``
 when you ship (install ``genkit-google-cloud[firestore]``). Requires GEMINI_API_KEY.
 """

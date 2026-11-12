@@ -25,9 +25,9 @@ from genkit import Genkit, Message, Part, Role
 ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-3-flash-preview'))
 
 handbook = (Path(__file__).resolve().parent.parent / 'handbook.md').read_text()
-# Gemini only caches prefixes past ~180k characters. A real handbook is
-# already that long; this stand-in is padded so the second call shows
-# cached_content_tokens.
+# Gemini only caches prefixes above a per-model minimum token count. A real
+# handbook is already that long; this stand-in is padded so
+# cached_content_tokens shows up.
 handbook = handbook + ('\n# appendix\n' * 20_000)
 
 # The cache lives on the model turn of this prefix. Later generate()

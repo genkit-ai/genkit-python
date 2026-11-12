@@ -1,0 +1,4 @@
+# Runtime state the samples write next to themselves.
+.snapshots*/
+testapp/workspace/
+basic/.workspaces/

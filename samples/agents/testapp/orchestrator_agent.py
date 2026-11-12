@@ -72,7 +72,7 @@ orchestrator_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_orchestrator_agent(text: str, ctx: FlowContext) -> str:
     chat = orchestrator_agent.chat()
     turn = chat.send_stream(text or 'Research quicksort, then write a Python implementation of it.')

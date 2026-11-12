@@ -42,20 +42,22 @@ class PrepProgress(BaseModel):
     percent: int
 
 
-# A tool takes one input; several fields go on one model the model fills in.
-@ai.tool()
+# A tool takes one input. For several fields, wrap them in one Pydantic model.
+# A bare return is wrapped as output-only.
+@ai.tool
 async def weather(input: WeatherInput) -> str:
-    """Look up the weather. A bare return is wrapped as output-only."""
+    """Look up the current weather for a city."""
     return f'Sunny and 22{input.unit} in {input.city}'
 
 
-@ai.tool()
+# Return MultipartToolResponse to send the PNG next to the output.
+@ai.tool
 async def screenshot(label: str) -> MultipartToolResponse:
-    """Take a screenshot. Return ``MultipartToolResponse`` to send the PNG with the output."""
+    """Take a screenshot of the lab camera."""
     return MultipartToolResponse(output={'ok': True, 'label': label}, content=[_PNG], metadata={'src': 'lab-cam'})
 
 
-@ai.tool()
+@ai.tool
 async def prepare_order(dish: str, ctx: ToolContext[PrepProgress]) -> str:
     """Prepare a dish and emit live progress updates before returning."""
     ctx.send_chunk(PrepProgress(stage_name='searing', percent=40))
@@ -65,7 +67,7 @@ async def prepare_order(dish: str, ctx: ToolContext[PrepProgress]) -> str:
     return f'{dish} ready'
 
 
-@ai.flow()
+@ai.flow
 async def ask_about_the_lab() -> str:
     res = await ai.generate(
         prompt='What is the weather in Austin, and take a screenshot of the lab camera.',
@@ -74,13 +76,14 @@ async def ask_about_the_lab() -> str:
     return res.text
 
 
-@ai.flow()
+@ai.flow
 async def prep_with_progress(dish: str, ctx: FlowContext[PrepProgress]) -> str:
     stream = ai.generate_stream(prompt=f'Prepare {dish}.', tools=[prepare_order])
-    async for chunk in stream:
-        for part in chunk.tool_responses:
-            if part.is_partial and part.tool_response is not None:
-                ctx.send_chunk(PrepProgress.model_validate(part.tool_response.output))
+    async with stream.stream as chunks:
+        async for chunk in chunks:
+            for part in chunk.tool_responses:
+                if part.is_partial and part.tool_response is not None:
+                    ctx.send_chunk(PrepProgress.model_validate(part.tool_response.output))
     return (await stream.response).text
 
 
@@ -88,8 +91,9 @@ async def main() -> None:
     print(await ask_about_the_lab())
 
     stream = prep_with_progress.stream('smoked salmon tartine')
-    async for progress in stream:
-        print(f'[{progress.percent}%] {progress.stage_name}')
+    async with stream.stream as chunks:
+        async for progress in chunks:
+            print(f'[{progress.percent}%] {progress.stage_name}')
     print(await stream.response)
 
 

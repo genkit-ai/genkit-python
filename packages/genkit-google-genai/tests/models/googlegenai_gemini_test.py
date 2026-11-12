@@ -697,7 +697,7 @@ def test_stable_gemini_text_models_register_real_capabilities(
         ('gemini-2.5-flash-001', ConstrainedSupport.NO_TOOLS, None),
         ('models/gemini-2.0-flash-001', ConstrainedSupport.NO_TOOLS, None),
         ('gemini-1.5-pro-002', ConstrainedSupport.NO_TOOLS, None),
-        ('gemini-3.5-flash-lite', ConstrainedSupport.ALL, None),
+        ('gemini-3.9-flash-lite', ConstrainedSupport.ALL, None),
         ('gemini-4-carbon', ConstrainedSupport.ALL, None),
         ('gemini-4-argon', ConstrainedSupport.ALL, None),
         ('endpoints/1234567890', ConstrainedSupport.ALL, None),

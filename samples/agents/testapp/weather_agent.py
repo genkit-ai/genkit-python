@@ -62,7 +62,7 @@ weather_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_weather_agent(text: str, ctx: FlowContext) -> str:
     """One streamed turn. Tools light up as they're called; text streams as it lands."""
     chat = weather_agent.chat()
@@ -77,7 +77,7 @@ async def test_weather_agent(text: str, ctx: FlowContext) -> str:
     return reply_text(res)
 
 
-@ai.flow()
+@ai.flow
 async def test_weather_agent_stream(text: str, ctx: FlowContext) -> str:
     """Multi-turn: one chat carries history across turns, so the follow-up just knows."""
     chat = weather_agent.chat()

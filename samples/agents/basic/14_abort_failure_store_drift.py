@@ -24,7 +24,7 @@ store, which is the source of truth:
   1. turn.abort() — a *client-side* detach. You stop listening, but the server
      turn keeps running and completes. The store shows a finished turn with no
      trace of the abort, while your in-memory chat is left holding an unanswered
-     prompt. The client view drifts ahead of (really, behind) the store.
+     prompt. The client view now lags the store.
 
   2. task.abort() — a *server-side* cancel of a detached turn. The snapshot
      settles ABORTED and never becomes the session's resume point. abort()
@@ -136,8 +136,8 @@ async def server_side_task_abort() -> None:
     status = await task.abort()
     # abort() returns the *previous* status: pending, because the turn was still running.
     assert status == SnapshotStatus.PENDING
-    # The prompt stays — it was still asked. The chat still points at the
-    # aborted leaf, so a send returns res.error until you reload.
+    # The prompt stays; it was still asked. The chat still points at the
+    # aborted leaf, so a send returns res.error until you switch to chat(session_id=).
     assert turns(chat) == ['a1/user', 'reply/model', 'slow a2/user']
 
     # The store's session leaf is that aborted row; chat(session_id=) is how

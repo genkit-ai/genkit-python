@@ -95,8 +95,9 @@ class StabilityImageConfig(GenkitConfig):
         )
 
         # 2. The MIME type follows output_format
-        print(response.media.content_type)
-        # => image/jpeg
+        if response.media:
+            print(response.media.content_type)
+            # => image/jpeg
         ```
     """
 

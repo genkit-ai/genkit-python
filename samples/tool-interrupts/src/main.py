@@ -30,7 +30,7 @@ class TransferRequest(BaseModel):
     memo: str = ''
 
 
-@ai.tool()
+@ai.tool
 async def request_transfer(body: TransferRequest, ctx: ToolContext) -> dict:
     # First call pauses. After you resume, is_resumed() is True and the
     # wire actually runs.

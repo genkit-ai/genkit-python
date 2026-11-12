@@ -30,18 +30,25 @@ Import the middleware classes you need and pass instances directly into `use=[]`
 ```python
 from genkit import Genkit
 from genkit_google_genai import GoogleAI
-from genkit_middleware import Retry, Fallback, Middleware
+from genkit_middleware import Fallback, Middleware, Retry
 
 ai = Genkit(plugins=[GoogleAI(), Middleware()])
 
-response = await ai.generate(
-    model=GoogleAI.gemini('gemini-flash-latest'),
-    prompt='Hello!',
-    use=[
-        Retry(max_retries=5),
-        Fallback(models=['googleai/gemini-3.1-pro-preview']),
-    ],
-)
+
+async def main() -> None:
+    response = await ai.generate(
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        prompt='Hello!',
+        use=[
+            Retry(max_retries=5),
+            Fallback(models=['googleai/gemini-3.1-pro-preview']),
+        ],
+    )
+    print(response.text)
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
 Every middleware works when you pass an instance in `use=[]`; no plugin
@@ -58,7 +65,8 @@ uv add genkit-middleware genkit-google-genai
 
 ### Retry
 
-Automatically retries model calls on transient failures with configurable exponential backoff:
+Retries a failed model call with exponential backoff. A `GenkitError` is retried only
+when its status is in `statuses`; any other exception is retried:
 
 ```python
 from genkit_google_genai import GoogleAI
@@ -78,11 +86,16 @@ response = await ai.generate(
     prompt='Hello!',
     use=[retry],
 )
+print(response.text)
+# => Hello! How can I help you today?
 ```
 
 ### Fallback
 
-Falls back to alternative models on retryable errors:
+Tries each backup model in order when the primary fails with a listed `GenkitError`
+status (defaults: the transient statuses plus `NOT_FOUND` and `UNIMPLEMENTED`). Other
+exceptions are raised as-is. Order matters: `use=[Retry(...), Fallback(...)]` retries
+the whole sequence; `use=[Fallback(...), Retry(...)]` retries only the primary:
 
 ```python
 from genkit_google_genai import GoogleAI
@@ -101,6 +114,8 @@ response = await ai.generate(
     prompt='Hello!',
     use=[fallback],
 )
+print(response.text)
+# => Hello! How can I help you today?
 ```
 
 ### ToolApproval
@@ -118,7 +133,7 @@ class DeleteInput(BaseModel):
     name: str = Field(description='Database name to delete')
 
 
-@ai.tool()
+@ai.tool
 async def delete_database(input: DeleteInput) -> str:
     return f'Deleted {input.name}'
 
@@ -136,18 +151,26 @@ first = await ai.generate(
 ```
 
 When a non-allowed tool is called, execution is interrupted. Approve and re-run the
-tool by restarting it with ``resumed_metadata`` that includes ``tool_approved``:
+tool by restarting it with `resumed_metadata` that includes `tool_approved`. Pass the
+history in `messages=` and leave out `prompt=`: a new prompt appends a user turn after
+the pending tool request, so the call fails before the model or the tool runs. It
+doesn't raise; it returns `finish_reason='failed'` with `response.error.status ==
+'FAILED_PRECONDITION'` and `response.error.reason == 'INVALID_RESUME'`.
 
 ```python
 response = await ai.generate(
     model=GoogleAI.gemini('gemini-flash-latest'),
-    prompt='Delete the database',
     messages=list(first.messages),
     tools=['delete_database'],
     use=[approval],
     resume_restart=first.interrupts[0].restart(resumed_metadata={'tool_approved': True}),
 )
+print(response.text)
+# => The database has been deleted.
 ```
+
+Inside the tool, `ctx.is_resumed()` is `True` on the approved re-run and
+`ctx.resumed_metadata` holds the dict you passed (`{'tool_approved': True}`).
 
 ### Skills
 
@@ -166,6 +189,8 @@ response = await ai.generate(
     prompt='Help me with Python',
     use=[skills],
 )
+print(response.text)
+# => Sure. Loaded python-expert. What are you working on?
 ```
 
 Each direct subdirectory of a skill path that holds a `SKILL.md` is a skill, named after the directory (`skills/python-expert/SKILL.md` is `python-expert`). Frontmatter `description` shows up in the catalog; frontmatter `name` doesn't rename the skill:
@@ -200,6 +225,8 @@ response = await ai.generate(
     prompt='List files in the current directory',
     use=[fs],
 )
+print(response.text)
+# => The workspace has menu.md and orders.csv.
 ```
 
 Provides four tools:
@@ -218,12 +245,11 @@ system prompt. It only works inside an agent, so it's experimental and lives in
 register it, so it isn't listed in the Dev UI and a `.prompt` file can't name it:
 
 ```python
-from genkit_middleware import Middleware
-from genkit_middleware.exp import Artifacts
-
 from genkit.exp import Genkit
 from genkit.exp.agent import InMemorySessionStore
 from genkit_google_genai import GoogleAI
+from genkit_middleware import Middleware
+from genkit_middleware.exp import Artifacts
 
 ai = Genkit(plugins=[GoogleAI(), Middleware()])
 
@@ -236,5 +262,6 @@ agent = ai.define_agent(
 
 chat = agent.chat()
 await chat.send('Write poem.txt with a short poem about Python agents.')
-# chat.artifacts now includes poem.txt
+print([a.name for a in chat.artifacts])
+# => ['poem.txt']
 ```

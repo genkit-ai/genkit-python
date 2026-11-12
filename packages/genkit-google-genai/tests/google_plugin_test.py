@@ -1125,7 +1125,7 @@ async def test_failed_listing_keeps_static_catalog_and_retries() -> None:
     catalog = await ai._registry.list_actions()
     await ai._registry.list_actions()
 
-    assert '/model/googleai/gemini-2.5-flash' in catalog
+    assert '/model/googleai/gemini-flash-latest' in catalog
     assert '/embedder/googleai/gemini-embedding-001' in catalog
     assert mock_client.aio.models.list.call_count == 2
 
@@ -1206,14 +1206,17 @@ async def test_vertexai_resolves_unlisted_and_tuned_models_without_listing(verte
 async def test_static_init_catalog_matches_backend_capabilities(
     googleai_plugin_instance: GoogleAI, vertexai_plugin_instance: VertexAI
 ) -> None:
-    """GoogleAI init registers Gemma 3/4 and -latest; VertexAI skips them; neither registers retired previews."""
+    """GoogleAI init registers Gemma 4 and -latest; VertexAI keeps 2.5 Flash/Pro and skips Gemma/-latest."""
     google_names = {a.name for a in await googleai_plugin_instance.init()}
     vertex_names = {a.name for a in await vertexai_plugin_instance.init()}
 
-    assert {'googleai/gemma-3-12b-it', 'googleai/gemma-4-31b-it', 'googleai/gemini-flash-latest'} <= google_names
+    assert {'googleai/gemma-4-26b-a4b-it', 'googleai/gemma-4-31b-it', 'googleai/gemini-flash-latest'} <= google_names
+    assert 'googleai/gemma-3-12b-it' not in google_names
+    assert 'googleai/gemini-2.5-flash' not in google_names
     assert 'googleai/gemini-2.5-pro-exp-03-25' not in google_names
     assert 'googleai/gemini-2.5-flash-image-preview' not in google_names
 
+    assert 'vertexai/gemini-2.5-flash' in vertex_names
     assert not any('gemma-' in name for name in vertex_names)
     assert not any(name.endswith('-latest') for name in vertex_names)
     assert 'vertexai/gemini-2.5-pro-exp-03-25' not in vertex_names

@@ -29,7 +29,7 @@ ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 app = FastAPI()
 
 
-@ai.flow()
+@ai.flow
 async def suggest_dish(cuisine: str) -> str:
     response = await ai.generate(prompt=f'Suggest one {cuisine} dish.')
     return response.text
@@ -39,7 +39,7 @@ async def suggest_dish(cuisine: str) -> str:
 app.include_router(serve_flow(suggest_dish), prefix='/api')
 ```
 
-For a custom route, stack ``@genkit_fastapi_handler(ai)`` over ``@ai.flow()``.
+For a custom route, stack ``@genkit_fastapi_handler(ai)`` over ``@ai.flow``.
 
 Agents are experimental, so their routes come from ``genkit_fastapi.exp``::
 

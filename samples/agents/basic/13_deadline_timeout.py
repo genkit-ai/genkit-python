@@ -21,7 +21,7 @@ A turn's `.response` is a normal awaitable, so the native Python tools work on
 it: wrap `await turn.response` (or the `.stream`) in `asyncio.wait_for(...)`, or
 cancel the surrounding task, and the turn detaches just like turn.abort() — the client
 stops listening, the server finishes in the background, and the prompt you sent
-stays in history. The deadline then surfaces as TimeoutError. Requires
+stays in history. The deadline then surfaces as asyncio.TimeoutError. Requires
 GEMINI_API_KEY.
 """
 

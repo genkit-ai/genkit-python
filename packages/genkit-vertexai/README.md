@@ -35,14 +35,23 @@ ai = Genkit(
     plugins=[ModelGarden(project='my-project', location='us-central1')],
 )
 
-res = await ai.generate(
-    model='modelgarden/anthropic/claude-3-5-sonnet-v2@20241022',
-    prompt='Explain recursion in 10 words.',
-)
-print(res.text)
+
+async def main() -> None:
+    res = await ai.generate(
+        model='modelgarden/anthropic/claude-sonnet-4-6',
+        prompt='Explain recursion in 10 words.',
+    )
+    print(res.text)
+    # => A function that solves a problem by calling itself repeatedly.
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
 ```
 
-Requires Google Cloud Application Default Credentials (ADC) or explicit credentials.
+Authenticates with Google Cloud Application Default Credentials (ADC). The
+project comes from `project=`, then `GCLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT`,
+then the ADC project.
 
 Every call runs on those Google Cloud credentials. A per-request key in
 `context={'secrets': {'api_key': ...}}` fails with `INVALID_ARGUMENT` before

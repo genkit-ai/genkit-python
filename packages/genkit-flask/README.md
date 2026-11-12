@@ -32,7 +32,7 @@ ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 @app.post('/api/greet')
 @genkit_flask_handler(ai)
-@ai.flow()
+@ai.flow
 async def greet_user(name: str) -> str:
     res = await ai.generate(prompt=f'Say hello to {name} in one sentence.')
     return res.text

@@ -8,4 +8,5 @@ uv sync
 uv run src/main.py
 ```
 
-The second call prints `cached_content_tokens`.
+Each call prints `cached_content_tokens`: the first call creates the cache,
+and every question after it sends only its own tokens.

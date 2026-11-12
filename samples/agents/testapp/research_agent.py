@@ -110,10 +110,10 @@ async def research_fn(sess: SessionRunner, ctx: AgentContext) -> AgentResult:
 research_agent = ai.define_custom_agent(name='researchAgent', fn=research_fn, state_schema=ResearchState)
 
 
-@ai.flow()
+@ai.flow
 async def test_research_agent(text: str, ctx: FlowContext) -> str:
     """Watch the status line advance (chunk.custom) while the answer streams in."""
-    chat = research_agent.chat(state={'custom': {'status': '', 'sub_questions': []}, 'messages': [], 'artifacts': []})
+    chat = research_agent.chat()
     turn = chat.send_stream(text or 'What are the environmental and economic impacts of electric vehicles?')
     async for chunk in turn:
         if chunk.custom is not None and chunk.custom.status:

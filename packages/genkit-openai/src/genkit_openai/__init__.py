@@ -17,32 +17,41 @@
 
 """OpenAI-compatible model provider for Genkit.
 
-This plugin provides integration with OpenAI and any OpenAI-compatible API
-endpoints (such as Azure OpenAI, Together AI, or Anyscale) using the official
-OpenAI Python SDK.
+Registers OpenAI chat, image, text-to-speech, transcription, and embedding
+models under ``openai/``, using the official OpenAI Python SDK. ``base_url=``
+points it at any OpenAI-compatible server, such as Azure OpenAI or Together AI.
 
 Example:
     ```python
     from genkit import Genkit
     from genkit_openai import OpenAI
 
-    # 1. Initialize Genkit with OpenAI plugin
+    # 1. Initialize Genkit with the OpenAI plugin
     ai = Genkit(plugins=[OpenAI()])
 
-    # 2. Generate content using GPT-5.2
-    res = await ai.generate(
-        model=OpenAI.gpt('gpt-5.2'),
-        prompt='Suggest 2 catchy names for an AI newsletter.',
-    )
 
-    # 3. Inspect output shapes directly
-    print(res.text)
-    # => 1. Prompt Daily
-    #    2. Neural Notes
+    async def main() -> None:
+        # 2. Generate with GPT-5.2
+        res = await ai.generate(
+            model=OpenAI.gpt('gpt-5.2'),
+            prompt='Suggest 2 catchy names for an AI newsletter.',
+        )
+
+        # 3. Read the text
+        print(res.text)
+        # => 1. The Neural Brief
+        #    2. Prompt & Circumstance
+
+
+    if __name__ == '__main__':
+        ai.run_main(main())
     ```
 
-Requirements:
-    - Requires the ``OPENAI_API_KEY`` environment variable or explicit ``api_key``.
+Credentials:
+    The plugin key comes from ``api_key=`` or ``OPENAI_API_KEY``. A
+    ``generate()`` or ``embed()`` call can bring its own key as
+    ``context={'secrets': {'api_key': ...}}``; a plugin with no key of its
+    own serves only those calls.
 
 See Also:
     - OpenAI documentation: https://platform.openai.com/docs/

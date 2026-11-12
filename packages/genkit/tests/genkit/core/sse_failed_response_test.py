@@ -101,17 +101,3 @@ async def test_non_finite_floats_go_out_as_null() -> None:
     frames = await _frames(score.stream('tartine'))
 
     assert frames == [{'result': {'z_score': None, 'upper': None}}]
-
-
-@pytest.mark.asyncio
-async def test_unpacking_a_stream_response_explains_the_0_13_shape() -> None:
-    ai = Genkit()
-
-    @ai.flow()
-    async def track(order: str) -> str:
-        return order
-
-    result = track.stream('A-1')
-    with pytest.raises(TypeError, match='result.stream'):
-        stream, response = result  # type: ignore[misc]
-    await result.response

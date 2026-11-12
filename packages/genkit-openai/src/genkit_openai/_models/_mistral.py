@@ -37,8 +37,10 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-# Mistral's API hosts: the main one, and the one Codestral keys are issued for.
-MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'codestral.mistral.ai'})
+# Mistral's API hosts: global, EU and US, the servers in the mistralai SDK's
+# sdkconfiguration.py. codestral.mistral.ai, for Codestral-only keys, is not in
+# that list or the OpenAPI servers; it is kept since nothing else lives there.
+MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai', 'codestral.mistral.ai'})
 
 
 def is_mistral(client: AsyncOpenAI) -> bool:

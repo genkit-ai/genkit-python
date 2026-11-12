@@ -213,6 +213,8 @@ _FINISH_REASONS: dict[str, FinishReason] = {
     'insufficient_system_resource': FinishReason.OTHER,
     'length': FinishReason.LENGTH,
     'model_context_window_exceeded': FinishReason.LENGTH,
+    # Mistral: the model's own length limit, as opposed to max_tokens.
+    'model_length': FinishReason.LENGTH,
     'network_error': FinishReason.OTHER,
     'sensitive': FinishReason.BLOCKED,
     'stop': FinishReason.STOP,
@@ -286,7 +288,7 @@ class OpenAIModel:
         """
         openai_messages = []
         for message in messages:
-            openai_messages.extend(MessageConverter.to_openai(message=message))
+            openai_messages.extend(MessageConverter.to_openai(message=message, replay_thinking=self._mistral))
         return openai_messages
 
     async def _get_tools_definition(self, tools: list[ToolDefinition]) -> list[dict]:
@@ -604,10 +606,9 @@ class OpenAIModel:
 
             # Text content; Mistral's reasoning models stream reasoning in it too.
             thinking, text = split_reply_content(delta.content)
-            if thinking:
-                thinking_part = Part.from_reasoning(thinking)
-                reasoning_parts.append(thinking_part)
-                parts.append(thinking_part)
+            if thinking is not None:
+                reasoning_parts.append(thinking)
+                parts.append(thinking)
             if text:
                 text_part = MessageConverter.text_part_to_genkit(text)
                 text_parts.append(text_part)

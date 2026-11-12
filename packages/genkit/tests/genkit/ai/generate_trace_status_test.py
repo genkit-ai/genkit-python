@@ -347,29 +347,55 @@ async def test_loop_failure_without_failing_child_marks_innermost_generate_as_fa
 
 
 @pytest.mark.asyncio
-async def test_parent_flow_wrapping_child_error_without_from_keeps_child_as_failure_source(exporter) -> None:
-    """Implicit exception chaining (`raise ...` inside `except:` without `from`) keeps the child as culprit."""
+async def test_parent_flow_raising_new_error_in_except_without_from_claims_failure_source(exporter) -> None:
+    """Implicit `__context__` is not a cause, so a new error raised in `except:` without `from` claims the parent."""
     ai = Genkit()
 
-    @ai.flow(name='inner_flow')
-    async def inner_flow(_: str) -> str:
-        raise ValueError('bad kitchen input')
+    @ai.flow(name='check_allergens')
+    async def check_allergens(_: str) -> str:
+        raise ValueError('peanut flagged in pad thai')
 
-    @ai.flow(name='outer_flow')
-    async def outer_flow(x: str) -> str:
+    @ai.flow(name='place_order')
+    async def place_order(x: str) -> str:
         try:
-            return await inner_flow(x)
+            return await check_allergens(x)
         except ValueError:
-            raise RuntimeError('outer wrapper')  # noqa: B904
+            raise RuntimeError('order rejected')  # noqa: B904
 
-    with pytest.raises(RuntimeError, match='outer wrapper'):
-        await outer_flow('go')
+    with pytest.raises(RuntimeError, match='order rejected'):
+        await place_order('table-7')
 
     spans = exporter.get_finished_spans()
-    outer, inner = _span(spans, 'outer_flow'), _span(spans, 'inner_flow')
-    assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'bad kitchen input')
-    assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'outer wrapper')
-    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['inner_flow']
+    outer, inner = _span(spans, 'place_order'), _span(spans, 'check_allergens')
+    assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'peanut flagged in pad thai')
+    assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'order rejected')
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['place_order', 'check_allergens']
+
+
+@pytest.mark.asyncio
+async def test_parent_flow_wrapping_child_error_with_from_keeps_child_as_failure_source(exporter) -> None:
+    """`raise ... from e` is an explicit cause, so the child stays the only failure source."""
+    ai = Genkit()
+
+    @ai.flow(name='check_allergens')
+    async def check_allergens(_: str) -> str:
+        raise ValueError('peanut flagged in pad thai')
+
+    @ai.flow(name='place_order')
+    async def place_order(x: str) -> str:
+        try:
+            return await check_allergens(x)
+        except ValueError as e:
+            raise RuntimeError('order rejected') from e
+
+    with pytest.raises(RuntimeError, match='order rejected'):
+        await place_order('table-7')
+
+    spans = exporter.get_finished_spans()
+    outer, inner = _span(spans, 'place_order'), _span(spans, 'check_allergens')
+    assert (inner.attributes[Attr.STATE], inner.status_message) == ('error', 'peanut flagged in pad thai')
+    assert (outer.attributes[Attr.STATE], outer.status_message) == ('error', 'order rejected')
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == ['check_allergens']
 
 
 @pytest.mark.asyncio

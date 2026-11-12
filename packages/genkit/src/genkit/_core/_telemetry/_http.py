@@ -337,6 +337,8 @@ class DevUIInstrumentation(DirectHttpInstrumentation):
 # Set on an exception once the span it was raised in claims it. Every span it
 # then passes through still turns red, but only the first one says the failure
 # started there, so the Traces tab can point at the culprit.
+# Only explicit causes (`raise ... from e`, `GenkitError(cause=e)`) count as
+# derived, same as JS `cause` and Go `%w`. Implicit `__context__` does not.
 FAILURE_SOURCE_MARK = '_genkit_failure_source'
 
 
@@ -347,11 +349,7 @@ def mark_failure_source(*, span: ActiveSpan, exc: BaseException) -> None:
         if getattr(current, FAILURE_SOURCE_MARK, False):
             return
         seen.add(id(current))
-        current = (
-            current.__cause__
-            if current.__cause__ is not None
-            else (None if current.__suppress_context__ else current.__context__)
-        )
+        current = current.__cause__
     span.attributes[Attr.IS_FAILURE_SOURCE] = True
     with contextlib.suppress(AttributeError, TypeError):
         setattr(exc, FAILURE_SOURCE_MARK, True)

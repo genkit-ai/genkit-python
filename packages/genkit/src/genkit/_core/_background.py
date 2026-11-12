@@ -50,12 +50,7 @@ if TYPE_CHECKING:
 InT = TypeVar('InT')
 OutT = TypeVar('OutT')
 
-# Annotation-only aliases. Operation[OutT] is a concrete pydantic class at
-# runtime, so CheckOpFn[X] can't be subscripted outside an annotation; spell
-# the Callable out when you need a runtime alias.
 StartOpFn = Callable[[InT, FlowContext], Awaitable[Operation]]
-CheckOpFn = Callable[[Operation[OutT], FlowContext], Awaitable[Operation]]
-CancelOpFn = Callable[[Operation[OutT], FlowContext], Awaitable[Operation]]
 
 
 def _make_action_key(action_type: ActionKind | str, name: str) -> str:

@@ -16,7 +16,8 @@
 
 """Experimental Google Cloud APIs. Durable agent sessions live here.
 
-Needs the ``firestore`` extra: ``uv add 'genkit-google-cloud[firestore]'``.
+Needs the ``firestore`` extra: ``pip install 'genkit-google-cloud[firestore]'``
+(or ``uv add 'genkit-google-cloud[firestore]'``).
 
 ```python
 from genkit.exp import Genkit

@@ -392,3 +392,65 @@ def test_bump_version_rejects_malformed_versions(tmp_path: Path, bad_version: st
         _run_bump(tmp_path, bad_version)
 
     assert 'Invalid version format' in exc_info.value.stdout
+
+
+@pytest.mark.parametrize('bump_flag', ['--patch', '--minor', '--major'])
+def test_bump_version_rejects_bump_flags_when_current_is_rc(tmp_path: Path, bump_flag: str) -> None:
+    """Relative bump flags on X.Y.Z-rc.N would skip X.Y.Z; callers must pass an explicit version."""
+    _make_workspace_fixture(tmp_path, '1.0.0-rc.1', include_evaluators=False)
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        _run_bump(tmp_path, bump_flag)
+
+    assert f'Cannot use {bump_flag} while current version is a release candidate (1.0.0-rc.1)' in exc_info.value.stdout
+    genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
+    assert genkit_proj['version'] == '1.0.0-rc.1'
+
+
+@pytest.mark.parametrize(
+    ('bump_flag', 'expected_version'),
+    [
+        ('--patch', '0.13.1'),
+        ('--minor', '0.14.0'),
+        ('--major', '1.0.0'),
+    ],
+)
+def test_bump_version_relative_flags_from_stable(tmp_path: Path, bump_flag: str, expected_version: str) -> None:
+    """Relative bump flags continue to work when the current version is a stable X.Y.Z."""
+    _make_workspace_fixture(tmp_path, '0.13.0', include_evaluators=False)
+
+    _run_bump(tmp_path, bump_flag)
+    assert _workspace_errors(tmp_path) == []
+
+    genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
+    assert genkit_proj['version'] == expected_version
+
+
+def test_bump_transition_rc_to_next_rc_and_stable(tmp_path: Path) -> None:
+    """Explicit bumps from X.Y.Z-rc.1 to X.Y.Z-rc.2 and then X.Y.Z rewrite all intra-repo bounds."""
+    _make_workspace_fixture(tmp_path, '1.0.0-rc.1', include_evaluators=False)
+
+    _run_bump(tmp_path, '1.0.0-rc.2')
+    assert _workspace_errors(tmp_path) == []
+
+    _run_bump(tmp_path, '1.0.0')
+    assert _workspace_errors(tmp_path) == []
+
+    openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
+    assert openai_proj['dependencies'] == ['genkit>=1.0.0,<2', 'openai>=1.60.0,<3']
+
+    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+        'project'
+    ]
+    assert vertex_proj['optional-dependencies']['openai'] == ['genkit-openai==1.0.0']
+
+
+def test_release_rc_workflow_runs_bump_version_and_consistency_before_push() -> None:
+    """release_rc_python.yml delegates RC bumps to bump_version and gates push on check_consistency.py."""
+    workflow = (PY_DIR / '.github' / 'workflows' / 'release_rc_python.yml').read_text(encoding='utf-8')
+
+    bump_pos = workflow.index('./bin/bump_version "$NEW"')
+    check_pos = workflow.index('python3 ./scripts/check_consistency.py')
+    push_pos = workflow.index('git push origin')
+    assert bump_pos < check_pos < push_pos
+    assert 'sed -i' not in workflow

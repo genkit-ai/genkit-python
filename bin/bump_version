@@ -62,17 +62,35 @@ usage() {
   echo "  $0 --major         # Bump major version (0.4.0 -> 1.0.0)"
 }
 
-# Parse current version
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+# Parse current base version (strip any -rc.N suffix)
+IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT_VERSION%%-rc.*}"
 
 # Parse arguments
 DRY_RUN=false
 NO_LOCK=false
 NEW_VERSION=""
 
+reject_bump_flag_on_rc() {
+  if [[ "$CURRENT_VERSION" == *-rc.* ]]; then
+    local base_version="${CURRENT_VERSION%%-rc.*}"
+    echo -e "${RED}Error${NC}: Cannot use $1 while current version is a release candidate ($CURRENT_VERSION). Pass an explicit version (e.g., $0 $base_version)."
+    exit 1
+  fi
+}
+
+require_single_target() {
+  if [ -n "$NEW_VERSION" ]; then
+    echo "Error: Multiple versions specified"
+    usage
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --major)
+      reject_bump_flag_on_rc "$1"
+      require_single_target
       MAJOR=$((MAJOR + 1))
       MINOR=0
       PATCH=0
@@ -80,12 +98,16 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --minor)
+      reject_bump_flag_on_rc "$1"
+      require_single_target
       MINOR=$((MINOR + 1))
       PATCH=0
       NEW_VERSION="$MAJOR.$MINOR.$PATCH"
       shift
       ;;
     --patch)
+      reject_bump_flag_on_rc "$1"
+      require_single_target
       PATCH=$((PATCH + 1))
       NEW_VERSION="$MAJOR.$MINOR.$PATCH"
       shift
@@ -221,7 +243,7 @@ else
   if ! $NO_LOCK; then
     # Update lock file
     echo -e "${CYAN}Updating lock file...${NC}"
-    uv lock > /dev/null 2>&1
+    uv lock --quiet
     echo -e "  ${GREEN}✓${NC} uv.lock updated"
   fi
 

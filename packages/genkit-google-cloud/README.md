@@ -74,7 +74,8 @@ It needs the `firestore` extra; telemetry-only installs skip the Firestore
 and gRPC dependencies:
 
 ```bash
-uv add 'genkit-google-cloud[firestore]'
+pip install 'genkit-google-cloud[firestore]'
+# or: uv add 'genkit-google-cloud[firestore]'
 ```
 
 ```python

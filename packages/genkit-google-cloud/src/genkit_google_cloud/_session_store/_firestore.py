@@ -58,7 +58,8 @@ except ImportError as e:
     if e.name not in ('google.cloud', 'google.cloud.firestore'):
         raise
     raise ModuleNotFoundError(
-        "FirestoreSessionStore needs google-cloud-firestore: uv add 'genkit-google-cloud[firestore]'",
+        'FirestoreSessionStore needs google-cloud-firestore: '
+        "pip install 'genkit-google-cloud[firestore]' (or uv add 'genkit-google-cloud[firestore]')",
         name='google.cloud.firestore',
     ) from e
 from pydantic import BaseModel, ConfigDict, Field, field_validator

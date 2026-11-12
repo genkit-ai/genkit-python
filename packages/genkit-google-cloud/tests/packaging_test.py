@@ -54,7 +54,8 @@ def test_firestore_session_store_without_extra_names_the_install_command() -> No
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == (
         'ModuleNotFoundError|google.cloud.firestore|'
-        "FirestoreSessionStore needs google-cloud-firestore: uv add 'genkit-google-cloud[firestore]'"
+        'FirestoreSessionStore needs google-cloud-firestore: '
+        "pip install 'genkit-google-cloud[firestore]' (or uv add 'genkit-google-cloud[firestore]')"
     )
 
 

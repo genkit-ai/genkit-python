@@ -44,9 +44,10 @@ logger = get_logger(__name__)
 
 
 # opentelemetry-exporter-gcp-trace 1.15 marks CloudTraceSpanExporter
-# @deprecated, which warns when it is subclassed, so importing
-# genkit_google_cloud printed a DeprecationWarning that users can't act on.
-# Silence exactly that message for this class statement. Constructing
+# @deprecated, which emits a DeprecationWarning attributed to this module when
+# subclassed. Default Python filters hide non-__main__ DeprecationWarnings, so
+# it only surfaces under pytest or -W default / -W error, where users still
+# can't act on it. Silence that message for this class statement; constructing
 # GenkitGCPExporter doesn't warn (upstream only warns for the base class).
 # Moving to the OTLP exporter upstream recommends is a separate change.
 with warnings.catch_warnings():

@@ -45,14 +45,13 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.12"
-          version: "0.6.6"
 
       - name: Create release branch & bump version
         id: rc
         env:
           TARGET_VERSION: ${{ inputs.target_version }}
         run: |
-          set -e
+          set -euo pipefail
           TARGET="$TARGET_VERSION"
           [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Error: target_version must be X.Y.Z"; exit 1; }
           EXISTING=$(git tag -l "v${TARGET}-rc.*" 2>/dev/null | sed -n 's/.*-rc\.\([0-9]*\)$/\1/p' | sort -n | tail -1)
@@ -60,15 +59,12 @@ jobs:
           NEW="${TARGET}-rc.${RC_NUM}"
           BRANCH="release/${NEW}"
           echo "new=${NEW}" >> $GITHUB_OUTPUT
-          CUR=$(grep '^version = ' packages/genkit/pyproject.toml | cut -d'"' -f2)
           git config user.email "genkit-releaser@google.com" && git config user.name "genkit-releaser"
           git checkout -b "${BRANCH}"
-          for f in packages/genkit/pyproject.toml packages/*/pyproject.toml; do
-            [ -f "$f" ] && grep -q "version = \"$CUR\"" "$f" && sed -i "s/version = \"$CUR\"/version = \"$NEW\"/" "$f"
-          done
-          uv lock
+          ./bin/bump_version "$NEW"
+          python3 ./scripts/check_consistency.py
           git add .
-          git diff --staged --quiet && { echo "::error::No version changes - $CUR may not match pyproject.toml files"; exit 1; }
+          git diff --staged --quiet && { echo "::error::No version changes after bump_version $NEW"; exit 1; }
           git commit -m "chore: bump version to $NEW"
           git push origin HEAD:"refs/heads/${BRANCH}"
 

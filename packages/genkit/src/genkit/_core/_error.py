@@ -28,13 +28,14 @@ from email.utils import parsedate_to_datetime
 from enum import IntEnum
 from typing import Any, ClassVar, Literal, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter, ValidationError, model_validator
 from pydantic.alias_generators import to_camel
 from pydantic_core import ErrorDetails
 from pydantic_core.core_schema import ErrorType
 from typing_extensions import Self
 
 from genkit._core._compat import StrEnum
+from genkit._core._environment import is_dev_environment
 from genkit._core._typing import _RuntimeErrorWire
 
 
@@ -149,6 +150,13 @@ class Failure(_RuntimeErrorWire):
 
     status: StatusName | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  # pyrefly: ignore[bad-override]
     details: dict[str, Any] | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  # pyrefly: ignore[bad-override]
+    # Set when the failure came from a PublicError, so a served agent may send
+    # its message. Not serialized, like Go's status.Error.Public: a failure
+    # read back from a store or another process is redacted on the wire.
+    _public: bool = PrivateAttr(default=False)
+    # Set when generate already logged the underlying exception, so a prompt
+    # agent re-raising response.error does not log it a second time.
+    _logged: bool = PrivateAttr(default=False)
 
     @model_validator(mode='before')
     @classmethod
@@ -175,6 +183,67 @@ class Failure(_RuntimeErrorWire):
     @property
     def reason(self) -> ErrorReason | None:
         return error_reason(self.details)
+
+    def __eq__(self, other: object) -> bool:
+        # Private attrs (_public, _logged) live in __pydantic_private__, not
+        # __dict__: res.error == Failure(...) and snapshot round-trip equality
+        # compare all declared fields and ignore provenance.
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
+
+
+def mark_public_failure(failure: Failure) -> Failure:
+    """Mark ``failure`` as built from a PublicError, so a served agent sends its text."""
+    # frozen=True only guards fields; Pydantic stores private attrs apart and
+    # lets them be set. Pyrefly reads it as a frozen field.
+    failure._public = True  # pyrefly: ignore[read-only]
+    return failure
+
+
+def is_public_failure(failure: Failure) -> bool:
+    """Whether ``failure`` came from a ``PublicError`` in this process."""
+    return failure._public
+
+
+def mark_logged_failure(failure: Failure) -> Failure:
+    """Mark ``failure`` as already logged server-side by ``generate``."""
+    failure._logged = True  # pyrefly: ignore[read-only]
+    return failure
+
+
+def is_logged_failure(failure: Failure) -> bool:
+    """Whether ``generate`` already logged the exception behind ``failure``."""
+    return failure._logged
+
+
+def client_safe_failure(failure: Failure) -> Failure:
+    """``failure`` as the HTTP caller of a served agent may see it.
+
+    Same rule as ``error_body`` for a served flow: a PublicError's message
+    and cleaned details go out as is. Anything else keeps its status, since
+    callers branch on it, but gets a generic message for that status and no
+    details, so exception text, provider responses and internal ids stay in
+    the process, the store and the server log. Under ``GENKIT_ENV=dev`` the
+    failure goes out unredacted, so a local curl shows the real cause. Mirrors
+    Go's ``clientSafeError`` / ``wire.ClientMessage``.
+    """
+    if failure._public:
+        details = _client_details(failure.details)
+        if details == failure.details:
+            return failure
+        return mark_public_failure(
+            Failure(
+                status=failure.status,
+                message=failure.message,
+                details=details if isinstance(details, dict) else None,
+            )
+        )
+    if is_dev_environment():
+        return failure
+    status = failure.status
+    message = 'Internal Error' if status is None or status == 'INTERNAL' else status.replace('_', ' ').title()
+    return Failure(status=status, message=message)
 
 
 # Mapping of status names to HTTP status codes
@@ -672,15 +741,24 @@ class PublicError(GenkitError):
     other GenkitError is 500 Internal Error on the wire.
     """
 
-    def __init__(self, status: StatusName, message: str, details: Any = None) -> None:  # noqa: ANN401
+    def __init__(
+        self,
+        status: StatusName,
+        message: str,
+        details: Any = None,  # noqa: ANN401
+        *,
+        reason: ErrorReason | None = None,
+    ) -> None:
         """Initialize a PublicError.
 
         Args:
             status: The status name for this error.
             message: The error message.
             details: Optional details to include.
+            reason: Extra why when the failure has a stable classification;
+                stored on ``details['reason']``.
         """
-        super().__init__(status=status, message=message, details=details)
+        super().__init__(status=status, message=message, details=details, reason=reason)
 
 
 _INTERNAL_CLIENT_BODY: dict[str, Any] = {'message': 'Internal Error', 'status': 'INTERNAL'}
@@ -699,6 +777,13 @@ def _client_facing_error(error: object) -> GenkitError | None:
     if isinstance(error, GenkitError) and error._request_sourced and not error._provider_sourced:
         return error
     return None
+
+
+def _dev_client_message(error: object) -> str:
+    """The text ``GENKIT_ENV=dev`` serves in place of ``Internal Error``, like Go's ``err.Error()``."""
+    if isinstance(error, GenkitError):
+        return _split_rendered(error)[1]
+    return str(error) or type(error).__name__
 
 
 # Pydantic's built-in messages read from the schema (expected type, length,
@@ -889,6 +974,9 @@ def error_body(error: Exception) -> dict[str, Any]:
     fields without their values, such as ``"Invalid input for flow 'save':
     qty: Input should be a valid integer"``. Any other GenkitError, a provider
     error, and anything else become ``{"message": "Internal Error", "status": "INTERNAL"}``.
+    Under ``GENKIT_ENV=dev`` that body carries the error's own text instead,
+    so a local curl shows the real cause; the status stays ``INTERNAL``.
+    Mirrors Go's ``wire.ClientMessage``.
 
     Example:
         ```python
@@ -902,6 +990,8 @@ def error_body(error: Exception) -> dict[str, Any]:
     """
     facing = _client_facing_error(error)
     if facing is None:
+        if is_dev_environment():
+            return {'message': _dev_client_message(error), 'status': 'INTERNAL'}
         return dict(_INTERNAL_CLIENT_BODY)
     message = facing.message if isinstance(facing, PublicError) else _request_client_message(facing)
     body: dict[str, Any] = {

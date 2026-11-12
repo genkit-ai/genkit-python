@@ -429,8 +429,11 @@ class Registry:
                     raise ValueError(f'Invalid ActionMetadata from {plugin_name}: name required')
                 if not meta.action_type:
                     raise ValueError(f'Invalid ActionMetadata from {plugin_name}: action_type required')
-                key = f'/{meta.action_type}/{meta.name}'
-                catalog[key] = meta.model_copy(update={'key': key})
+                # Same prefix rule as ``register_action_instance`` in ``init()`` so
+                # the advertised key resolves through ``resolve_action``.
+                name = meta.name if meta.name.startswith(f'{plugin_name}/') else f'{plugin_name}/{meta.name}'
+                key = f'/{meta.action_type}/{name}'
+                catalog[key] = meta.model_copy(update={'key': key, 'name': name})
 
         # 2. Concrete registered actions. A local tool is ``/tool/<name>`` plus its
         #    ``/tool.v2/<name>`` envelope; the Dev UI shows the ``tool.v2`` row.
@@ -947,10 +950,5 @@ def define_dynamic_action_provider(
         metadata={**(metadata or {}), 'type': 'dynamic-action-provider'},
     )
 
-    dap = DynamicActionProvider(action, fn, cache_ttl_millis)
-    # Attach the provider to the registered Action so anyone holding the
-    # Action (e.g. ``Registry.resolve_action_by_key`` for a DAP-qualified key,
-    # or ``Registry.list_actions`` expanding children for reflection) can
-    # recover the cache and helpers via ``getattr(action, ATTR, None)``.
-    setattr(action, GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR, dap)
-    return dap
+    # DynamicActionProvider stamps itself on ``action``.
+    return DynamicActionProvider(action, fn, cache_ttl_millis)

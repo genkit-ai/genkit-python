@@ -2663,7 +2663,7 @@ class GeminiModel:
                 }
                 # The Gemini API rejects X-Server-Timeout under 10s with a 400;
                 # the header is floored there and httpx still enforces `ms`.
-                headers['X-Server-Timeout'] = server_timeout_header(ms, vertexai=bool(self._client.vertexai))
+                headers['X-Server-Timeout'] = server_timeout_header(ms, vertexai=self._is_vertex())
                 http_options.headers = headers
                 cfg.http_options = http_options
             return cfg
@@ -2681,7 +2681,7 @@ class GeminiModel:
 
     def _needs_server_side_tool_invocations(self, tools: list[genai_types.Tool]) -> bool:
         """Whether *tools* mixes function declarations with built-in tools on the Gemini API."""
-        if self._client.vertexai:
+        if self._is_vertex():
             return False
         has_functions = any(tool.function_declarations for tool in tools)
         has_builtin = any(not tool.function_declarations for tool in tools)

@@ -134,6 +134,40 @@ async def test_builtin_tool_alone_sends_no_tool_config(monkeypatch: pytest.Monke
     assert 'toolConfig' not in bodies[-1]
 
 
+@pytest.mark.asyncio
+async def test_keyless_plugin_with_tenant_key_sends_flag_and_timeout_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keyless GoogleAI() has no plugin client; the per-call key still gets the flag and the 10s header."""
+    bodies: list[dict[str, Any]] = []
+    headers: list[str | None] = []
+    send = _fake_gemini_api(bodies)
+
+    async def record(client: httpx.AsyncClient, request: httpx.Request, **kw: object) -> httpx.Response:
+        headers.append(request.headers.get('x-server-timeout'))
+        return await send(client, request, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, 'send', record)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.delenv('GOOGLE_API_KEY', raising=False)
+    monkeypatch.delenv('GOOGLE_GENAI_API_KEY', raising=False)
+    ai = Genkit(plugins=[GoogleAI()])
+
+    @ai.tool(name='lookup_menu')
+    async def lookup_menu(dish: str) -> str:
+        """Check whether a dish is on today's menu."""
+        return 'in stock'
+
+    await ai.generate(
+        model='googleai/gemini-flash-latest',
+        prompt='Is the pho in stock?',
+        tools=['lookup_menu'],
+        config=GeminiConfig(google_search=True, timeout=3.0),
+        context={'secrets': {'api_key': 'tenant-key'}},
+    )
+
+    assert bodies[-1]['toolConfig'] == {'includeServerSideToolInvocations': True}
+    assert headers[-1] == '10'
+
+
 def _tool_request(**kwargs: Any) -> ModelRequest:  # noqa: ANN401
     return ModelRequest(
         messages=kwargs.pop('messages', [Message(role=Role.USER, content=[Part.from_text('Is the pho in stock?')])]),

@@ -268,6 +268,26 @@ async def test_error_propagating_through_a_flow_fails_both_spans_with_the_messag
 
 
 @pytest.mark.asyncio
+async def test_tool_stack_starts_at_the_user_frame(sink: SnapshotSink) -> None:
+    """The stack box leads with the tool's own line, not the action runtime's frames."""
+    ai = Genkit()
+
+    @ai.tool()
+    async def check_allergens(dish: str) -> str:
+        raise ValueError('allergen db unavailable')
+
+    with pytest.raises(ValueError):
+        await check_allergens('pad thai')
+
+    attrs = exception_event(sink.final('check_allergens'))
+    assert attrs is not None
+    frames = [line for line in attrs['exception.stacktrace'].splitlines() if line.strip().startswith('File ')]
+    assert frames, attrs['exception.stacktrace']
+    assert __file__ in frames[0] and 'in check_allergens' in frames[0]
+    assert 'run_in_new_span' not in attrs['exception.stacktrace']
+
+
+@pytest.mark.asyncio
 async def test_genkit_error_message_is_the_full_string(sink: SnapshotSink) -> None:
     """exception.message is str(err), status prefix and cause included, the same text as status.message."""
 

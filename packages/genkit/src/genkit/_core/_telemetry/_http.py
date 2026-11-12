@@ -32,7 +32,6 @@ import os
 import secrets
 import threading
 import time
-import traceback
 import urllib.request
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -42,7 +41,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urljoin, urlparse
 
 from .._environment import is_dev_environment
-from .._error import GenkitError, Interrupt, _StreamingCallbackError
+from .._error import GenkitError, Interrupt, _StreamingCallbackError, format_exception_stack
 from .._logger import get_logger
 from .._reflection_config import reflection_enabled
 from ._attrs import Attr, State, metadata_key
@@ -167,7 +166,7 @@ def exception_attributes(exc: BaseException) -> dict[str, str]:
     message = str(exc)
     if message:
         attrs['exception.message'] = message
-    attrs['exception.stacktrace'] = ''.join(traceback.format_exception(cls, exc, exc.__traceback__))
+    attrs['exception.stacktrace'] = format_exception_stack(exc)
     return attrs
 
 

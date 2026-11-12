@@ -22,6 +22,7 @@ import importlib
 import math
 import reprlib
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -1034,3 +1035,8 @@ def get_error_stack(error: object) -> str | None:
         # For now, return an empty string to keep Dev UI clean as per requirements.
         return ''
     return None
+
+
+def format_exception_traceback(exc: BaseException) -> str:
+    """Format an exception and its traceback chain as a single string."""
+    return ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))

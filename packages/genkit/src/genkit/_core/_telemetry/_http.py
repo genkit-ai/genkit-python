@@ -32,7 +32,6 @@ import os
 import secrets
 import threading
 import time
-import traceback
 import urllib.request
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -42,7 +41,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urljoin, urlparse
 
 from .._environment import is_dev_environment
-from .._error import GenkitError, Interrupt, _StreamingCallbackError
+from .._error import GenkitError, Interrupt, _StreamingCallbackError, format_exception_traceback
 from .._logger import get_logger
 from .._reflection_config import reflection_enabled
 from ._attrs import Attr, State, metadata_key
@@ -161,7 +160,7 @@ def exception_attributes(exc: BaseException) -> dict[str, str]:
     message = str(exc)
     if message:
         attrs['exception.message'] = message
-    attrs['exception.stacktrace'] = ''.join(traceback.format_exception(cls, exc, exc.__traceback__))
+    attrs['exception.stacktrace'] = format_exception_traceback(exc)
     return attrs
 
 
@@ -213,28 +212,24 @@ def encode_span(span: ActiveSpan) -> dict[str, object]:
     return body
 
 
-def encode_traces(spans: list[ActiveSpan]) -> list[dict[str, object]]:
-    """One ``TraceData`` per trace id in ``spans``.
+def encode_trace(span: ActiveSpan) -> dict[str, object]:
+    """One ``TraceData`` payload for a single span in the collector's ``/api/traces`` schema.
 
     Only the root span sets the trace's ``displayName`` and ``startTime``.
     ``endTime`` stays off until the root ends, so the Traces tab lists the
     trace as running until then.
     """
-    traces: dict[str, dict[str, object]] = {}
-    spans_by_trace: dict[str, dict[str, object]] = {}
-    for span in spans:
-        if span.trace_id not in traces:
-            spans_by_trace[span.trace_id] = {}
-            traces[span.trace_id] = {'traceId': span.trace_id, 'spans': spans_by_trace[span.trace_id]}
-        encoded = encode_span(span)
-        spans_by_trace[span.trace_id][span.span_id] = encoded
-        if span.parent_span_id is None:
-            trace = traces[span.trace_id]
-            trace['displayName'] = span.name
-            trace['startTime'] = encoded['startTime']
-            if span.end_time_unix_nano:
-                trace['endTime'] = encoded['endTime']
-    return list(traces.values())
+    encoded = encode_span(span)
+    trace: dict[str, object] = {
+        'traceId': span.trace_id,
+        'spans': {span.span_id: encoded},
+    }
+    if span.parent_span_id is None:
+        trace['displayName'] = span.name
+        trace['startTime'] = encoded['startTime']
+        if span.end_time_unix_nano:
+            trace['endTime'] = encoded['endTime']
+    return trace
 
 
 def collector_traces_url(server: str) -> str:
@@ -269,9 +264,9 @@ class CollectorHttpSink:
         # span before the body goes on to change it.
         if self.closed or not spans:
             return
-        for trace in encode_traces(spans):
+        for span in spans:
             try:
-                self.queue.put_nowait(json.dumps(trace))
+                self.queue.put_nowait(json.dumps(encode_trace(span)))
             except Full:
                 logger.debug('Developer UI trace export queue is full; dropping spans')
 
@@ -353,17 +348,20 @@ class DirectHttpInstrumentation:
                 raise
             except (Exception, _StreamingCallbackError) as e:
                 actual = e.__cause__ if isinstance(e, _StreamingCallbackError) and e.__cause__ is not None else e
-                span.attributes[Attr.STATE] = State.ERROR
-                err_text = actual.message if isinstance(actual, GenkitError) else str(actual)
-                span.attributes[Attr.ERROR] = err_text
-                span.status_code = 2
-                span.status_message = str(actual)
-                # The Traces tab heading reads exception.message and the stack
-                # box reads exception.stacktrace.
-                span.exception = exception_attributes(actual)
-                note_child_failed(span)
-                mark_failure_source(span=span, exc=actual)
-                raise
+                try:
+                    span.attributes[Attr.STATE] = State.ERROR
+                    err_text = actual.message if isinstance(actual, GenkitError) else str(actual)
+                    span.attributes[Attr.ERROR] = err_text
+                    span.status_code = 2
+                    span.status_message = str(actual)
+                    # The Traces tab heading reads exception.message and the stack
+                    # box reads exception.stacktrace.
+                    span.exception = exception_attributes(actual)
+                    note_child_failed(span)
+                    mark_failure_source(span=span, exc=actual)
+                    raise
+                finally:
+                    actual = None
         finally:
             span.end_time_unix_nano = now_unix_nano()
             self.sink.export_spans([span])

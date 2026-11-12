@@ -18,7 +18,9 @@
 
 from __future__ import annotations
 
+import gc
 import json
+import weakref
 from collections.abc import Generator
 from typing import Any
 
@@ -31,7 +33,7 @@ from genkit._core._telemetry._http import (
     ActiveSpan,
     DirectHttpInstrumentation,
     collector_traces_url,
-    encode_traces,
+    encode_trace,
 )
 from genkit._core._typing import FinishReason, Role, ToolRequest
 from genkit.model import ModelContext
@@ -45,7 +47,7 @@ class SnapshotSink:
         self.posts: list[dict[str, Any]] = []
 
     def export_spans(self, spans: list[ActiveSpan]) -> None:
-        self.posts.extend(json.loads(json.dumps(trace)) for trace in encode_traces(spans))
+        self.posts.extend(json.loads(json.dumps(encode_trace(span))) for span in spans)
 
     def flush(self) -> None:
         return
@@ -324,7 +326,7 @@ async def test_stream_callback_failure_records_the_callback_error(sink: Snapshot
 
 
 @pytest.mark.asyncio
-async def test_finished_span_holds_strings_not_the_exception(sink: SnapshotSink) -> None:
+async def test_finished_span_holds_strings_not_the_exception() -> None:
     """The recorded exception is formatted text, so a finished span keeps no traceback frames alive."""
     held: list[ActiveSpan] = []
 
@@ -332,14 +334,32 @@ async def test_finished_span_holds_strings_not_the_exception(sink: SnapshotSink)
         def export_spans(self, spans: list[ActiveSpan]) -> None:
             held.extend(spans)
 
-    reset_instrumentation()
-    configure_instrumentation(DirectHttpInstrumentation(HoldingSink()))  # type: ignore[arg-type]
+    class _LocalSentinel:
+        pass
+
+    local_ref: weakref.ref[_LocalSentinel] | None = None
 
     async def charge_card(_span: SpanContext) -> None:
+        nonlocal local_ref
+        sentinel = _LocalSentinel()
+        local_ref = weakref.ref(sentinel)
         raise RuntimeError('card declined')
 
-    with pytest.raises(RuntimeError):
-        await run_in_new_span('chargeCard', charge_card)
+    was_gc_enabled = gc.isenabled()
+    gc.disable()
+    reset_instrumentation()
+    configure_instrumentation(DirectHttpInstrumentation(HoldingSink()))  # type: ignore[arg-type]
+    try:
+        try:
+            await run_in_new_span('chargeCard', charge_card)
+        except RuntimeError:
+            pass
+        assert local_ref is not None
+        assert local_ref() is None
+    finally:
+        reset_instrumentation()
+        if was_gc_enabled:
+            gc.enable()
 
     exception = held[-1].exception
     assert exception is not None

@@ -469,3 +469,71 @@ def test_is_debug_enabled_when_the_level_check_cannot_run() -> None:
     structlog.configure(wrapper_class=structlog.stdlib.BoundLogger)
 
     assert is_debug_enabled(get_logger('test')) is True
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_configure_structlog_level_logs_to_stderr(capsys: pytest.CaptureFixture[str]) -> None:
+    """`python cli.py | jq .` must see only program output on stdout."""
+    structlog.reset_defaults()
+    with mock.patch.dict(os.environ, clear=True):
+        assert configure_structlog_level() is True
+        get_logger('test').warning('quota low')
+
+    captured = capsys.readouterr()
+    assert 'quota low' not in captured.out
+    assert 'quota low' in captured.err
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_configure_structlog_level_keeps_app_logger_factory() -> None:
+    factory = structlog.PrintLoggerFactory()
+    structlog.reset_defaults()
+    structlog.configure(logger_factory=factory)
+    with mock.patch.dict(os.environ, clear=True):
+        assert configure_structlog_level() is True
+    assert structlog.get_config()['logger_factory'] is factory
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_unconfigured_app_structlog_stays_on_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+    """Configuring Genkit logging leaves an unconfigured host app's structlog.get_logger() on stdout."""
+    structlog.reset_defaults()
+    with mock.patch.dict(os.environ, clear=True):
+        configure_logging()
+        structlog.get_logger('host.app').info('order accepted')
+        get_logger('genkit.flow').info('span exported')
+
+    captured = capsys.readouterr()
+    assert 'order accepted' in captured.out
+    assert 'order accepted' not in captured.err
+    assert 'span exported' in captured.err
+    assert 'span exported' not in captured.out
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_genkit_logger_follows_late_stderr_swap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swapping sys.stderr after configure_logging and get_logger redirects subsequent Genkit log lines."""
+    import contextlib
+    import io
+
+    structlog.reset_defaults()
+    first_err = io.StringIO()
+    second_err = io.StringIO()
+    third_err = io.StringIO()
+
+    with mock.patch.dict(os.environ, clear=True):
+        monkeypatch.setattr('sys.stderr', first_err)
+        configure_logging()
+        logger = get_logger('genkit.orders')
+        logger.info('first turn')
+
+        monkeypatch.setattr('sys.stderr', second_err)
+        logger.info('second turn')
+
+        with contextlib.redirect_stderr(third_err):
+            logger.info('notebook cell')
+
+    assert 'first turn' in first_err.getvalue()
+    assert 'second turn' not in first_err.getvalue()
+    assert 'second turn' in second_err.getvalue()
+    assert 'notebook cell' in third_err.getvalue()

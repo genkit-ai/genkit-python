@@ -18,6 +18,7 @@
 """Tests for the Gemini model implementation."""
 
 import base64
+import json
 import math
 from datetime import date, datetime
 from enum import Enum
@@ -27,6 +28,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from genkit_google_genai import GoogleAI
 from genkit_google_genai._models import _gemini, _veo
 from genkit_google_genai._models._gemini import (
     DEFAULT_SUPPORTS_MODEL,
@@ -51,7 +53,7 @@ from google.genai.errors import APIError
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 from pytest_mock import MockerFixture
 
-from genkit import ErrorReason, FinishReason, GenkitError, Message, ModelResponse, Part, Role
+from genkit import ErrorReason, FinishReason, Genkit, GenkitError, Message, ModelResponse, Part, Role
 from genkit.model import (
     ConstrainedSupport,
     ModelContext,
@@ -60,6 +62,8 @@ from genkit.model import (
     ModelSupports,
     OutputConfig,
     ToolDefinition,
+    ToolRequest,
+    ToolResponse,
 )
 from genkit.plugin_api import StrEnum, to_json_schema
 
@@ -606,11 +610,11 @@ def test_google_model_info(input: str, expected: ModelInfo) -> None:
     ],
 )
 def test_gemini_3_1_models_register_real_capabilities(model_name: str) -> None:
-    """Gemini 3.1 text models resolve to explicit ModelInfo, not the generic fallback.
+    """Gemini 3.1 text models resolve to explicit ModelInfo with ALL constrained support.
 
     The generic fallback (DEFAULT_SUPPORTS_MODEL) leaves ``output`` unset, so asserting
     ``output == ['text', 'json']`` alongside tools/constrained proves these names are
-    registered with real capability metadata matching the JS/Go registries.
+    registered with real capability metadata.
     """
     model_info = google_model_info(model_name)
 
@@ -624,42 +628,50 @@ def test_gemini_3_1_models_register_real_capabilities(model_name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    'model_name',
+    ('model_name', 'expected_constrained'),
     [
-        'gemini-3.1-pro-preview',
-        'gemini-3.1-flash-lite',
-        'gemini-3.5-flash',
-        'gemini-3.6-flash',
-        'gemini-3.7-flash',
-        'gemini-3.8-flash',
+        ('gemini-3-flash-preview', ConstrainedSupport.ALL),
+        ('gemini-3.1-pro-preview', ConstrainedSupport.ALL),
+        ('gemini-3.1-flash-lite', ConstrainedSupport.ALL),
+        ('gemini-3.5-flash', ConstrainedSupport.ALL),
+        ('gemini-3.6-flash', ConstrainedSupport.ALL),
+        ('gemini-pro-latest', ConstrainedSupport.ALL),
+        ('gemini-3.7-flash', ConstrainedSupport.NO_TOOLS),
+        ('gemini-3.8-flash', ConstrainedSupport.NO_TOOLS),
+        ('gemini-flash-latest', ConstrainedSupport.NO_TOOLS),
     ],
 )
-def test_vertexai_gemini_3_x_text_models_register_real_capabilities(model_name: str) -> None:
-    """VertexAI Gemini 3.1/3.5 text models resolve to explicit ModelInfo, not the generic fallback.
+def test_vertexai_gemini_3_x_text_models_register_real_capabilities(
+    model_name: str, expected_constrained: ConstrainedSupport
+) -> None:
+    """Gemini 3.x and -latest text models resolve to explicit ModelInfo with per-model constrained support.
 
     These names are registered in the Gemini catalog. The generic fallback
     (DEFAULT_SUPPORTS_MODEL) leaves ``output`` unset, so asserting ``output == ['text', 'json']``
-    alongside tools/constrained proves they carry real capability metadata matching the JS Vertex
-    registry, not the fallback.
+    alongside tools/constrained proves they carry explicit capability metadata.
     """
     model_info = google_model_info(model_name)
 
     assert model_info.supports is not None
     assert model_info.supports.tools is True
     assert model_info.supports.tool_choice is True
-    assert model_info.supports.constrained == ConstrainedSupport.ALL
+    assert model_info.supports.constrained == expected_constrained
     assert model_info.supports.output == ['text', 'json']
 
 
 @pytest.mark.parametrize(
-    ('model_name', 'expected_label'),
+    ('model_name', 'expected_label', 'expected_constrained'),
     [
-        ('gemini-2.5-pro', 'Google AI - Gemini 2.5 Pro'),
-        ('gemini-2.5-flash', 'Google AI - Gemini 2.5 Flash'),
-        ('gemini-flash-lite-latest', 'Google AI - Gemini Flash Lite Latest'),
+        ('gemini-2.5-pro', 'Google AI - Gemini 2.5 Pro', ConstrainedSupport.NO_TOOLS),
+        ('gemini-2.5-flash', 'Google AI - Gemini 2.5 Flash', ConstrainedSupport.NO_TOOLS),
+        ('gemini-2.5-flash-lite', 'Google AI - Gemini 2.5 Flash Lite', ConstrainedSupport.NO_TOOLS),
+        ('gemini-flash-latest', 'Google AI - Gemini Flash Latest', ConstrainedSupport.NO_TOOLS),
+        ('gemini-flash-lite-latest', 'Google AI - Gemini Flash Lite Latest', ConstrainedSupport.ALL),
     ],
 )
-def test_stable_gemini_text_models_register_real_capabilities(model_name: str, expected_label: str) -> None:
+def test_stable_gemini_text_models_register_real_capabilities(
+    model_name: str, expected_label: str, expected_constrained: ConstrainedSupport
+) -> None:
     """Stable text ids resolve to their own ModelInfo, not the generic fallback.
 
     The fallback (DEFAULT_SUPPORTS_MODEL) leaves ``output`` unset and labels the id verbatim,
@@ -672,8 +684,36 @@ def test_stable_gemini_text_models_register_real_capabilities(model_name: str, e
     assert model_info.supports.tools is True
     assert model_info.supports.tool_choice is True
     assert model_info.supports.system_role is True
-    assert model_info.supports.constrained == ConstrainedSupport.ALL
+    assert model_info.supports.constrained == expected_constrained
     assert model_info.supports.output == ['text', 'json']
+
+
+@pytest.mark.parametrize(
+    ('version', 'expected_constrained', 'expected_output'),
+    [
+        ('models/gemini-2.5-flash-lite', ConstrainedSupport.NO_TOOLS, ['text', 'json']),
+        ('publishers/google/models/gemini-3.8-flash', ConstrainedSupport.NO_TOOLS, ['text', 'json']),
+        ('models/gemini-3.1-pro-preview', ConstrainedSupport.ALL, ['text', 'json']),
+        ('gemini-2.5-flash-001', ConstrainedSupport.NO_TOOLS, None),
+        ('models/gemini-2.0-flash-001', ConstrainedSupport.NO_TOOLS, None),
+        ('gemini-1.5-pro-002', ConstrainedSupport.NO_TOOLS, None),
+        ('gemini-3.5-flash-lite', ConstrainedSupport.ALL, None),
+        ('gemini-4-carbon', ConstrainedSupport.ALL, None),
+        ('gemini-4-argon', ConstrainedSupport.ALL, None),
+        ('endpoints/1234567890', ConstrainedSupport.ALL, None),
+    ],
+)
+def test_google_model_info_prefix_stripping_and_legacy_fallback(
+    version: str,
+    expected_constrained: ConstrainedSupport,
+    expected_output: list[str] | None,
+) -> None:
+    """Prefixed catalog ids match SUPPORTED_MODELS; unlisted 1.x/2.0/2.5 get NO_TOOLS while 3.x+/4.x+ get ALL."""
+    model_info = google_model_info(version)
+
+    assert model_info.supports is not None
+    assert model_info.supports.constrained == expected_constrained
+    assert model_info.supports.output == expected_output
 
 
 @pytest.mark.parametrize(
@@ -727,10 +767,11 @@ def test_tts_models_do_not_advertise_system_role(model_name: str) -> None:
     [
         ('gemma-4-26b-a4b-it', 'Google AI - Gemma 4 26B A4B IT'),
         ('gemma-4-31b-it', 'Google AI - Gemma 4 31B IT'),
+        ('gemma-3-27b-it', 'Google AI - Gemma'),
     ],
 )
 def test_gemma_4_models_register_per_name_capabilities(model_name: str, expected_label: str) -> None:
-    """Each gemma-4 id carries its own label instead of sharing the generic Gemma entry."""
+    """Gemma ids advertise NO_TOOLS constrained support and route to GemmaConfig."""
     model_info = google_model_info(model_name)
 
     assert model_info.label == expected_label
@@ -740,7 +781,7 @@ def test_gemma_4_models_register_per_name_capabilities(model_name: str, expected
         tools=True,
         tool_choice=True,
         system_role=True,
-        constrained=ConstrainedSupport.ALL,
+        constrained=ConstrainedSupport.NO_TOOLS,
         output=['text', 'json'],
     )
     assert get_model_config_schema(model_name) is GemmaConfig
@@ -3379,3 +3420,790 @@ async def test_streaming_generate_exposes_prompt_feedback_without_block(mocker: 
     assert response.custom == {
         'promptFeedback': {'safetyRatings': [{'category': 'HARM_CATEGORY_HARASSMENT', 'probability': 'NEGLIGIBLE'}]}
     }
+
+
+class _DishRecipe(BaseModel):
+    title: str
+    on_sale_ingredients: list[str]
+
+
+class _StoreQuery(BaseModel):
+    store: str
+
+
+def _mock_googleai_with_client(monkeypatch: pytest.MonkeyPatch, mock_client: MagicMock) -> GoogleAI:
+    async def _empty_models() -> Any:  # noqa: ANN401
+        if False:
+            yield None
+
+    mock_client.aio.models.list = AsyncMock(side_effect=lambda: _empty_models())
+    plugin = GoogleAI(api_key='test-key')
+    monkeypatch.setattr(plugin, '_runtime_client', lambda: mock_client)
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_gemini_tools_alone_runs_tool_and_returns_text(
+    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """Tools without output_schema declare function tools with no response_mime_type and complete in two turns."""
+    captured_configs: list[genai_types.GenerateContentConfig | None] = []
+    tool_calls = 0
+
+    async def fake_generate_content(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401, ARG001
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        captured_configs.append(config)
+        if len(captured_configs) == 1:
+            return genai_types.GenerateContentResponse(
+                candidates=[
+                    genai_types.Candidate(
+                        finish_reason=genai_types.FinishReason.STOP,
+                        content=genai_types.Content(
+                            role='model',
+                            parts=[
+                                genai_types.Part(
+                                    function_call=genai_types.FunctionCall(name='get_sale_items', args={'store': 'dt'})
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(role='model', parts=[genai_types.Part(text='Make tomato bruschetta.')]),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-tomatoes', 'basil']
+
+    response = await ai.generate(
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        prompt='What should I cook?',
+        tools=[get_sale_items],
+    )
+
+    assert tool_calls == 1
+    assert response.text == 'Make tomato bruschetta.'
+    assert len(captured_configs) == 2
+    for cfg in captured_configs:
+        assert cfg is not None
+        assert cfg.tools is not None
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_ref',
+    [
+        'googleai/gemini-flash-latest',
+        'googleai/gemini-2.5-flash-lite',
+        'googleai/gemini-4-carbon',
+        'googleai/gemma-4-31b-it',
+    ],
+)
+@pytest.mark.parametrize('empty_tools', [None, []], ids=['tools-none', 'tools-empty-list'])
+async def test_gemini_output_schema_without_tools_keeps_native_constrained_json(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    model_ref: str,
+    empty_tools: list[Any] | None,
+) -> None:
+    """output_schema with no tools (None or []) keeps native response_mime_type and response_json_schema."""
+    captured_calls: list[tuple[Any, genai_types.GenerateContentConfig | None]] = []
+
+    async def fake_generate_content(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        captured_calls.append((contents, config))
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(
+                        role='model',
+                        parts=[genai_types.Part(text='{"title":"Tomato Tart","on_sale_ingredients":["tomatoes"]}')],
+                    ),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    try:
+        response = await ai.generate(
+            model=model_ref,
+            prompt='Suggest a bargain recipe.',
+            tools=empty_tools,
+            output_schema=_DishRecipe,
+        )
+    finally:
+        _gemini.SUPPORTED_MODELS.pop('gemini-4-carbon', None)
+
+    assert response.output == _DishRecipe(title='Tomato Tart', on_sale_ingredients=['tomatoes'])
+    assert len(captured_calls) == 1
+    contents, cfg = captured_calls[0]
+    assert cfg is not None
+    assert cfg.response_mime_type == 'application/json'
+    assert cfg.response_json_schema == to_json_schema(_DishRecipe)
+    # Native constrained mode sends no prompt-level schema instructions.
+    sent_texts = [p.text for c in contents for p in (c.parts or []) if p.text]
+    assert sent_texts == ['Suggest a bargain recipe.']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_ref',
+    [
+        'googleai/gemini-4-carbon',
+        'googleai/gemini-4-argon',
+        'googleai/gemini-3.1-pro-preview',
+        'googleai/gemini-3.6-flash',
+    ],
+)
+async def test_gemini_tools_plus_output_schema_keeps_native_constrained_json_on_supporting_models(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    model_ref: str,
+) -> None:
+    """Supporting Gemini models keep native response_json_schema alongside tools with zero prompt schema text."""
+    captured_calls: list[tuple[Any, genai_types.GenerateContentConfig | None]] = []
+    tool_calls = 0
+
+    async def fake_generate_content(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        captured_calls.append((contents, config))
+        if len(captured_calls) == 1:
+            return genai_types.GenerateContentResponse(
+                candidates=[
+                    genai_types.Candidate(
+                        finish_reason=genai_types.FinishReason.STOP,
+                        content=genai_types.Content(
+                            role='model',
+                            parts=[
+                                genai_types.Part(
+                                    function_call=genai_types.FunctionCall(name='get_sale_items', args={'store': 'dt'})
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(
+                        role='model',
+                        parts=[
+                            genai_types.Part(
+                                text='{"title":"Caprese Salad","on_sale_ingredients":["tomatoes","basil"]}'
+                            )
+                        ],
+                    ),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-tomatoes', 'basil']
+
+    try:
+        response = await ai.generate(
+            model=model_ref,
+            prompt='Suggest a bargain recipe.',
+            tools=[get_sale_items],
+            output_schema=_DishRecipe,
+        )
+    finally:
+        _gemini.SUPPORTED_MODELS.pop('gemini-4-carbon', None)
+        _gemini.SUPPORTED_MODELS.pop('gemini-4-argon', None)
+
+    assert tool_calls == 1
+    assert response.output == _DishRecipe(title='Caprese Salad', on_sale_ingredients=['tomatoes', 'basil'])
+    assert len(captured_calls) == 2
+    expected_schema = to_json_schema(_DishRecipe)
+    for _contents, cfg in captured_calls:
+        assert cfg is not None
+        assert cfg.tools is not None
+        assert cfg.response_mime_type == 'application/json'
+        assert cfg.response_json_schema == expected_schema
+        assert cfg.response_schema is None
+    turn1_texts = [p.text for c in captured_calls[0][0] for p in (c.parts or []) if p.text]
+    assert turn1_texts == ['Suggest a bargain recipe.']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_ref',
+    [
+        'googleai/gemini-flash-latest',
+        'googleai/gemini-3.8-flash',
+        'googleai/gemini-2.5-flash-lite',
+        'googleai/gemini-2.5-flash-001',
+        'googleai/gemma-4-31b-it',
+    ],
+)
+async def test_gemini_tools_plus_output_schema_omits_native_json_mode_and_hydrates_output(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    model_ref: str,
+) -> None:
+    """NO_TOOLS models drop native JSON mode on both turns, inject schema instructions, and hydrate output."""
+    captured_calls: list[tuple[Any, genai_types.GenerateContentConfig | None]] = []
+    tool_calls = 0
+
+    async def fake_generate_content(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        captured_calls.append((contents, config))
+        if len(captured_calls) == 1:
+            return genai_types.GenerateContentResponse(
+                candidates=[
+                    genai_types.Candidate(
+                        finish_reason=genai_types.FinishReason.STOP,
+                        content=genai_types.Content(
+                            role='model',
+                            parts=[
+                                genai_types.Part(
+                                    function_call=genai_types.FunctionCall(name='get_sale_items', args={'store': 'dt'})
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(
+                        role='model',
+                        parts=[
+                            genai_types.Part(
+                                text=(
+                                    '```json\n{"title":"Caprese Salad","on_sale_ingredients":["tomatoes","basil"]}\n```'
+                                )
+                            )
+                        ],
+                    ),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-tomatoes', 'basil']
+
+    try:
+        response = await ai.generate(
+            model=model_ref,
+            prompt='Suggest a bargain recipe.',
+            tools=[get_sale_items],
+            output_schema=_DishRecipe,
+        )
+    finally:
+        _gemini.SUPPORTED_MODELS.pop('gemini-2.5-flash-001', None)
+
+    assert tool_calls == 1
+    assert response.output == _DishRecipe(title='Caprese Salad', on_sale_ingredients=['tomatoes', 'basil'])
+    assert len(captured_calls) == 2
+    for _contents, cfg in captured_calls:
+        assert cfg is not None
+        assert cfg.tools is not None
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+        assert cfg.response_schema is None
+    turn1_texts = [p.text for c in captured_calls[0][0] for p in (c.parts or []) if p.text]
+    assert any('Output should be in JSON format' in t for t in turn1_texts)
+
+
+@pytest.mark.asyncio
+async def test_version_override_from_all_to_no_tools_injects_fallback_schema_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    """Overriding config.version from an ALL model to a NO_TOOLS model injects fallback schema instructions."""
+    captured_configs: list[genai_types.GenerateContentConfig | None] = []
+    tool_calls = 0
+
+    async def fake_generate_content(
+        *,
+        model: str,
+        contents: Any,  # noqa: ANN401, ARG001
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        assert model == 'gemini-2.5-flash-lite'
+        captured_configs.append(config)
+        if len(captured_configs) == 1:
+            return genai_types.GenerateContentResponse(
+                candidates=[
+                    genai_types.Candidate(
+                        finish_reason=genai_types.FinishReason.STOP,
+                        content=genai_types.Content(
+                            role='model',
+                            parts=[
+                                genai_types.Part(
+                                    function_call=genai_types.FunctionCall(name='get_sale_items', args={'store': 'dt'})
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(
+                        role='model',
+                        parts=[genai_types.Part(text='{"title":"Pesto Pasta","on_sale_ingredients":["basil"]}')],
+                    ),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-basil']
+
+    response = await ai.generate(
+        model=GoogleAI.gemini('gemini-3.1-pro-preview'),
+        config={'version': 'gemini-2.5-flash-lite'},
+        prompt='Suggest a bargain recipe.',
+        tools=[get_sale_items],
+        output_schema=_DishRecipe,
+    )
+
+    assert tool_calls == 1
+    assert response.output == _DishRecipe(title='Pesto Pasta', on_sale_ingredients=['basil'])
+    assert len(captured_configs) == 2
+    for cfg in captured_configs:
+        assert cfg is not None
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+        assert isinstance(cfg.system_instruction, genai_types.Content)
+        sys_texts = [p.text for p in (cfg.system_instruction.parts or []) if p.text]
+        assert any('Output should be in JSON format' in t and 'on_sale_ingredients' in t for t in sys_texts)
+
+
+@pytest.mark.asyncio
+async def test_output_constrained_false_with_tools_omits_native_json_mode_on_all_model(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    """output_constrained=False + tools + output_schema omits native JSON mode on ALL models."""
+    captured_calls: list[tuple[Any, genai_types.GenerateContentConfig | None]] = []
+    tool_calls = 0
+
+    async def fake_generate_content(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> genai_types.GenerateContentResponse:
+        captured_calls.append((contents, config))
+        if len(captured_calls) == 1:
+            return genai_types.GenerateContentResponse(
+                candidates=[
+                    genai_types.Candidate(
+                        finish_reason=genai_types.FinishReason.STOP,
+                        content=genai_types.Content(
+                            role='model',
+                            parts=[
+                                genai_types.Part(
+                                    function_call=genai_types.FunctionCall(name='get_sale_items', args={'store': 'dt'})
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        return genai_types.GenerateContentResponse(
+            candidates=[
+                genai_types.Candidate(
+                    finish_reason=genai_types.FinishReason.STOP,
+                    content=genai_types.Content(
+                        role='model',
+                        parts=[
+                            genai_types.Part(
+                                text='```json\n{"title":"Bruschetta","on_sale_ingredients":["tomato"]}\n```'
+                            )
+                        ],
+                    ),
+                )
+            ]
+        )
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=fake_generate_content)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-tomato']
+
+    response = await ai.generate(
+        model=GoogleAI.gemini('gemini-3.1-pro-preview'),
+        prompt='Suggest a bargain recipe.',
+        tools=[get_sale_items],
+        output_schema=_DishRecipe,
+        output_constrained=False,
+    )
+
+    assert tool_calls == 1
+    assert response.output == _DishRecipe(title='Bruschetta', on_sale_ingredients=['tomato'])
+    assert len(captured_calls) == 2
+    for _contents, cfg in captured_calls:
+        assert cfg is not None
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+    turn1_texts = [p.text for c in captured_calls[0][0] for p in (c.parts or []) if p.text]
+    assert any('Output should be in JSON format' in t for t in turn1_texts)
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_tools_plus_output_schema_streams_partials_and_hydrates_output(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    """Streaming tools + output_schema omits native JSON mode, runs tools once, and streams structured partials."""
+    captured_configs: list[genai_types.GenerateContentConfig | None] = []
+    tool_calls = 0
+
+    async def fake_generate_content_stream(
+        *,
+        model: str,  # noqa: ARG001
+        contents: Any,  # noqa: ANN401, ARG001
+        config: genai_types.GenerateContentConfig | None = None,
+    ) -> Any:  # noqa: ANN401
+        captured_configs.append(config)
+        turn = len(captured_configs)
+
+        async def _chunks() -> Any:  # noqa: ANN401
+            if turn == 1:
+                yield genai_types.GenerateContentResponse(
+                    candidates=[
+                        genai_types.Candidate(
+                            finish_reason=genai_types.FinishReason.STOP,
+                            content=genai_types.Content(
+                                role='model',
+                                parts=[
+                                    genai_types.Part(
+                                        function_call=genai_types.FunctionCall(
+                                            name='get_sale_items', args={'store': 'dt'}
+                                        )
+                                    )
+                                ],
+                            ),
+                        )
+                    ]
+                )
+                return
+            yield _text_chunk('{"title":"Basil ')
+            yield _text_chunk('Pasta","on_sale_ingredients":["basil"]}', genai_types.FinishReason.STOP)
+
+        return _chunks()
+
+    mock_client = mocker.MagicMock(spec=genai.Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content_stream = AsyncMock(side_effect=fake_generate_content_stream)
+    ai = Genkit(plugins=[_mock_googleai_with_client(monkeypatch, mock_client)])
+
+    @ai.tool()
+    async def get_sale_items(query: _StoreQuery) -> list[str]:
+        """Look up ingredients on sale."""
+        nonlocal tool_calls
+        tool_calls += 1
+        return [f'{query.store}-basil']
+
+    handle = ai.generate_stream(
+        model=GoogleAI.gemini('gemini-flash-latest'),
+        prompt='Suggest a bargain recipe.',
+        tools=[get_sale_items],
+        output_schema=_DishRecipe,
+    )
+    partial_outputs = [chunk.output async for chunk in handle.stream if chunk.output is not None]
+    final = await handle.response
+
+    assert tool_calls == 1
+    assert len(partial_outputs) >= 1
+    assert final.output == _DishRecipe(title='Basil Pasta', on_sale_ingredients=['basil'])
+    assert len(captured_configs) == 2
+    for cfg in captured_configs:
+        assert cfg is not None
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+
+
+class _MenuDish(BaseModel):
+    dish: str
+
+
+def _required_tool_request(**kwargs: Any) -> ModelRequest:  # noqa: ANN401
+    return ModelRequest(
+        messages=kwargs.pop('messages', [Message(role=Role.USER, content=[Part.from_text('Is the pho in stock?')])]),
+        tools=[ToolDefinition(name='lookup_menu', description='d', input_schema={'type': 'object'})],
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_id',
+    ['gemini-3.1-pro-preview', 'gemini-4-argon', 'gemini-flash-latest', 'gemma-4-31b-it'],
+)
+async def test_required_with_output_schema_omits_json_mode_on_first_turn(model_id: str) -> None:
+    """ANY mode plus responseMimeType=application/json is a Gemini 400; Turn 1 skips JSON mode even on ALL models."""
+    client = MagicMock(spec=genai.Client)
+    client.vertexai = False
+    model = GeminiModel(model_id, client)
+    request = _required_tool_request(
+        tool_choice='required',
+        output=OutputConfig(format='json', json_schema=_MenuDish.model_json_schema(), constrained=True),
+    )
+
+    cfg = await model._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert cfg.tool_config is not None and cfg.tool_config.function_calling_config is not None
+    assert cfg.tool_config.function_calling_config.mode == genai_types.FunctionCallingConfigMode.ANY
+    assert cfg.tool_config.function_calling_config.allowed_function_names == ['lookup_menu']
+    assert cfg.response_mime_type is None
+    assert cfg.response_json_schema is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('model_id', 'expect_native_json'),
+    [
+        ('gemini-3.1-pro-preview', True),
+        ('gemini-4-argon', True),
+        ('gemini-flash-latest', False),
+        ('gemma-4-31b-it', False),
+    ],
+)
+async def test_required_relaxes_to_auto_after_tool_responses(model_id: str, expect_native_json: bool) -> None:
+    """After tools answer, ANY relaxes to AUTO; ALL models apply native JSON while NO_TOOLS models keep prompt JSON."""
+    client = MagicMock(spec=genai.Client)
+    client.vertexai = False
+    model = GeminiModel(model_id, client)
+    messages = [
+        Message(role=Role.USER, content=[Part.from_text('Is the pho in stock?')]),
+        Message(role=Role.MODEL, content=[Part(tool_request=ToolRequest(name='lookup_menu', ref='1', input={}))]),
+        Message(
+            role=Role.TOOL, content=[Part(tool_response=ToolResponse(name='lookup_menu', ref='1', output='in stock'))]
+        ),
+    ]
+    request = _required_tool_request(
+        messages=messages,
+        tool_choice='required',
+        output=OutputConfig(format='json', json_schema=_MenuDish.model_json_schema(), constrained=expect_native_json),
+    )
+
+    cfg = await model._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert cfg.tool_config is not None and cfg.tool_config.function_calling_config is not None
+    assert cfg.tool_config.function_calling_config.mode == genai_types.FunctionCallingConfigMode.AUTO
+    assert cfg.tool_config.function_calling_config.allowed_function_names is None
+    if expect_native_json:
+        assert cfg.response_mime_type == 'application/json'
+        assert cfg.response_json_schema == _MenuDish.model_json_schema()
+    else:
+        assert cfg.response_mime_type is None
+        assert cfg.response_json_schema is None
+
+
+@pytest.mark.asyncio
+async def test_required_relaxes_to_auto_when_middleware_appends_user_message_after_tool() -> None:
+    """Filesystem.read_file queues a trailing Role.USER message after Role.TOOL; the turn still relaxes to AUTO."""
+    client = MagicMock(spec=genai.Client)
+    client.vertexai = False
+    model = GeminiModel('gemini-3.1-pro-preview', client)
+    messages = [
+        Message(role=Role.USER, content=[Part.from_text('Read menu.md and tell me what soup is in stock.')]),
+        Message(role=Role.MODEL, content=[Part(tool_request=ToolRequest(name='lookup_menu', ref='1', input={}))]),
+        Message(
+            role=Role.TOOL,
+            content=[Part(tool_response=ToolResponse(name='lookup_menu', ref='1', output={'ok': True}))],
+        ),
+        Message(role=Role.USER, content=[Part.from_text('<read_file path="menu.md">\npho: in stock\n</read_file>')]),
+    ]
+    request = _required_tool_request(
+        messages=messages,
+        tool_choice='required',
+        output=OutputConfig(format='json', json_schema=_MenuDish.model_json_schema(), constrained=True),
+    )
+
+    cfg = await model._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert cfg.tool_config is not None and cfg.tool_config.function_calling_config is not None
+    assert cfg.tool_config.function_calling_config.mode == genai_types.FunctionCallingConfigMode.AUTO
+    assert cfg.tool_config.function_calling_config.allowed_function_names is None
+    assert cfg.response_mime_type == 'application/json'
+    assert cfg.response_json_schema == _MenuDish.model_json_schema()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_id', ['gemini-3.1-pro-preview', 'gemini-flash-latest', 'gemma-4-31b-it'])
+async def test_required_stays_required_on_fresh_user_followup_turn(model_id: str) -> None:
+    """A new user question after a completed model text reply has no tool_response after the last MODEL turn."""
+    client = MagicMock(spec=genai.Client)
+    client.vertexai = False
+    model = GeminiModel(model_id, client)
+    messages = [
+        Message(role=Role.USER, content=[Part.from_text('Is the pho in stock?')]),
+        Message(role=Role.MODEL, content=[Part(tool_request=ToolRequest(name='lookup_menu', ref='1', input={}))]),
+        Message(
+            role=Role.TOOL, content=[Part(tool_response=ToolResponse(name='lookup_menu', ref='1', output='in stock'))]
+        ),
+        Message(role=Role.MODEL, content=[Part.from_text('{"dish": "pho"}')]),
+        Message(role=Role.USER, content=[Part.from_text('What about bun bo hue?')]),
+    ]
+    request = _required_tool_request(
+        messages=messages,
+        tool_choice='required',
+        output=OutputConfig(format='json', json_schema=_MenuDish.model_json_schema(), constrained=True),
+    )
+
+    cfg = await model._genkit_to_googleai_cfg(request)
+
+    assert cfg is not None
+    assert cfg.tool_config is not None and cfg.tool_config.function_calling_config is not None
+    assert cfg.tool_config.function_calling_config.mode == genai_types.FunctionCallingConfigMode.ANY
+    assert cfg.tool_config.function_calling_config.allowed_function_names == ['lookup_menu']
+    assert cfg.response_mime_type is None
+    assert cfg.response_json_schema is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('model_ref', 'expect_turn2_native_json'),
+    [
+        ('googleai/gemini-3.1-pro-preview', True),
+        ('googleai/gemini-4-argon', True),
+        ('googleai/gemini-flash-latest', False),
+        ('googleai/gemma-4-31b-it', False),
+    ],
+)
+async def test_required_end_to_end_returns_structured_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    model_ref: str,
+    expect_turn2_native_json: bool,
+) -> None:
+    """required + output_schema: Turn 1 sends ANY without JSON mode; Turn 2 relaxes to AUTO and hydrates output."""
+    bodies: list[dict[str, Any]] = []
+
+    # Like Gemini: ANY mode can only return a function call, so keeping
+    # 'required' on Turn 2 would loop until max_turns.
+    async def send(_client: httpx.AsyncClient, request: httpx.Request, **_: object) -> httpx.Response:
+        if request.method == 'GET':
+            return httpx.Response(200, json={'models': []}, request=request)
+        body = json.loads(request.content)
+        bodies.append(body)
+        mode = body.get('toolConfig', {}).get('functionCallingConfig', {}).get('mode')
+        part: dict[str, Any] = (
+            # lookup_menu takes a bare str, so its wire args ride under `input`.
+            {'functionCall': {'id': f'c{len(bodies)}', 'name': 'lookup_menu', 'args': {'input': 'pho'}}}
+            if mode == 'ANY'
+            else {'text': '{"dish": "pho"}'}
+        )
+        return httpx.Response(
+            200,
+            json={'candidates': [{'content': {'role': 'model', 'parts': [part]}, 'finishReason': 'STOP'}]},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, 'send', send)
+    ai = Genkit(plugins=[GoogleAI(api_key='fake-key')])
+
+    @ai.tool(name='lookup_menu')
+    async def lookup_menu(dish: str) -> str:
+        """Check whether a dish is on today's menu."""
+        return f'{dish}: in stock'
+
+    try:
+        response = await ai.generate(
+            model=model_ref,
+            prompt='Is the pho in stock?',
+            tools=['lookup_menu'],
+            tool_choice='required',
+            output_schema=_MenuDish,
+        )
+    finally:
+        _gemini.SUPPORTED_MODELS.pop('gemini-4-argon', None)
+
+    assert response.error is None
+    assert len(bodies) == 2
+    first, second = bodies
+    assert first['toolConfig']['functionCallingConfig']['mode'] == 'ANY'
+    assert 'responseMimeType' not in first.get('generationConfig', {})
+    assert second['toolConfig']['functionCallingConfig']['mode'] == 'AUTO'
+    if expect_turn2_native_json:
+        assert second['generationConfig']['responseMimeType'] == 'application/json'
+        assert second['generationConfig']['responseJsonSchema'] == _MenuDish.model_json_schema()
+    else:
+        assert 'responseMimeType' not in second.get('generationConfig', {})
+    assert response.output == _MenuDish(dish='pho')

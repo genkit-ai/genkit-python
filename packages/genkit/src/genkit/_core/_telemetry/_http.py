@@ -363,9 +363,12 @@ def flush_developer_ui_collector() -> None:
     APM backends (``GenAiInstrumentation``, Cloud Trace, custom providers) stay
     isolated from interactive Dev UI clicks.
     """
-    for inst in instrumentations:
+    for inst in list(instrumentations):
         if isinstance(inst, DirectHttpInstrumentation):
-            inst.flush()
+            try:
+                inst.flush()
+            except Exception as e:
+                logger.debug('Failed to flush Developer UI trace collector: %s', e)
 
 
 def maybe_inject_dev_instrumentation() -> None:

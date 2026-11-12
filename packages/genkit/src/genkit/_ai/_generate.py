@@ -1374,12 +1374,12 @@ _LOGGED_ATTR = '_genkit_failure_logged'
 
 
 def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: str | None = None) -> None:
-    """Log a failure whose cause boxing hides behind ``internal error``.
+    """Log an unraised turn failure boxed onto ``ModelResponse``.
 
-    The caller only gets ``finish_reason=failed`` with ``internal error``, so
-    without this line the cause lives only in an exported trace. Failures that
-    keep their own message (``PublicError``, a ``GenkitError`` without a
-    foreign cause) are already on ``response.error`` and are not logged.
+    ``generate()`` returns ``finish_reason=failed`` instead of raising once a
+    turn has started, so callers reading ``response.text`` would otherwise get
+    an empty string with no log output. ``PublicError`` is an intentional
+    caller-facing rejection on ``response.error`` and is not logged.
 
     Args:
         exc: The exception about to be boxed.
@@ -1388,7 +1388,7 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     """
     if getattr(exc, _LOGGED_ATTR, False):
         return
-    if boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
+    if public_error(exc) is not None:
         return
     with contextlib.suppress(AttributeError, TypeError):
         setattr(exc, _LOGGED_ATTR, True)
@@ -1400,13 +1400,26 @@ def log_dropped_failure(exc: BaseException, *, model: str | None = None, tool: s
     span = current_span.get()
     if span is not None and span.trace_id:
         fields['trace_id'] = span.trace_id
+    message = str(exc)
+    fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        fields['at'] = f'{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
         culprit = f'model {model!r}'
     else:
         culprit = 'generate'
-    logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+    # one line, no traceback: a pretty-printed traceback with locals costs
+    # hundreds of ms per failed turn and dumps frame locals into the logs.
+    logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
+    # The box hides the cause and no span keeps the stack, so a bug in Genkit
+    # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug
+    # brings it back.
+    logger.debug('%s failure details', culprit, exc_info=exc, **fields)
 
 
 def stamp_cancelled_error(

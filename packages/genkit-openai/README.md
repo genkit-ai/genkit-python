@@ -80,11 +80,12 @@ embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant'
 ```
 
 Pass `api_key=` explicitly. Without it the plugin falls back to
-`OPENAI_API_KEY` and sends that key to Mistral. For Codestral keys, use
-`base_url='https://codestral.mistral.ai/v1'`.
+`OPENAI_API_KEY` and sends that key to Mistral. The EU and US endpoints,
+`https://api.eu.mistral.ai/v1` and `https://api.us.mistral.ai/v1`, work the
+same way.
 
-Mistral rejects any request field it doesn't declare, so with either of those
-hosts the plugin sends Mistral's names for the settings that differ:
+Mistral rejects any request field it doesn't declare, so with a Mistral host
+the plugin sends Mistral's names for the settings that differ:
 
 - `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
   even with `reasoning_effort` set.
@@ -93,11 +94,12 @@ hosts the plugin sends Mistral's names for the settings that differ:
 - Streaming sends no `stream_options`; Mistral reports usage on the last chunk.
 - An embedder's `dimensions` goes out as `output_dimension`.
 
-Magistral replies carry their reasoning in `thinking` chunks; those come back
-as reasoning parts, ahead of the text, streamed or not.
+With `reasoning_effort` set, replies carry their reasoning in `thinking`
+chunks. Those come back as reasoning parts, ahead of the text, streamed or not,
+and go back to Mistral as a `thinking` chunk on the next turn, as Mistral asks.
 
 Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
-and Mistral fails the call naming them. Mistral-only fields like `safe_prompt`
+and Mistral fails the call naming them. Mistral-only fields like `min_tokens`
 go in `extra`. A gateway in front of Mistral on any other host gets the OpenAI
 field names.
 

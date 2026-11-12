@@ -5,6 +5,7 @@
 
 """Turn-loop invariants: max_turns, restart input, system= with history, docs=, and resume with prompt=."""
 
+import numpy as np
 import pytest
 
 from genkit import (
@@ -16,10 +17,10 @@ from genkit import (
     Part,
     ToolContext,
 )
-from genkit._ai._agents._client import agent_interrupts_from_message
-from genkit._ai._generate import CallScope, augment_with_context, generate_action, restarted_tool_request
+from genkit._ai._generate import CallScope, augment_with_context, generate_action, resolved_interrupt_part
+from genkit._core import _tool as tool_mod
 from genkit._core._error import ErrorReason, GenkitError
-from genkit._core._model import GenerateActionOptions, ModelRequest
+from genkit._core._model import GenerateActionOptions, ModelRequest, reject_unanswered_interrupts
 from genkit._core._typing import FinishReason, Role, ToolRequest
 from genkit.testing import ScriptedModel, define_scripted_model
 
@@ -139,38 +140,18 @@ async def test_restart_that_pauses_again_keeps_the_replaced_input() -> None:
     assert 'replacedInput' not in part.metadata
 
 
-def test_restarted_tool_request_never_carries_replaced_input() -> None:
-    """Neither the restart part nor a stale history part can put replacedInput back on history."""
+def test_resolved_interrupt_part_strips_interrupt_and_replaced_input() -> None:
+    """History keeps the approved input and resolvedInterrupt, never interrupt or replacedInput."""
     original = Part(
         tool_request=ToolRequest(name='transfer', input={'days': 7}, ref='t1'),
         metadata={'interrupt': {'reason': 'approve'}, 'replacedInput': {'days': 9}, 'note': 'kept'},
     )
-    restart = Part(
-        tool_request=ToolRequest(name='transfer', input={'days': 5}, ref='t1'),
-        metadata={'resumed': True, 'replacedInput': {'days': 7}},
-    )
 
-    ran, metadata, interrupt = restarted_tool_request(original=original, restart=restart)
+    resolved = resolved_interrupt_part(original=original, tool_input={'days': 5})
 
-    assert ran.input == {'days': 5}
-    assert metadata == {'note': 'kept'}
-    assert interrupt == {'reason': 'approve'}
-
-
-def test_agent_interrupt_exposes_the_interrupt_payload() -> None:
-    message = Message(
-        role=Role.MODEL,
-        content=[
-            Part(
-                tool_request=ToolRequest(name='transfer', input={'days': 7}, ref='t1'),
-                metadata={'interrupt': {'reason': 'needs approval'}},
-            )
-        ],
-    )
-
-    [intr] = agent_interrupts_from_message(message)
-
-    assert intr.metadata == {'reason': 'needs approval'}
+    assert resolved.tool_request is not None
+    assert resolved.tool_request.input == {'days': 5}
+    assert resolved.metadata == {'note': 'kept', 'resolvedInterrupt': {'reason': 'approve'}}
 
 
 @pytest.mark.asyncio
@@ -336,11 +317,19 @@ async def test_resume_without_a_paused_tool_request_does_not_mention_prompt() ->
 
 
 @pytest.mark.asyncio
-async def test_bare_restart_still_reads_as_resumed() -> None:
-    """restart() with no metadata resumes with {}; the tool must still see a resume."""
+async def test_bare_restart_still_reads_as_resumed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """restart() with no metadata resumes with {}; the tool span still records resumed."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
     seen: list[object] = []
+    span_attrs: list[dict[str, object]] = []
+    orig_set_attrs = tool_mod.set_custom_metadata_attributes
+
+    def _record_attrs(attrs: dict[str, object]) -> None:
+        span_attrs.append(dict(attrs))
+        orig_set_attrs(attrs)
+
+    monkeypatch.setattr(tool_mod, 'set_custom_metadata_attributes', _record_attrs)
 
     @ai.tool(name='transfer')
     async def transfer(inp: dict, ctx: ToolContext) -> str:
@@ -354,3 +343,82 @@ async def test_bare_restart_still_reads_as_resumed() -> None:
     await ai.generate(messages=paused.messages, tools=['transfer'], resume_restart=paused.interrupts[0].restart())
 
     assert len(seen) == 1
+    assert {'resumed': {}} in span_attrs
+
+
+@pytest.mark.asyncio
+async def test_resume_with_user_turn_after_paused_tool_does_not_mention_prompt() -> None:
+    """History ending in a user turn after a paused tool request must not blame prompt=."""
+    ai, pm, _ = _hitl_app()
+    pm.responses = [_transfer_request(7)]
+    paused = await ai.generate(prompt='book 7 days', tools=['transfer'])
+    calls = pm.request_count
+
+    response = await ai.generate(
+        messages=[*paused.messages, Message(role=Role.USER, content=[Part.from_text('also add breakfast')])],
+        tools=['transfer'],
+        resume_restart=paused.interrupts[0].restart(),
+    )
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert response.error is not None
+    assert response.error.status == 'FAILED_PRECONDITION'
+    assert response.error.reason is ErrorReason.INVALID_RESUME
+    assert 'prompt=' not in response.error.message
+    assert pm.request_count == calls
+
+
+def test_reject_unanswered_interrupts_sets_invalid_resume_reason() -> None:
+    paused = Part(
+        tool_request=ToolRequest(name='transfer', input={'days': 7}, ref='t1'),
+        metadata={'interrupt': {'reason': 'approve'}},
+    )
+
+    with pytest.raises(GenkitError) as restart_err:
+        reject_unanswered_interrupts(restart=[paused])
+    assert restart_err.value.status == 'INVALID_ARGUMENT'
+    assert restart_err.value.reason is ErrorReason.INVALID_RESUME
+
+    with pytest.raises(GenkitError) as respond_err:
+        reject_unanswered_interrupts(respond=[paused])
+    assert respond_err.value.status == 'INVALID_ARGUMENT'
+    assert respond_err.value.reason is ErrorReason.INVALID_RESUME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad', [True, False, 2.5])
+async def test_max_turns_rejects_bool_and_fraction_across_entry_points(bad: object) -> None:
+    from genkit._ai._agents._base import define_agent
+
+    ai = Genkit(model='scriptedModel')
+    define_scripted_model(ai)
+
+    with pytest.raises(GenkitError) as gen_err:
+        ai.generate_stream(prompt='hi', max_turns=bad)  # type: ignore[arg-type]
+    assert gen_err.value.status == 'INVALID_ARGUMENT'
+
+    with pytest.raises(GenkitError) as prompt_err:
+        ai.define_prompt(name=f'p_{bad}', prompt='hi', max_turns=bad)  # type: ignore[arg-type]
+    assert prompt_err.value.status == 'INVALID_ARGUMENT'
+
+    with pytest.raises(GenkitError) as agent_err:
+        define_agent(ai, name=f'a_{bad}', max_turns=bad)  # type: ignore[arg-type]
+    assert agent_err.value.status == 'INVALID_ARGUMENT'
+
+    with pytest.raises(GenkitError) as opts_err:
+        GenerateActionOptions(messages=[], max_turns=bad)  # type: ignore[arg-type]
+    assert opts_err.value.status == 'INVALID_ARGUMENT'
+
+
+@pytest.mark.asyncio
+async def test_max_turns_accepts_numpy_integral() -> None:
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok'), _answers('ok')]
+
+    res = await ai.generate(prompt='hi', max_turns=np.int64(3))  # type: ignore[arg-type]
+    assert res.text == 'ok'
+
+    prompt = ai.define_prompt(name='np_turns', prompt='hi', max_turns=np.int64(3))  # type: ignore[arg-type]
+    prompt_res = await prompt()
+    assert prompt_res.text == 'ok'

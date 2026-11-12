@@ -48,6 +48,7 @@ from genkit._ai._formats._builtin import built_in_formats
 from genkit._ai._formats._types import Formatter
 from genkit._ai._generate import (
     CallScope,
+    box_from_exc,
     check_max_turns,
     define_generate_action,
     generate_action,
@@ -88,7 +89,7 @@ from genkit._core._channel import run_loop
 from genkit._core._config_check import layer_call_config
 from genkit._core._dap import DapFn, DynamicActionProvider
 from genkit._core._environment import is_dev_environment
-from genkit._core._error import ErrorReason, GenkitError
+from genkit._core._error import ErrorReason, GenkitError, PublicError
 from genkit._core._flow import Flow
 from genkit._core._logger import (
     REFLECTION_THREAD_NAME,
@@ -1844,6 +1845,7 @@ class Genkit:
             # => stop
             ```
         """
+        check_max_turns(max_turns)
         initial_msgs: list[Message] = []
         if not isinstance(messages, str):
             initial_msgs = call_messages(system=system, messages=messages, prompt=prompt)
@@ -1915,9 +1917,19 @@ class Genkit:
             raise TypeError('messages must be a list of Message; pass text with prompt=')
         # Before GenerateCall, whose lax int field turns True into 1.
         check_max_turns(max_turns)
-        # prompt= with resume_respond/resume_restart puts a user turn after the
-        # paused tool request; resolve_resume_options fails that turn
-        # FAILED_PRECONDITION before the model runs, same as any bad resume.
+        if prompt is not None and (resume_respond is not None or resume_restart is not None):
+            return box_from_exc(
+                response=ModelResponse(),
+                messages=call_messages(system=system, messages=messages, prompt=prompt),
+                exc=PublicError(
+                    'FAILED_PRECONDITION',
+                    "Cannot 'resume' generation unless the previous message is a model message with at least one"
+                    ' tool request. resume_respond/resume_restart cannot be combined with prompt=.',
+                    reason=ErrorReason.INVALID_RESUME,
+                ),
+                caller_stopped=False,
+                reason=ErrorReason.INVALID_RESUME,
+            )
 
         scope = CallScope(self)
         registry = scope.registry

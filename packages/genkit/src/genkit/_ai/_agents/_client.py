@@ -196,13 +196,10 @@ class AgentInterrupt(Generic[InputT, OutputT]):
         name: str,
         ref: str | None,
         input_data: InputT,
-        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.ref = ref
         self.input = input_data
-        # What the tool passed to ``Interrupt(...)``: approval reason, amount, etc.
-        self.metadata = metadata
 
     def respond(self, output: OutputT) -> Part:
         """Tool response for ``chat.resume(respond=[...])``.
@@ -407,11 +404,6 @@ def error_from_exception(e: Exception) -> GenkitError:
     return GenkitError(status=status, message=message, cause=e)
 
 
-def interrupt_payload(part: Part) -> dict[str, Any] | None:
-    payload = (part.metadata or {}).get('interrupt')
-    return cast(dict[str, Any], payload) if isinstance(payload, dict) else None
-
-
 def agent_interrupts_from_message(message: Message | None) -> list[AgentInterrupt[Any, Any]]:
     if message is None:
         return []
@@ -426,7 +418,6 @@ def agent_interrupts_from_message(message: Message | None) -> list[AgentInterrup
                 name=req.name,
                 ref=req.ref,
                 input_data=req.input,
-                metadata=interrupt_payload(part),
             )
         )
     return interrupts

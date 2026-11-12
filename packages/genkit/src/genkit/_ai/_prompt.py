@@ -24,6 +24,7 @@ import os
 import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Any, ClassVar, Generic, NamedTuple, TypedDict, TypeVar, cast
 
@@ -33,7 +34,7 @@ from dotpromptz import (
     PromptInputConfig,
     PromptMetadata,
 )
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, field_validator
 from typing_extensions import Never, Self
 
 from genkit._ai import _aio
@@ -82,6 +83,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     ToolChoice,
+    check_max_turns,
     resume_options_to_resume,
 )
 from genkit._core._registry import Registry
@@ -247,6 +249,16 @@ class GenerateCall(BaseModel):
     model: ModelArg | Action | None = None
     config: Mapping[str, Any] | BaseModel | None = None
 
+    @field_validator('max_turns', mode='before')
+    @classmethod
+    def _check_max_turns(cls, v: object) -> object:
+        check_max_turns(v)
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        if isinstance(v, Integral) and not isinstance(v, bool):
+            return int(v)
+        return v
+
     def with_overrides(self, opts: PromptSettings) -> Self:
         """Return a copy where every ``PromptSettings`` key the call passed replaces this one's.
 
@@ -254,6 +266,13 @@ class GenerateCall(BaseModel):
         ``PromptGenerateOptions``; keys outside ``PromptSettings`` are ignored here.
         """
         set_by_call = {k: v for k, v in opts.items() if k in PromptSettings.__optional_keys__ and v is not None}
+        if 'max_turns' in set_by_call:
+            check_max_turns(set_by_call['max_turns'])
+            mt = set_by_call['max_turns']
+            if isinstance(mt, float) and mt.is_integer():
+                set_by_call['max_turns'] = int(mt)
+            elif isinstance(mt, Integral) and not isinstance(mt, bool):
+                set_by_call['max_turns'] = int(mt)
         return self.model_copy(update=set_by_call)
 
 

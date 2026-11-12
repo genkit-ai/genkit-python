@@ -24,15 +24,14 @@ from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
 from genkit_google_genai._models._sdk_config import (
     VEO_MANAGED_BODY_FIELDS,
     attach_config_extra,
-    copy_http_options,
     dump_family_config,
+    request_client_kwargs,
     sdk_config_error,
 )
-from genkit_google_genai._models._secrets import context_api_key, misplaced_key_error
+from genkit_google_genai._models._secrets import context_api_key, misplaced_key_error, missing_api_key_error
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, api_error, transport_error
 from google import genai
 from google.genai import types as genai_types
@@ -264,14 +263,14 @@ class VeoModel:
     def __init__(
         self,
         name: str,
-        client: genai.Client,
+        client: genai.Client | None,
         client_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Initialize Veo model runner.
 
         Args:
             name: The full model name.
-            client: The GenAI client.
+            client: The GenAI client, or None when the plugin booted keyless.
             client_kwargs: The plugin-level kwargs the client was constructed
                 from. Used when a call overrides the key or endpoint.
         """
@@ -293,6 +292,8 @@ class VeoModel:
         """
         context = ctx.context
         api_key = context_api_key(context)
+        if self._client is None and api_key is None:
+            raise missing_api_key_error()
         context_config = context.get('config')
         context_config = context_config if isinstance(context_config, dict) else {}
         request_config = config or {}
@@ -314,31 +315,16 @@ class VeoModel:
             # Location is a Vertex concept; ignore it on the Gemini API backend.
             location = None
         if api_key is None and not base_url and not api_version and not location:
+            assert self._client is not None
             return self._client
 
-        kwargs = dict(self._client_kwargs or {})
-        plugin_opts = kwargs.get('http_options')
-        opts = copy_http_options(plugin_opts) if plugin_opts is not None else genai_types.HttpOptions()
-        if api_key is not None:
-            kwargs['api_key'] = api_key
-            # The SDK rejects api_key with credentials, project, or location.
-            kwargs['credentials'] = None
-            kwargs.pop('project', None)
-            kwargs.pop('location', None)
-            location = None
-            # Express keys are not a regional Vertex host. Keep only an
-            # explicit config.base_url from this call.
-            if not base_url:
-                opts.base_url = None
-        if location:
-            kwargs['location'] = location
-            if not base_url:
-                opts.base_url = multi_regional_base_url(location) if is_multi_regional_location(location) else None
-        if base_url:
-            opts.base_url = base_url
-        if api_version:
-            opts.api_version = api_version
-        kwargs['http_options'] = opts
+        kwargs = request_client_kwargs(
+            self._client_kwargs or {},
+            api_key=api_key,
+            api_version=api_version,
+            base_url=base_url,
+            location=location,
+        )
         try:
             return genai.Client(**kwargs)
         except GOOGLE_AUTH_ERRORS as e:

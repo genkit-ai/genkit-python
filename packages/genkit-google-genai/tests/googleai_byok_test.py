@@ -238,13 +238,12 @@ async def test_keyed_list_actions_still_lists_models(no_key_env: None) -> None:
 
 @pytest.mark.asyncio
 async def test_keyless_plugin_serves_byok_generate(no_key_env: None) -> None:
-    """A keyless gateway serves a call that brings context.secrets.api_key."""
+    """A keyless gateway serves a call that brings context.secrets.api_key, building one Client."""
     ai = Genkit(plugins=[GoogleAI()])
     with (
         patch('genkit_google_genai._google.genai.client.Client') as base_cls,
         patch('genkit_google_genai._models._gemini.genai.Client') as request_cls,
     ):
-        base_cls.return_value.vertexai = False
         request_cls.return_value.aio.models.generate_content = AsyncMock(return_value=_text_response())
         response = await ai.generate(
             model='googleai/gemini-2.5-flash',
@@ -252,9 +251,9 @@ async def test_keyless_plugin_serves_byok_generate(no_key_env: None) -> None:
             context={'secrets': {'api_key': 'tenant-key'}},
         )
     assert response.text == 'Smoked Salmon Tartine'
-    # Every client built for this call carries the tenant key, never None.
-    for call in [*base_cls.call_args_list, *request_cls.call_args_list]:
-        assert call.kwargs['api_key'] == 'tenant-key'
+    base_cls.assert_not_called()
+    request_cls.assert_called_once()
+    assert request_cls.call_args.kwargs['api_key'] == 'tenant-key'
     request_cls.return_value.aio.models.generate_content.assert_awaited_once()
 
 
@@ -380,7 +379,6 @@ async def test_keyless_veo_start_uses_secret(no_key_env: None) -> None:
         patch('genkit_google_genai._google.genai.client.Client') as base_cls,
         patch('genkit_google_genai._models._veo.genai.Client') as request_cls,
     ):
-        base_cls.return_value.vertexai = False
         request_cls.return_value.aio.models.generate_videos = AsyncMock(return_value=sdk_op)
         operation = await ai.generate_operation(
             model='googleai/veo-3.1-generate-preview',
@@ -388,8 +386,9 @@ async def test_keyless_veo_start_uses_secret(no_key_env: None) -> None:
             context={'secrets': {'api_key': 'tenant-key'}},
         )
     assert operation.id == 'operations/1'
-    for call in [*base_cls.call_args_list, *request_cls.call_args_list]:
-        assert call.kwargs['api_key'] == 'tenant-key'
+    base_cls.assert_not_called()
+    request_cls.assert_called_once()
+    assert request_cls.call_args.kwargs['api_key'] == 'tenant-key'
 
 
 @pytest.mark.asyncio
@@ -481,7 +480,7 @@ async def test_vertex_embed_secret_uses_express_client() -> None:
     """VertexAI embedders honor the same secret, dropping project and location (express mode)."""
     plugin = VertexAI(project='plugin-project', location='us-central1')
     with patch('genkit_google_genai._google.genai.client.Client') as client_cls:
-        _call_client(plugin, {'secrets': {'api_key': 'tenant-key'}}, prefer_secret=True)
+        _call_client(plugin, {'secrets': {'api_key': 'tenant-key'}})
     kwargs = client_cls.call_args.kwargs
     assert kwargs['api_key'] == 'tenant-key'
     assert kwargs['credentials'] is None
@@ -513,7 +512,6 @@ async def test_bad_secret_key_on_keyless_generate_is_boxed_unauthenticated(no_ke
         patch('genkit_google_genai._google.genai.client.Client') as base_cls,
         patch('genkit_google_genai._models._gemini.genai.Client') as request_cls,
     ):
-        base_cls.return_value.vertexai = False
         request_cls.return_value.aio.models.generate_content = AsyncMock(side_effect=_bad_key_error())
         error = await _generate_error(
             ai,
@@ -525,6 +523,8 @@ async def test_bad_secret_key_on_keyless_generate_is_boxed_unauthenticated(no_ke
     assert error.reason is ErrorReason.INVALID_CREDENTIALS
     assert 'API key not valid' in error.message
     assert error.message != MISSING_API_KEY_MESSAGE
+    base_cls.assert_not_called()
+    request_cls.assert_called_once()
     assert request_cls.call_args.kwargs['api_key'] == 'tenant-typo'
 
 

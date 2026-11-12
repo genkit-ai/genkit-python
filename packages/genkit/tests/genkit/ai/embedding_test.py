@@ -28,6 +28,7 @@ from genkit._core._action import Action, ActionResponse
 from genkit._core._schema import to_json_schema
 from genkit._core._typing import ActionMetadata, Embedding, EmbedResponse
 from genkit.embedder import (
+    EmbedContext,
     Embedder,
     EmbedderInfo,
     EmbedderRef,
@@ -831,7 +832,7 @@ async def test_embed_and_embed_many_pass_context_to_embedder() -> None:
     ai = Genkit()
     seen: list[dict[str, Any]] = []
 
-    async def menu_embedder(request: EmbedRequest, ctx: FlowContext[Any]) -> EmbedResponse:
+    async def menu_embedder(request: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
         seen.append(ctx.context)
         return EmbedResponse(embeddings=[Embedding(embedding=[0.1]) for _ in request.input])
 
@@ -843,3 +844,40 @@ async def test_embed_and_embed_many_pass_context_to_embedder() -> None:
     await ai.embed(embedder='menu', content='no context')
 
     assert seen == [tenant, tenant, {}]
+
+
+@pytest.mark.asyncio
+async def test_embedder_annotated_with_flow_context_still_runs() -> None:
+    """ctx: FlowContext is still accepted at runtime; Genkit passes an EmbedContext."""
+    ai = Genkit()
+    seen: list[object] = []
+
+    async def menu_embedder(request: EmbedRequest, ctx: FlowContext[Any]) -> EmbedResponse:
+        seen.append(ctx)
+        return EmbedResponse(embeddings=[Embedding(embedding=[0.1]) for _ in request.input])
+
+    ai.define_embedder('menu', cast(Any, menu_embedder))
+    await ai.embed(embedder='menu', content='Smoked Salmon Tartine', context={'table': 4})
+
+    ctx = seen[0]
+    assert type(ctx) is EmbedContext
+    assert ctx.context == {'table': 4}
+
+
+@pytest.mark.asyncio
+async def test_unannotated_embedder_with_config_schema_gets_typed_options() -> None:
+    """A raw JSON run (Dev UI, CLI) hands an unannotated embedder its options as config_schema."""
+
+    class MenuEmbedConfig(BaseModel):
+        dimensions: int = 8
+
+    seen: list[object] = []
+
+    async def menu_embedder(request) -> EmbedResponse:  # noqa: ANN001  # pyright: ignore[reportMissingParameterType]
+        seen.append(request.options)
+        return EmbedResponse(embeddings=[Embedding(embedding=[0.1]) for _ in request.input])
+
+    embedder = Embedder('menu', menu_embedder, config_schema=MenuEmbedConfig)
+    await embedder.run(cast(Any, {'input': [{'content': [{'text': 'tartine'}]}], 'options': {'dimensions': 4}}))
+
+    assert seen == [MenuEmbedConfig(dimensions=4)]

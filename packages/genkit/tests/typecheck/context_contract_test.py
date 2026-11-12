@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Type-checker contract for FlowContext, ToolContext, ModelContext, and AgentContext.
+"""Type-checker contract for FlowContext, ToolContext, ModelContext, EmbedContext, and AgentContext.
 
 pyright, pyrefly, and ty include ``packages/*/tests/typecheck/`` with strict
 argument and overload checks enabled, so any signature mismatch here fails CI.
@@ -41,7 +41,7 @@ from genkit import (
     ToolContext,
 )
 from genkit._core._action import ActionRunContext
-from genkit.embedder import EmbedRequest, EmbedResponse
+from genkit.embedder import EmbedContext, EmbedRequest, EmbedResponse
 from genkit.exp import Genkit as ExpGenkit
 from genkit.exp.agent import (
     AgentContext,
@@ -182,7 +182,7 @@ def test_registration_overloads_accept_public_and_internal_contexts() -> None:
     job = ReportJob('render-report', start_report, check_report, kind=ActionKind.CUSTOM, cancel=cancel_report)
     assert job.name == 'render-report'
 
-    async def embed_menu(req: EmbedRequest, ctx: FlowContext) -> EmbedResponse:
+    async def embed_menu(req: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
         del ctx
         return EmbedResponse(embeddings=[Embedding(embedding=[0.5]) for _ in req.input])
 

@@ -65,8 +65,8 @@ from google.genai.types import HttpOptions, HttpRetryOptions, Model as GenaiMode
 from pydantic import BaseModel
 
 import genkit_google_genai._constants as const
-from genkit import FlowContext, GenkitError, ModelResponse, Operation
-from genkit.embedder import Embedder, EmbedderRef, EmbedRequest, EmbedResponse
+from genkit import GenkitError, ModelResponse, Operation
+from genkit.embedder import EmbedContext, Embedder, EmbedderRef, EmbedRequest, EmbedResponse
 from genkit.model import (
     BackgroundModel,
     Model,
@@ -365,7 +365,7 @@ def _create_embedder_action(
         is_vertex=(plugin_name == VERTEXAI_PLUGIN_NAME),
     )
 
-    async def _run(request: EmbedRequest[EmbeddingConfig], ctx: FlowContext[Any]) -> EmbedResponse:
+    async def _run(request: EmbedRequest[EmbeddingConfig], ctx: EmbedContext) -> EmbedResponse:
         embedder_client = GoogleEmbedder(
             version=name,
             client=client_getter(ctx.context),

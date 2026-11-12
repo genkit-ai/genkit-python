@@ -178,7 +178,7 @@ def test_action_with_unannotated_second_parameter_raises_type_error() -> None:
         (ActionKind.TOOL, 'ToolContext'),
         (ActionKind.TOOL_V2, 'ToolContext'),
         (ActionKind.AGENT, 'AgentContext'),
-        (ActionKind.EMBEDDER, 'FlowContext'),
+        (ActionKind.EMBEDDER, 'EmbedContext'),
         (ActionKind.EVALUATOR, 'FlowContext'),
         (ActionKind.CUSTOM, 'FlowContext'),
     ],

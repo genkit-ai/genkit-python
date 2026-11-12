@@ -21,6 +21,7 @@ and advanced users who need access to the embedder protocol types.
 
 Example:
     from genkit.embedder import (
+        EmbedContext,
         EmbedRequest,
         EmbedResponse,
         Embedder,
@@ -34,11 +35,13 @@ from genkit._ai._embedding import (
     EmbedderRef,
     EmbedderSupports,
 )
+from genkit._core._action import EmbedContext
 from genkit._core._model import EmbedRequest
 from genkit._core._typing import EmbedResponse
 
 __all__ = [
-    # Request/Response types
+    # Request/Response/Context types
+    'EmbedContext',
     'EmbedRequest',
     'EmbedResponse',
     # Action class

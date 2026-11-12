@@ -42,7 +42,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_camel
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError, PydanticUserError
-from typing_extensions import Self, TypeVar
+from typing_extensions import Never, Self, TypeVar
 
 from genkit._core._channel import Channel, CloseableQueue, StoppableStream
 from genkit._core._compat import StrEnum
@@ -415,13 +415,16 @@ def _public_context_name(kind: ActionKind) -> str:
     """The public context type a handler of this kind annotates its ctx with.
 
     ToolContext for tools, ModelContext (genkit.model) for model and
-    background-model ops, AgentContext (genkit.exp.agent) for agents, and
-    FlowContext for flows, embedders, evaluators, and custom actions.
+    background-model ops, EmbedContext (genkit.embedder) for embedders,
+    AgentContext (genkit.exp.agent) for agents, and FlowContext for flows
+    and custom actions.
     """
     if kind in (ActionKind.TOOL, ActionKind.TOOL_V2):
         return 'ToolContext'
     if kind in _MODEL_CONTEXT_KINDS:
         return 'ModelContext'
+    if kind == ActionKind.EMBEDDER:
+        return 'EmbedContext'
     if kind == ActionKind.AGENT:
         return 'AgentContext'
     return 'FlowContext'
@@ -509,7 +512,12 @@ def known_annotation_names(kind: ActionKind, *, context_kind: ActionKind | None 
         ctx_cls = ModelContext if effective_context_kind in _MODEL_CONTEXT_KINDS else FlowContext
         return {'Operation': Operation, ctx_cls.__name__: ctx_cls}
     if kind == ActionKind.EMBEDDER:
-        return {'EmbedRequest': EmbedRequest, 'EmbedResponse': EmbedResponse, 'FlowContext': FlowContext}
+        return {
+            'EmbedRequest': EmbedRequest,
+            'EmbedResponse': EmbedResponse,
+            'EmbedContext': EmbedContext,
+            'FlowContext': FlowContext,
+        }
     return {}
 
 
@@ -683,7 +691,7 @@ def _is_context_annotation(annotation: object) -> bool:
     """True if ``annotation`` marks the run-context parameter.
 
     That's ActionRunContext or any subclass (FlowContext, ToolContext,
-    ModelContext, AgentContext), written any of these ways: ``ToolContext``,
+    ModelContext, EmbedContext, AgentContext), written any of these ways: ``ToolContext``,
     ``FlowContext[str]``, ``ToolContext | None``, or as a string
     (see _string_names_context).
     """
@@ -705,7 +713,7 @@ def _is_context_annotation(annotation: object) -> bool:
 # Public run-context subclasses of ActionRunContext. ToolContext and
 # AgentContext live in submodules that may not be imported yet when
 # ActionRunContext.__subclasses__() runs, so list all four explicitly.
-_CONTEXT_ALIAS_NAMES = frozenset({'FlowContext', 'ToolContext', 'AgentContext', 'ModelContext'})
+_CONTEXT_ALIAS_NAMES = frozenset({'FlowContext', 'ToolContext', 'AgentContext', 'ModelContext', 'EmbedContext'})
 
 
 def _string_names_context(annotation: str) -> bool:
@@ -866,7 +874,8 @@ class ActionRunContext(Generic[ChunkT]):
     """Base execution context for a running action: request context and chunk streaming.
 
     Subclassed publicly as ``genkit.FlowContext``, ``genkit.ToolContext``,
-    ``genkit.model.ModelContext``, and ``genkit.exp.agent.AgentContext``.
+    ``genkit.model.ModelContext``, ``genkit.embedder.EmbedContext``, and
+    ``genkit.exp.agent.AgentContext``.
     ``ChunkT`` is the type ``send_chunk`` accepts.
 
         @ai.flow
@@ -924,7 +933,7 @@ class ActionRunContext(Generic[ChunkT]):
 
 
 class FlowContext(ActionRunContext[ChunkT]):
-    """Execution context passed to flow, embedder, evaluator, and custom action functions.
+    """Execution context passed to flow and custom action functions.
 
     Provides ``ctx.send_chunk(chunk)`` for streaming ``ChunkT`` chunks and
     ``ctx.context`` for caller context data.
@@ -962,10 +971,37 @@ class ModelContext(ActionRunContext[ModelResponseChunk]):
     """
 
 
+class EmbedContext(ActionRunContext[Never]):
+    """Execution context passed to embedder functions.
+
+    ``ctx.context`` holds the caller's context dict. Embedders don't stream,
+    so ``send_chunk`` accepts nothing.
+
+    A per-tenant key passed on ``embed`` reaches the embedder here:
+
+        # 1. Read the tenant's key from the call's context
+        async def embed_menu(req: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
+            api_key = ctx.context['secrets']['api_key']
+            return await crm_embeddings(req.input, api_key=api_key)
+
+        ai.define_embedder(name='bistro/menu-embedder', fn=embed_menu)
+
+        # 2. Each call carries its own tenant's key
+        await ai.embed(
+            embedder='bistro/menu-embedder',
+            content=Document.from_text('Smoked Salmon Tartine'),
+            context={'secrets': {'api_key': tenant_key}},
+        )
+        # => [Embedding(embedding=[0.12, -0.03, ...])]
+    """
+
+
 def _context_cls_for_kind(kind: ActionKind) -> type[ActionRunContext[Any]]:
     """The context class ``Action._run`` constructs before invoking ``self._fn``."""
     if kind in _MODEL_CONTEXT_KINDS:
         return ModelContext
+    if kind == ActionKind.EMBEDDER:
+        return EmbedContext
     # Tools and agents wrap or replace this base context in the AI layer:
     # call_tool_fn wraps it into ToolContext (adding resumed_metadata and
     # original_input) for both the tool and its tool.v2 envelope, and

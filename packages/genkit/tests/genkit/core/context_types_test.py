@@ -40,7 +40,7 @@ from genkit import (
     ToolContext,
 )
 from genkit._core._action import ActionKind, ActionRunContext, find_input_and_context
-from genkit.embedder import EmbedRequest, EmbedResponse
+from genkit.embedder import EmbedContext, EmbedRequest, EmbedResponse
 from genkit.exp import Genkit as ExpGenkit
 from genkit.exp.agent import (
     AgentContext,
@@ -246,7 +246,7 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
     for each in report_job.actions:
         ai._registry.register_action_from_instance(each)
 
-    async def menu_embedder(request: EmbedRequest, ctx: FlowContext) -> EmbedResponse:
+    async def menu_embedder(request: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
         seen['embedder'] = ctx
         return EmbedResponse(embeddings=[Embedding(embedding=[0.25, 0.75]) for _ in request.input])
 
@@ -294,8 +294,8 @@ async def test_runtime_actions_deliver_matching_context_subclasses() -> None:
     # 5. Embedder
     embeddings = await ai.embed(embedder='bistro/menu-embedder', content=Document.from_text('Smoked Salmon Tartine'))
     assert embeddings[0].embedding == [0.25, 0.75]
-    assert isinstance(seen['embedder'], FlowContext)
-    assert type(seen['embedder']) is FlowContext
+    assert isinstance(seen['embedder'], EmbedContext)
+    assert type(seen['embedder']) is EmbedContext
 
     # 6. Custom Agent
     exp_ai = ExpGenkit()

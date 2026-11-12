@@ -132,6 +132,12 @@ class DirectSpanContext:
             if message:
                 self._span.attributes[Attr.ERROR] = message
                 self._span.status_message = message
+                # A span that fails without raising (a boxed generate, a
+                # dotprompt) has no exception event, and the Traces tab titles
+                # it "Error". The boxed response holds no traceback, so this
+                # one carries the message only; the span that raised has the stack.
+                if self._span.exception is None:
+                    self._span.exception = {'exception.message': message}
             if not self._span.has_failed_child:
                 self._span.attributes[Attr.IS_FAILURE_SOURCE] = True
             note_child_failed(self._span)

@@ -304,6 +304,54 @@ async def test_empty_message_leaves_exception_message_out(sink: SnapshotSink) ->
 
 
 @pytest.mark.asyncio
+async def test_span_failed_without_raising_titles_with_the_message(sink: SnapshotSink) -> None:
+    """set_state('error', message=...) adds an exception event, so the heading is the message, not "Error"."""
+
+    async def plate_order(span: SpanContext) -> str:
+        span.set_state('error', message='allergen db unavailable')
+        return 'returned failed'
+
+    await run_in_new_span('plateOrder', plate_order)
+
+    span = sink.final('plateOrder')
+    assert exception_event(span) == {'exception.message': 'allergen db unavailable'}
+    assert span['status'] == {'code': 2, 'message': 'allergen db unavailable'}
+    assert dev_ui_heading(span) == 'allergen db unavailable'
+
+
+@pytest.mark.asyncio
+async def test_raised_error_replaces_the_set_state_event(sink: SnapshotSink) -> None:
+    """A body that marks itself failed and then raises shows the raised error, with its stack."""
+
+    async def plate_order(span: SpanContext) -> None:
+        span.set_state('error', message='plating failed')
+        raise ValueError('oven offline')
+
+    with pytest.raises(ValueError):
+        await run_in_new_span('plateOrder', plate_order)
+
+    span = sink.final('plateOrder')
+    (event,) = span['timeEvents']['timeEvent']
+    attrs = event['annotation']['attributes']
+    assert (attrs['exception.type'], attrs['exception.message']) == ('ValueError', 'oven offline')
+    assert 'in plate_order' in attrs['exception.stacktrace']
+
+
+@pytest.mark.asyncio
+async def test_set_state_without_message_adds_no_event(sink: SnapshotSink) -> None:
+    """With no message there's nothing to title the span with; it stays "Error"."""
+
+    async def plate_order(span: SpanContext) -> None:
+        span.set_state('error')
+
+    await run_in_new_span('plateOrder', plate_order)
+
+    span = sink.final('plateOrder')
+    assert exception_event(span) is None
+    assert dev_ui_heading(span) == 'Error'
+
+
+@pytest.mark.asyncio
 async def test_stream_callback_failure_records_the_callback_error(sink: SnapshotSink) -> None:
     """The internal stream-callback carrier is unwrapped; the event names what the callback raised."""
 
@@ -369,8 +417,8 @@ async def test_interrupted_tool_renders_as_interrupted(sink: SnapshotSink) -> No
 
 
 @pytest.mark.asyncio
-async def test_failure_returned_without_raising_has_status_but_no_exception_event(sink: SnapshotSink) -> None:
-    """generate boxes a tool failure into its response: status carries the text, but nothing was raised there."""
+async def test_failure_returned_without_raising_titles_generate_with_the_message(sink: SnapshotSink) -> None:
+    """generate boxes a tool failure into its response; its span still titles with the tool's message."""
     ai = Genkit()
     scripted_model(ai, [calls_tool('check_stock')])
 
@@ -386,5 +434,6 @@ async def test_failure_returned_without_raising_has_status_but_no_exception_even
     assert generate['attributes']['genkit:state'] == 'error'
     assert generate['status']['code'] == 2
     assert 'walk-in freezer offline' in generate['status']['message']
-    # The Traces tab's stack box falls back to status.message for this span.
-    assert generate['timeEvents'] == {'timeEvent': []}
+    assert dev_ui_heading(generate) == 'walk-in freezer offline'
+    # Nothing raised in generate, so no stack here; the tool span has it.
+    assert exception_event(generate) == {'exception.message': generate['status']['message']}

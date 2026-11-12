@@ -23,7 +23,7 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast, overload
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from genkit import GenkitError, ModelResponse, ModelResponseChunk
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
@@ -55,7 +55,7 @@ class FallbackConfig(GenkitConfig):
     @classmethod
     def coerce_models(cls, value: object) -> object:
         """A string is the model name; a ref carries that model's own config."""
-        if not isinstance(value, list):
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             return value
         entries: list[str | FallbackModelEntry | dict[str, Any]] = []
         for item in value:
@@ -123,23 +123,56 @@ def _accepted_keys(schema: object) -> set[str] | None:
     return keys
 
 
+def _field_keys(schema: type[BaseModel], field_name: str) -> set[str]:
+    """Return the field name and any string aliases for ``field_name``."""
+    keys = {field_name}
+    info = schema.model_fields.get(field_name)
+    if info is not None:
+        for alias in (info.alias, info.validation_alias, info.serialization_alias):
+            if isinstance(alias, str):
+                keys.add(alias)
+    return keys
+
+
+def _drop_invalid_fields(narrowed: dict[str, Any], schema: type[BaseModel]) -> dict[str, Any]:
+    """Drop inherited keys that fail the backup's own bounds or type checks."""
+    remaining = dict(narrowed)
+    while remaining:
+        try:
+            schema.model_validate(remaining)
+            return remaining
+        except ValidationError as exc:
+            to_drop: set[str] = set()
+            for err in exc.errors():
+                loc = err.get('loc')
+                if loc:
+                    to_drop.update(_field_keys(schema, str(loc[0])))
+            matched = to_drop & remaining.keys()
+            if not matched:
+                return {}
+            for key in matched:
+                remaining.pop(key, None)
+    return remaining
+
+
 def inherited_config(primary: object, backup_schema: object) -> dict[str, Any]:
     """The caller's config, narrowed to what the backup model accepts.
 
-    Keys the backup's config class declares carry over as-is, so
-    ``max_output_tokens`` and ``temperature`` survive a failover. A backup
-    with no config class gets only the portable generation keys, so a
-    provider-specific key (``safety_settings``) does not fail validation.
-    ``version`` and ``extra`` belong to the primary's provider, so they never
-    carry over.
+    Keys the backup's config class declares carry over when they also satisfy
+    the backup's own validation (for example, ``temperature=1.5`` is dropped
+    for a backup declaring ``le=1.0``). A backup with no config class gets
+    only the portable generation keys, so a provider-specific key
+    (``safety_settings``) does not fail validation. ``version`` and ``extra``
+    belong to the primary's provider, so they never carry over.
     """
     source = _config_dict(primary)
     # version names the primary's model; extra is that provider's passthrough.
     source.pop('version', None)
     source.pop('extra', None)
-    accepted = _accepted_keys(backup_schema)
-    if accepted is not None:
-        return {k: v for k, v in source.items() if k in accepted}
+    if isinstance(backup_schema, type) and issubclass(backup_schema, BaseModel):
+        accepted = _accepted_keys(backup_schema) or set()
+        narrowed = {k: v for k, v in source.items() if k in accepted}
+        return _drop_invalid_fields(narrowed, backup_schema)
     return {_PORTABLE_CONFIG_KEYS[k]: v for k, v in source.items() if k in _PORTABLE_CONFIG_KEYS}
 
 
@@ -229,7 +262,6 @@ class Fallback(Middleware[FallbackConfig]):
             last_error = exc
 
         assert last_error is not None  # noqa: S101
-        on_chunk = ctx.on_chunk
         for entry in self.config.models:
             model_name = entry if isinstance(entry, str) else entry.name
             fallback_action = await self._resolve_fallback_model(ctx, model_name)
@@ -246,7 +278,7 @@ class Fallback(Middleware[FallbackConfig]):
                     result = await fallback_action._run(
                         input=fallback_request,
                         context=ctx.context,
-                        on_chunk=ctx.on_chunk if on_chunk is not None else None,
+                        on_chunk=ctx.on_chunk,
                     )
                 return result.response  # type: ignore[return-value]
             except Exception as e2:

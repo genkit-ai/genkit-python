@@ -155,3 +155,34 @@ def test_legacy_tool_and_generate_hooks_raise() -> None:
         class TurnLimit(Middleware):  # pyright: ignore[reportUnusedClass]
             async def generate(self, req: Any, ctx: Any, next_fn: Any) -> Any:  # noqa: ANN401
                 return await next_fn(req, ctx)
+
+
+@pytest.mark.asyncio
+async def test_define_prompt_with_registered_callable_config_middleware() -> None:
+    """ai.define_prompt(use=[Redact(...)]) does not crash on non-JSON config fields."""
+    ai = _echo_app()
+    ai.define_middleware(Redact)
+
+    prompt = ai.define_prompt(
+        name='p',
+        model='echo',
+        prompt='card 4111',
+        use=[Redact(redact=lambda s: s.replace('4111', '****'))],
+    )
+    response = await prompt()
+
+    assert response.text == 'card ****'
+
+
+def test_resolve_middleware_from_use_mismatch_raises_genkit_error() -> None:
+    """A mismatch between registered inline instances and use= fails with a clear GenkitError."""
+    from genkit import GenkitError
+    from genkit._ai._generate import register_middleware, resolve_middleware_from_use
+    from genkit._core._typing import MiddlewareRef
+
+    ai = _echo_app()
+    registry: Any = ai._registry
+    register_middleware(registry, [SecretGuard(re.compile('secret'), [])])
+
+    with pytest.raises(GenkitError, match='Inline middleware instances on the per-call registry do not match'):
+        resolve_middleware_from_use(registry, [MiddlewareRef(name='other')])

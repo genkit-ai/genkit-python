@@ -19,7 +19,8 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import cast
 
 from genkit import ModelResponseChunk
 from genkit.middleware import MiddlewareContext
@@ -53,10 +54,20 @@ def watch_stream(ctx: MiddlewareContext) -> Iterator[StreamWatch]:
         return
 
     def counting(chunk: ModelResponseChunk) -> None:
-        watch.chunks += 1
         inner(chunk)
+        watch.chunks += 1
 
-    previous = ctx.replace_on_chunk(counting)
+    # Preserve _EngineOnChunk so engine stamping errors stay retryable Exceptions
+    # rather than being wrapped in _GuardedOnChunk (STREAM_CALLBACK_FAILED).
+    wrapper = (
+        cast(
+            Callable[[Callable[[ModelResponseChunk], None]], Callable[[ModelResponseChunk], None]],
+            type(inner),
+        )(counting)
+        if type(inner).__name__ in ('_EngineOnChunk', '_GuardedOnChunk')
+        else counting
+    )
+    previous = ctx.replace_on_chunk(wrapper)
     try:
         yield watch
     finally:

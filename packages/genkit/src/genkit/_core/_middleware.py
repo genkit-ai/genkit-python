@@ -24,7 +24,15 @@ import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar, Generic, NamedTuple, Protocol, cast, get_args, get_origin
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+)
+from pydantic_core import PydanticSerializationError
 from typing_extensions import TypeVar
 
 from genkit._core._action import Action
@@ -146,15 +154,19 @@ def _dump_middleware_ref_config(config: BaseModel) -> dict[str, Any] | None:
     """Dump a middleware config for ``MiddlewareRef`` using keys the class validates.
 
     Excludes ``@computed_field``s and falls back to the validation alias or
-    field name when ``serialization_alias`` is output-only.
+    field name when ``serialization_alias`` is output-only. Returns ``None``
+    when the config contains non-JSON values (such as a callable or client).
     """
     cfg_cls = type(config)
     computed = set(cfg_cls.model_computed_fields)
-    dumped = config.model_dump(exclude_none=True, by_alias=True, mode='json', exclude=computed)
-    spellings = _config_key_spellings(cfg_cls)
-    if spellings is None or all(k in spellings for k in dumped):
-        return dumped or None
-    raw = config.model_dump(exclude_none=True, by_alias=False, mode='json', exclude=computed)
+    try:
+        dumped = config.model_dump(exclude_none=True, by_alias=True, mode='json', exclude=computed)
+        spellings = _config_key_spellings(cfg_cls)
+        if spellings is None or all(k in spellings for k in dumped):
+            return dumped or None
+        raw = config.model_dump(exclude_none=True, by_alias=False, mode='json', exclude=computed)
+    except PydanticSerializationError:
+        return None
     out: dict[str, Any] = {}
     for name, val in raw.items():
         info = cfg_cls.model_fields.get(name)

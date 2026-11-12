@@ -737,3 +737,65 @@ async def test_fallback_before_first_chunk_streams_the_backup() -> None:
 
     assert chunks == ['Tartine']
     assert response.text == 'Tartine'
+
+
+@pytest.mark.asyncio
+async def test_fallback_drops_inherited_keys_exceeding_backup_bounds() -> None:
+    """Out-of-bounds inherited keys (e.g. temperature=1.5 vs le=1.0) are dropped so backup runs."""
+
+    class PrimaryConfig(ModelConfig):
+        temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+
+    class BackupConfig(ModelConfig):
+        temperature: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    ai = Genkit()
+    seen: list[object] = []
+
+    async def primary(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='503')
+
+    async def backup(request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        seen.append(request.config)
+        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
+
+    ai.define_model(name='primary', fn=primary, config_schema=PrimaryConfig)
+    ai.define_model(name='backup', fn=backup, config_schema=BackupConfig)
+
+    response = await ai.generate(
+        model='primary',
+        prompt='hi',
+        config={'temperature': 1.5, 'max_output_tokens': 128},
+        use=[Fallback(models=['backup'])],
+    )
+
+    assert response.text == 'ok'
+    assert _config_value(seen[0], 'temperature') is None
+    assert _config_value(seen[0], 'max_output_tokens') == 128
+
+
+@pytest.mark.asyncio
+async def test_fallback_accepts_tuple_of_model_refs() -> None:
+    """A tuple of ModelRef satisfies the Sequence overload and coerces cleanly."""
+    ai = Genkit()
+    seen: list[object] = []
+
+    async def primary(_request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='503')
+
+    async def backup(request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
+        seen.append(request.config)
+        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
+
+    ai.define_model(name='primary', fn=primary, config_schema=ModelConfig)
+    ai.define_model(name='backup', fn=backup, config_schema=ModelConfig)
+    ref = ModelRef(name='backup', config_schema=ModelConfig, config=ModelConfig(temperature=0.2))
+
+    response = await ai.generate(
+        model='primary',
+        prompt='hi',
+        use=[Fallback(models=(ref,))],
+    )
+
+    assert response.text == 'ok'
+    assert _config_value(seen[0], 'temperature') == 0.2

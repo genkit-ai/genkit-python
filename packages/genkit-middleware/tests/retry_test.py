@@ -786,3 +786,50 @@ async def test_retry_direct_task_cancel_when_model_turns_cancel_into_error_skips
     assert time.monotonic() - started < 2
     assert call_count == 1
     assert err.value.status == 'UNAVAILABLE'
+
+
+@pytest.mark.asyncio
+async def test_retry_retries_when_provider_chunk_fails_stamping() -> None:
+    """A bad provider chunk that fails stamping stays retryable rather than becoming STREAM_CALLBACK_FAILED."""
+    ai = Genkit()
+    calls = 0
+
+    async def flaky_chunk(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Malformed chunk fails stamping inside the engine's _EngineOnChunk wrapper.
+            ctx.send_chunk(ModelResponseChunk.model_construct(content=12345))  # type: ignore[arg-type]
+        ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('ok')]))
+        return ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
+        )
+
+    ai.define_model(name='flaky_chunk', fn=flaky_chunk)
+
+    stream = ai.generate_stream(
+        model='flaky_chunk',
+        prompt='hi',
+        use=[Retry(max_retries=2, initial_delay_ms=0, no_jitter=True)],
+    )
+    chunks = [chunk.text async for chunk in stream]
+    response = await stream.response
+
+    assert calls == 2
+    assert chunks == ['ok']
+    assert response.text == 'ok'
+
+
+def test_watch_stream_does_not_mark_committed_when_inner_chunk_raises() -> None:
+    """watch_stream only marks a chunk committed after inner(chunk) returns."""
+    from genkit_middleware._streaming import watch_stream
+
+    def failing_inner(_chunk: ModelResponseChunk) -> None:
+        raise RuntimeError('stamp failed')
+
+    ctx = MiddlewareContext(Genkit(), on_chunk=failing_inner)
+    with watch_stream(ctx) as watch:
+        with pytest.raises(BaseException, match='stamp failed'):
+            ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('x')]))
+        assert not watch.committed

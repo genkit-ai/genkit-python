@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
-from pydantic_core import PydanticSerializationError
 
 from genkit._ai import _aio
 from genkit._ai._background_model import ensure_model_operation
@@ -321,10 +320,7 @@ def register_middleware(
             # Dump keys that match the schema and that the config class validates.
             # The ref is for traces and the Dev UI; a config that is not JSON
             # (a callable, a client) still runs because resolve uses the instance.
-            try:
-                config = _dump_middleware_ref_config(entry.config)
-            except PydanticSerializationError:
-                config = None
+            config = _dump_middleware_ref_config(entry.config)
             refs.append(MiddlewareRef(name=reg_name, config=config))
             inline.append((reg_name, entry))
         else:
@@ -344,22 +340,34 @@ def resolve_middleware_from_use(
     registry: Registry,
     use: Sequence[MiddlewareRef] | None,
 ) -> list[Middleware]:
-    """Resolve ``MiddlewareRef`` entries to fresh ``Middleware`` instances.
+    """Resolve ``MiddlewareRef`` entries to ``Middleware`` instances.
 
-    Each ref is instantiated from the registered ``_MiddlewareMetadata`` and
-    ``ref.config`` (same path for Dev UI, dotprompt, and inline ``use=[Mw(...)]``).
+    Inline ``use=[Mw(...)]`` entries keep the caller's instance registered on
+    the per-call child registry; ref entries (Dev UI, dotprompt) are
+    instantiated from the registered ``_MiddlewareMetadata`` and ``ref.config``.
     """
     if not use:
         return []
     inline = registry.lookup_value(_INLINE_MIDDLEWARE_KIND, _INLINE_MIDDLEWARE_KEY)
-    instances: list[tuple[str, Middleware | None]] = (
-        cast(list[tuple[str, Middleware | None]], inline)
-        if isinstance(inline, list) and len(inline) == len(use)
-        else []
-    )
+    instances: list[tuple[str, Middleware | None]] | None = None
+    if isinstance(inline, list):
+        typed_inline = cast(list[tuple[str, Middleware | None]], inline)
+        if len(typed_inline) != len(use) or any(
+            inst is not None and reg_name != entry.name
+            for (reg_name, inst), entry in zip(typed_inline, use, strict=True)
+        ):
+            raise GenkitError(
+                status='INTERNAL',
+                message=(
+                    'Inline middleware instances on the per-call registry do not match use= '
+                    f'({[name for name, _ in typed_inline]} vs {[entry.name for entry in use]}).'
+                ),
+                source='genkit.generate',
+            )
+        instances = typed_inline
     out: list[Middleware] = []
     for i, entry in enumerate(use):
-        if instances and instances[i][0] == entry.name and instances[i][1] is not None:
+        if instances is not None and instances[i][1] is not None:
             # Inline use=[Mw(...)]: keep the caller's instance (custom __init__,
             # clients, compiled regex flags, callables) rather than rebuild it.
             out.append(cast(Middleware, instances[i][1]))

@@ -67,6 +67,7 @@ def test_generation_usage_from_messages_counts_characters() -> None:
     [
         ('genkit.model', ['ModelFn']),
         ('genkit.plugin_api', ['ActionResponse']),
+        ('genkit.exp.agent', ['BidiConnection', 'DetachedTask', 'AgentInitError', 'select_leaf']),
         ('genkit_mcp', ['McpServerEntry']),
     ],
 )

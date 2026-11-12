@@ -48,6 +48,7 @@ kept in mind when modifying media handling or tool conversion logic:
 """
 
 import base64
+import binascii
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -61,6 +62,8 @@ from genkit.model import ToolRequest, ToolResponse
 from genkit.plugin_api import loop_local_client
 
 logger = get_logger(__name__)
+
+_ASCII_WHITESPACE = str.maketrans('', '', ' \t\r\n\f\v')
 
 
 # TODO(#4360): Replace with downloadRequestMedia middleware.
@@ -192,8 +195,10 @@ class PartConverter:
         Returns:
             A `genai.types.Part` object representing the converted content.
         """
+        signature = cls._extract_thought_signature(part.metadata)
         if part.text is not None:
-            return genai.types.Part(text=part.text or ' ')
+            text = part.text if signature is not None else (part.text or ' ')
+            return genai.types.Part(text=text, thought_signature=signature)
         if part.tool_request is not None:
             args = part.tool_request.input
             entry = tools.for_original(part.tool_request.name) if tools else None
@@ -215,13 +220,13 @@ class PartConverter:
                     args=args,
                     id=part.tool_request.ref,
                 ),
-                thought_signature=cls._extract_thought_signature(part.metadata),
+                thought_signature=signature,
             )
         if part.reasoning is not None:
             return genai.types.Part(
                 thought=True,
                 text=part.reasoning,
-                thought_signature=cls._extract_thought_signature(part.metadata),
+                thought_signature=signature,
             )
         if part.tool_response is not None:
             tool_response = part.tool_response
@@ -296,7 +301,8 @@ class PartConverter:
                     inline_data=genai.types.Blob(
                         mime_type=mime_type,
                         data=data,
-                    )
+                    ),
+                    thought_signature=signature,
                 )
 
             if url.startswith('http'):
@@ -308,7 +314,8 @@ class PartConverter:
                         file_data=genai.types.FileData(
                             mime_type=part.media.content_type,
                             file_uri=url,
-                        )
+                        ),
+                        thought_signature=signature,
                     )
 
                 # TODO(#4360): Replace inline download with downloadRequestMedia
@@ -321,7 +328,8 @@ class PartConverter:
                     inline_data=genai.types.Blob(
                         mime_type=mime_type,
                         data=data,
-                    )
+                    ),
+                    thought_signature=signature,
                 )
 
             # Non-HTTP, non-data URIs (e.g. gs://, Files API URIs) are
@@ -330,7 +338,8 @@ class PartConverter:
                 file_data=genai.types.FileData(
                     mime_type=part.media.content_type,
                     file_uri=url,
-                )
+                ),
+                thought_signature=signature,
             )
         if part.custom is not None:
             return cls._to_gemini_custom(part)
@@ -351,13 +360,15 @@ class PartConverter:
         Returns:
             A `genai.types.Part` object representing the converted custom content.
         """
+        signature = cls._extract_thought_signature(part.metadata)
         if part.custom and cls.EXECUTABLE_CODE in part.custom:
             custom_data = cast(dict, part.custom)
             return genai.types.Part(
                 executable_code=genai.types.ExecutableCode(
                     code=custom_data[cls.EXECUTABLE_CODE][cls.CODE],
                     language=custom_data[cls.EXECUTABLE_CODE][cls.LANGUAGE],
-                )
+                ),
+                thought_signature=signature,
             )
         if part.custom and cls.CODE_EXECUTION_RESULT in part.custom:
             custom_data = cast(dict, part.custom)
@@ -365,7 +376,8 @@ class PartConverter:
                 code_execution_result=genai.types.CodeExecutionResult(
                     outcome=custom_data[cls.CODE_EXECUTION_RESULT][cls.OUTCOME],
                     output=custom_data[cls.CODE_EXECUTION_RESULT][cls.OUTPUT],
-                )
+                ),
+                thought_signature=signature,
             )
         return genai.types.Part()
 
@@ -386,8 +398,10 @@ class PartConverter:
         """
         if part.thought:
             return Part.from_reasoning(part.text or '', metadata=cls._encode_thought_signature(part.thought_signature))
+        signature = cls._encode_thought_signature(part.thought_signature)
         if part.text is not None:
-            return Part.from_text(part.text)
+            # Gemini 3 signs text parts too; dropping the signature breaks the next turn.
+            return Part.from_text(part.text, metadata=signature)
         if part.function_call:
             # Tool refs come only from the model's call id. A synthetic part
             # index isn't unique across turns, so resume can't tell repeated
@@ -436,22 +450,38 @@ class PartConverter:
         if part.inline_data and part.inline_data.data:
             b64_data = base64.b64encode(part.inline_data.data).decode('utf-8')
             return Part.from_media(
-                f'data:{part.inline_data.mime_type};base64,{b64_data}', content_type=part.inline_data.mime_type
+                f'data:{part.inline_data.mime_type};base64,{b64_data}',
+                content_type=part.inline_data.mime_type,
+                metadata=signature,
             )
+        if part.file_data and part.file_data.file_uri:
+            return Part.from_media(part.file_data.file_uri, content_type=part.file_data.mime_type, metadata=signature)
         if part.executable_code:
-            return Part.from_custom({
-                cls.EXECUTABLE_CODE: {
-                    cls.LANGUAGE: part.executable_code.language,
-                    cls.CODE: part.executable_code.code,
-                }
-            })
+            # Enum members aren't JSON; keep the wire string (PYTHON, OUTCOME_OK).
+            return Part.from_custom(
+                {
+                    cls.EXECUTABLE_CODE: {
+                        cls.LANGUAGE: _enum_value(part.executable_code.language),
+                        cls.CODE: part.executable_code.code,
+                    }
+                },
+                metadata=signature,
+            )
         if part.code_execution_result:
-            return Part.from_custom({
-                cls.CODE_EXECUTION_RESULT: {
-                    cls.OUTCOME: part.code_execution_result.outcome,
-                    cls.OUTPUT: part.code_execution_result.output,
-                }
-            })
+            return Part.from_custom(
+                {
+                    cls.CODE_EXECUTION_RESULT: {
+                        cls.OUTCOME: _enum_value(part.code_execution_result.outcome),
+                        cls.OUTPUT: part.code_execution_result.output,
+                    }
+                },
+                metadata=signature,
+            )
+        if part.thought_signature:
+            # A signature with no content (streaming sends these at the end of a
+            # non-thinking turn): keep as signed empty text so replay doesn't
+            # invent thought=True and _coalesce_stream_parts folds it onto text.
+            return Part.from_text('', metadata=signature)
 
         return Part.from_text('')
 
@@ -460,7 +490,13 @@ class PartConverter:
         """Extracts and decodes the thought signature from metadata."""
         thought_sig = metadata.get('thoughtSignature') if metadata else None
         if isinstance(thought_sig, str):
-            return base64.b64decode(thought_sig)
+            try:
+                return base64.b64decode(thought_sig.translate(_ASCII_WHITESPACE), validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message='part metadata.thoughtSignature is not valid base64',
+                ) from e
         return None
 
     @classmethod
@@ -566,6 +602,11 @@ def _redact_url(url: str) -> str:
     # Signed URLs carry credentials in the query string, so error messages only name host and path.
     parts = urlsplit(url)
     return urlunsplit((parts.scheme, parts.netloc.rpartition('@')[2], parts.path, '', ''))
+
+
+def _enum_value(value: object) -> object:
+    """The wire value of a google-genai enum member; anything else unchanged."""
+    return getattr(value, 'value', value)
 
 
 def _media_too_large(url: str) -> GenkitError:

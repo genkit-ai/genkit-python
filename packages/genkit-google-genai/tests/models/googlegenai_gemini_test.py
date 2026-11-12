@@ -53,7 +53,7 @@ from google.genai.errors import APIError
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 from pytest_mock import MockerFixture
 
-from genkit import FinishReason, Genkit, GenkitError, Message, ModelResponse, Part, Role
+from genkit import ErrorReason, FinishReason, Genkit, GenkitError, Message, ModelResponse, Part, Role
 from genkit.model import (
     ConstrainedSupport,
     ModelContext,
@@ -2962,8 +2962,26 @@ async def test_rejected_api_key_is_unauthenticated(mocker: MockerFixture) -> Non
     error = await _generate_failure(mocker, rejected)
 
     assert error.status == 'UNAUTHENTICATED'
+    assert error.reason is ErrorReason.INVALID_CREDENTIALS
     assert error.message == message
     assert error.__cause__ is rejected
+
+
+@pytest.mark.asyncio
+async def test_401_is_invalid_credentials(mocker: MockerFixture) -> None:
+    """A 401 always names the credential, whatever the body says."""
+    body = {
+        'error': {
+            'code': 401,
+            'message': 'Request had invalid authentication credentials.',
+            'status': 'UNAUTHENTICATED',
+        }
+    }
+
+    error = await _generate_failure(mocker, APIError(401, body))
+
+    assert error.status == 'UNAUTHENTICATED'
+    assert error.reason is ErrorReason.INVALID_CREDENTIALS
 
 
 @pytest.mark.asyncio
@@ -2985,6 +3003,8 @@ async def test_other_error_info_reasons_keep_the_body_status(
     error = await _generate_failure(mocker, APIError(code, body))
 
     assert error.status == status
+    # A 403 for a blocked or disabled service isn't a bad key; don't guess a credential reason.
+    assert error.reason is None
 
 
 @pytest.mark.asyncio

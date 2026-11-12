@@ -25,7 +25,7 @@ from functools import cached_property
 from typing import Annotated, Any, Any as JsonAny, Literal, TypeAlias, cast, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
+from genkit_google_genai._constants import is_multi_regional_location
 from genkit_google_genai._models._context_caching._constants import DEFAULT_TTL
 from genkit_google_genai._models._context_caching._utils import generate_cache_key, validate_context_cache_request
 from genkit_google_genai._models._sdk_config import (
@@ -35,14 +35,18 @@ from genkit_google_genai._models._sdk_config import (
     attach_config_extra,
     attach_leftovers,
     check_timeout_seconds,
-    copy_http_options,
     dump_family_config,
     reject_bool_timeout,
+    request_client_kwargs,
     sdk_config_error,
     split_sdk_fields,
     timeout_seconds_to_ms,
 )
-from genkit_google_genai._models._secrets import context_api_key, reject_request_config_api_key
+from genkit_google_genai._models._secrets import (
+    context_api_key,
+    missing_api_key_error,
+    reject_request_config_api_key,
+)
 from genkit_google_genai._provider_errors import TRANSPORT_ERRORS, api_error, transport_error
 from google import genai
 from google.auth import default as google_auth_default
@@ -1453,7 +1457,7 @@ class GeminiModel:
     def __init__(
         self,
         version: str,
-        client: genai.Client,
+        client: genai.Client | None,
         client_kwargs: dict[str, Any] | None = None,
         base_url_pinned: bool = False,
         legacy_response_schema: bool = False,
@@ -1462,7 +1466,7 @@ class GeminiModel:
 
         Args:
             version: Gemini version
-            client: Google AI client
+            client: Google AI client, or None when the plugin booted keyless
             client_kwargs: The plugin-level kwargs the client was constructed
                 from. Required for a per-request tenant key or client knobs
                 (api_version, base_url, location).
@@ -1817,6 +1821,8 @@ class GeminiModel:
         """
         validate_context_cache_request(request=request, model_name=model_name)
         cache_client = client if client is not None else self._client
+        if cache_client is None:
+            raise missing_api_key_error()
 
         ttl = _cache_ttl_seconds(cache_config)
         cache_key = generate_cache_key(contents=contents, model_name=model_name)
@@ -1943,6 +1949,11 @@ class GeminiModel:
 
         return response
 
+    def _is_vertex(self) -> bool:
+        if self._client is not None:
+            return bool(self._client.vertexai)
+        return bool((self._client_kwargs or {}).get('vertexai'))
+
     def _tts_needs_default_voice(self, model_name: str) -> bool:
         """Whether a TTS request that names no voice is sent the default voice.
 
@@ -1952,7 +1963,7 @@ class GeminiModel:
         Returns:
             True on Vertex AI, and for the Gemini API models in ``_GEMINI_API_TTS_MODELS_NEEDING_VOICE``.
         """
-        if self._client.vertexai:
+        if self._is_vertex():
             return True
         return model_name.split('/')[-1].lower() in _GEMINI_API_TTS_MODELS_NEEDING_VOICE
 
@@ -1972,6 +1983,8 @@ class GeminiModel:
         location_override = None
         bag = context if isinstance(context, dict) else {}
         secret_key = context_api_key(bag)
+        if self._client is None and not secret_key:
+            raise missing_api_key_error()
 
         if request.config:
             if isinstance(request.config, dict):
@@ -1983,11 +1996,12 @@ class GeminiModel:
                 base_url_override = getattr(request.config, 'base_url', None)
                 location_override = getattr(request.config, 'location', None)
 
-        if location_override and not self._client.vertexai:
+        if location_override and not self._is_vertex():
             # Location is a Vertex AI concept; ignore it for the Gemini API backend.
             location_override = None
 
         if not (api_version or secret_key or base_url_override or location_override):
+            assert self._client is not None
             return self._client
 
         if self._client_kwargs is None:
@@ -1997,45 +2011,23 @@ class GeminiModel:
                 'a model constructed with client_kwargs.',
             )
 
-        # Clone the plugin-level client kwargs so the temporary client keeps the
-        # plugin's credentials, endpoint, headers, and timeouts.
-        kwargs = dict(self._client_kwargs)
-        plugin_opts = kwargs.get('http_options')
-        opts = copy_http_options(plugin_opts) if plugin_opts is not None else genai_types.HttpOptions()
-
-        if api_version:
-            opts.api_version = api_version
-        if location_override:
-            kwargs['location'] = location_override
-            if not self._base_url_pinned and not base_url_override:
-                if is_multi_regional_location(location_override):
-                    # Multi-regions are served from dedicated endpoints the SDK
-                    # does not derive itself.
-                    opts.base_url = multi_regional_base_url(location_override)
-                else:
-                    opts.base_url = None
-        if base_url_override:
-            opts.base_url = base_url_override
-        if secret_key:
-            # Express / tenant keys are not a regional Vertex host. Drop
-            # project, location, and the plugin base_url unless this call
-            # set one.
-            kwargs['api_key'] = secret_key
-            kwargs['credentials'] = None
-            kwargs.pop('project', None)
-            kwargs.pop('location', None)
-            if not base_url_override:
-                opts.base_url = None
-        kwargs['http_options'] = opts
+        kwargs = request_client_kwargs(
+            self._client_kwargs,
+            api_key=secret_key,
+            api_version=api_version,
+            base_url=base_url_override,
+            location=location_override,
+            base_url_pinned=self._base_url_pinned,
+        )
 
         # The plugin's kwargs may carry project=None when the project comes
         # from ADC. Resolve it here, off the event loop: the SDK's own
         # resolution would block the loop, and it skips resolution entirely
         # when a base_url is set. Express mode (api_key) takes no project --
         # the SDK rejects the two together -- so the probe is skipped there.
-        if self._client.vertexai and not kwargs.get('project') and not kwargs.get('api_key'):
+        if self._is_vertex() and not kwargs.get('project') and not kwargs.get('api_key'):
             kwargs['project'] = getattr(kwargs.get('credentials'), 'project_id', None) or await _adc_project()
-        if self._client.vertexai and not kwargs.get('project') and is_multi_regional_location(kwargs.get('location')):
+        if self._is_vertex() and not kwargs.get('project') and is_multi_regional_location(kwargs.get('location')):
             if kwargs.get('api_key'):
                 raise GenkitError(
                     status='FAILED_PRECONDITION',
@@ -2083,10 +2075,12 @@ class GeminiModel:
         Returns:
             genai response.
         """
-        client = client or self._client
+        active_client = client or self._client
+        if active_client is None:
+            raise missing_api_key_error()
         try:
-            response = await client.aio.models.generate_content(
-                model=resolve_vertex_model_name(client, model_name),
+            response = await active_client.aio.models.generate_content(
+                model=resolve_vertex_model_name(active_client, model_name),
                 contents=cast(genai_types.ContentListUnion, request_contents),
                 config=request_cfg,
             )
@@ -2144,7 +2138,9 @@ class GeminiModel:
         Returns:
             genai response.
         """
-        client = client or self._client
+        active_client = client or self._client
+        if active_client is None:
+            raise missing_api_key_error()
         accumulated_content: list[Part] = []
         finish_reason = FinishReason.UNKNOWN
         usage_metadata: Any = None
@@ -2152,8 +2148,8 @@ class GeminiModel:
         saw_chunk = False
         saw_candidates = False
         try:
-            generator = await client.aio.models.generate_content_stream(
-                model=resolve_vertex_model_name(client, model_name),
+            generator = await active_client.aio.models.generate_content_stream(
+                model=resolve_vertex_model_name(active_client, model_name),
                 contents=cast(genai_types.ContentListUnion, request_contents),
                 config=request_cfg,
             )
@@ -2520,7 +2516,7 @@ class GeminiModel:
         google-genai raises its own ValueError for these, with the nested
         SDK path; the plugin knows the backend, so it raises first.
         """
-        if self._client.vertexai:
+        if self._is_vertex():
             fields = [
                 *(('file_search_store_names',) if present_items(config.get('file_search_store_names')) else ()),
                 *(

@@ -25,6 +25,7 @@ from typing import NoReturn
 
 from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError, RefreshError, TransportError
 
+from genkit import ErrorReason
 from genkit.plugin_api import provider_error
 
 GOOGLE_AUTH_ERRORS: tuple[type[GoogleAuthError], ...] = (DefaultCredentialsError, RefreshError, TransportError)
@@ -40,17 +41,25 @@ def raise_auth_error(error: GoogleAuthError) -> NoReturn:
     ``RefreshError`` raised from a ``TransportError`` with
     ``retryable=False``, so the cause is checked too.
 
+    A non-transient ``RefreshError`` is the token endpoint turning the
+    credential down, so it carries reason ``INVALID_CREDENTIALS``. A
+    ``DefaultCredentialsError`` means ADC found nothing usable and nothing was
+    sent, so it has no reason.
+
     Args:
         error: The DefaultCredentialsError, RefreshError, or TransportError that was caught.
 
     Raises:
-        GenkitError: UNAVAILABLE for a transient failure, else UNAUTHENTICATED,
-            with ``error`` as the cause.
+        GenkitError: UNAVAILABLE for a transient failure, else UNAUTHENTICATED
+            (with reason INVALID_CREDENTIALS for a rejected credential), with
+            ``error`` as the cause.
     """
     if isinstance(error, TransportError) or error.retryable or isinstance(error.__cause__, TransportError):
         raise provider_error(error, status='UNAVAILABLE') from error
+    rejected = not isinstance(error, DefaultCredentialsError)
     raise provider_error(
         error,
         status='UNAUTHENTICATED',
         message='Google Cloud credentials are missing or were rejected',
+        reason=ErrorReason.INVALID_CREDENTIALS if rejected else None,
     ) from error

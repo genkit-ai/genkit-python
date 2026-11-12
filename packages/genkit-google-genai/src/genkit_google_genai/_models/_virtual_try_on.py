@@ -36,13 +36,12 @@ from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
 from genkit_google_genai._models._sdk_config import (
     VIRTUAL_TRY_ON_MANAGED_BODY_FIELDS,
     attach_config_extra,
     attach_leftovers,
-    copy_http_options,
     dump_family_config,
+    request_client_kwargs,
     sdk_config_error,
     split_sdk_fields,
 )
@@ -391,31 +390,15 @@ class VirtualTryOnModel:
         if api_key is None and not base_url and not api_version and not location:
             return self._client
 
-        kwargs = dict(self._client_kwargs or {})
-        # The model is Vertex-only; a request-scoped client stays on that backend.
-        kwargs.setdefault('vertexai', True)
-        plugin_opts = kwargs.get('http_options')
-        opts = copy_http_options(plugin_opts) if plugin_opts is not None else genai_types.HttpOptions()
-        if api_key is not None:
-            # An express key goes to the global Vertex host: drop the plugin's
-            # credentials, project and host and any location, keeping only a
-            # base_url this call set.
-            kwargs['api_key'] = api_key
-            kwargs['credentials'] = None
-            kwargs.pop('project', None)
-            kwargs.pop('location', None)
-            location = None
-            if not base_url:
-                opts.base_url = None
-        if location:
-            kwargs['location'] = location
-            if not base_url and not self._base_url_pinned:
-                opts.base_url = multi_regional_base_url(location) if is_multi_regional_location(location) else None
-        if base_url:
-            opts.base_url = base_url
-        if api_version:
-            opts.api_version = api_version
-        kwargs['http_options'] = opts
+        kwargs = request_client_kwargs(
+            self._client_kwargs or {},
+            api_key=api_key,
+            api_version=api_version,
+            base_url=base_url,
+            location=location,
+            base_url_pinned=self._base_url_pinned,
+            default_vertexai=True,
+        )
         try:
             return genai.Client(**kwargs)
         except GOOGLE_AUTH_ERRORS as e:

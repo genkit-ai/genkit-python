@@ -33,7 +33,7 @@ def reject_secrets_api_key(context: dict[str, Any]) -> None:
     if not isinstance(secrets, Mapping):
         return
     bag = cast(Mapping[str, object], secrets)
-    if bag.get('api_key') is not None or bag.get('apiKey') is not None:
+    if 'api_key' in bag or 'apiKey' in bag:
         raise GenkitError(
             status='INVALID_ARGUMENT',
             message=(

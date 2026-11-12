@@ -85,9 +85,12 @@ StatusName = Literal[
 
 
 class ErrorReason(StrEnum):
-    """Why the framework classified a failure, beyond its status.
+    """Why a failure happened, beyond its status.
 
-    Read it from ``GenkitError.reason`` or ``Failure.reason``. It travels in
+    Genkit sets a reason when it classifies its own failures, and plugins set
+    one when they classify a provider failure (``provider_error(reason=...)``),
+    so app code can match on it whichever plugin raised. Read it from
+    ``GenkitError.reason`` or ``Failure.reason``. It travels in
     ``details['reason']``; the other SDKs don't have it.
     """
 
@@ -112,6 +115,8 @@ class ErrorReason(StrEnum):
     CONNECTION_CLOSED = 'CONNECTION_CLOSED'
     # An on_chunk callback (the caller's or one middleware installed) raised; the model isn't retried.
     STREAM_CALLBACK_FAILED = 'STREAM_CALLBACK_FAILED'
+    # The provider rejected the API key or credentials that were sent.
+    INVALID_CREDENTIALS = 'INVALID_CREDENTIALS'
 
 
 def error_reason(details: object) -> ErrorReason | None:
@@ -626,6 +631,7 @@ def provider_error(
     headers: Mapping[str, str] | None = None,
     retry_after_ms: float | None = None,
     message: str | None = None,
+    reason: ErrorReason | None = None,
 ) -> GenkitError:
     """Turn a model provider's failure into a GenkitError that Retry and Fallback can act on.
 
@@ -656,6 +662,9 @@ def provider_error(
         headers: The provider's response headers.
         retry_after_ms: How long to wait before retrying, instead of reading headers.
         message: Message to use instead of ``str(error)``.
+        reason: Set when the plugin can tell why the provider failed, such as
+            ``ErrorReason.INVALID_CREDENTIALS`` for a rejected key. App code
+            reads it from ``GenkitError.reason`` or ``Failure.reason``.
 
     Returns:
         A GenkitError to raise.
@@ -669,7 +678,7 @@ def provider_error(
     # A bare TimeoutError() or httpx.ReadTimeout often has empty str(); the type
     # name at least says what failed.
     text = message if message is not None else (str(error) or type(error).__name__)
-    result = GenkitError(status=status, message=text, cause=error, retry_after_ms=retry_after_ms)
+    result = GenkitError(status=status, message=text, cause=error, reason=reason, retry_after_ms=retry_after_ms)
     return mark_provider_error(error=result)
 
 

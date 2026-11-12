@@ -26,7 +26,7 @@ from typing import cast
 import httpx
 from google.genai.errors import APIError
 
-from genkit import GenkitError
+from genkit import ErrorReason, GenkitError
 from genkit.plugin_api import StatusName, provider_error
 
 _RETRY_INFO_TYPE = 'type.googleapis.com/google.rpc.RetryInfo'
@@ -59,16 +59,18 @@ def api_error(error: APIError) -> GenkitError:
 
     When several statuses share the HTTP code, the status the error body names
     picks one, so a 400 that says FAILED_PRECONDITION keeps that status. A key
-    the Gemini API rejects is UNAUTHENTICATED.
+    the Gemini API rejects is UNAUTHENTICATED with reason INVALID_CREDENTIALS.
     """
     response = getattr(error, 'response', None)
+    invalid_credentials = rejected_credentials(error.code, error.details)
     return provider_error(
         error,
         http_status=error.code,
-        status=_body_status(error),
+        status='UNAUTHENTICATED' if invalid_credentials else _body_status(error),
         headers=getattr(response, 'headers', None),
         retry_after_ms=retry_info_ms(error.details),
         message=error.message or str(error),
+        reason=ErrorReason.INVALID_CREDENTIALS if invalid_credentials else None,
     )
 
 
@@ -95,11 +97,21 @@ def retry_info_ms(body: object) -> float | None:
     return delay_ms if math.isfinite(delay_ms) else None
 
 
+def rejected_credentials(http_status: int, body: object) -> bool:
+    """True when the API rejected the key or token that was sent.
+
+    The Gemini API answers a bad key with 400 INVALID_ARGUMENT and names it
+    only in ErrorInfo. A 401 always means the credential. A 403 also covers a
+    disabled service or a key restricted to other APIs, so it counts only when
+    ErrorInfo says API_KEY_INVALID.
+    """
+    if _field(_detail(body, _ERROR_INFO_TYPE), 'reason') == 'API_KEY_INVALID':
+        return True
+    return http_status == 401
+
+
 def _body_status(error: APIError) -> StatusName | None:
     """The status the error body names for a shared HTTP code, or None to map the code."""
-    # The Gemini API answers a bad key with INVALID_ARGUMENT and names it only in ErrorInfo.
-    if _field(_detail(error.details, _ERROR_INFO_TYPE), 'reason') == 'API_KEY_INVALID':
-        return 'UNAUTHENTICATED'
     status = error.status
     if isinstance(status, str) and status in _SHARED_CODE_STATUSES.get(error.code, frozenset()):
         return cast(StatusName, status)

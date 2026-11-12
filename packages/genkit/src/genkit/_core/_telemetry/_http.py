@@ -216,6 +216,8 @@ def encode_span(span: ActiveSpan) -> dict[str, object]:
     if span.parent_span_id:
         body['parentSpanId'] = span.parent_span_id
     return body
+
+
 def encode_trace(span: ActiveSpan) -> dict[str, object]:
     """One ``TraceData`` payload for a single span in the collector's ``/api/traces`` schema.
 
@@ -234,6 +236,8 @@ def encode_trace(span: ActiveSpan) -> dict[str, object]:
         if span.end_time_unix_nano:
             trace['endTime'] = encoded['endTime']
     return trace
+
+
 def collector_traces_url(server: str) -> str:
     return urljoin(server.rstrip('/') + '/', 'api/traces')
 

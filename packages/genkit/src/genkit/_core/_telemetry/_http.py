@@ -70,7 +70,7 @@ EXPORT_TIMEOUT_SECONDS = 300
 # The Developer UI flushes right before it reads a trace. A hung collector
 # should cost it a couple of seconds, not the full export timeout.
 FLUSH_TIMEOUT_SECONDS = 2.0
-# Same scope the JS and Go posters stamp, and what Python sent before 0.13.
+# instrumentationLibrary on every posted span; JS and Go send the same value.
 INSTRUMENTATION_LIBRARY = {'name': 'genkit-tracer', 'version': 'v1'}
 
 

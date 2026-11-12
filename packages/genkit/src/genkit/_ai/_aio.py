@@ -726,7 +726,7 @@ class Genkit:
             raise ValueError(f'define_value kind {kind!r} is reserved; use {_CORE_VALUE_KINDS[kind]} instead.')
         if value is None:
             raise ValueError('define_value value must not be None; lookup_value returns None for "not defined".')
-        self._registry.register_value(kind, name, value)
+        self._registry.register_value(kind, name, value, allow_overwrite=True)
 
     # Overload 1: Both input_schema and output_schema typed -> Prompt[InputT, OutputT]
     @overload

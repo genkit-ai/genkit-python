@@ -49,8 +49,7 @@ from genkit._core._middleware import _MiddlewareMetadata
 from genkit._core._model import AgentInit, AgentInput, ModelRef
 from genkit._core._reflection_config import REFLECTION_SECRET_HEADER, secrets_equal
 from genkit._core._registry import Registry
-from genkit._core._telemetry._http import connect_developer_ui_collector
-from genkit._core._telemetry._instrumentation import flush_instrumentations
+from genkit._core._telemetry._http import connect_developer_ui_collector, flush_developer_ui_collector
 from genkit._core._telemetry._log_exporter import enable_log_export
 
 logger = get_logger(__name__)
@@ -130,70 +129,75 @@ class ActionRunner:
 
     async def execute(self) -> None:
         try:
-            on_chunk = (
-                (
-                    lambda c: self.queue.put_nowait(
-                        (
-                            c.model_dump_json(by_alias=True, exclude_none=True)
-                            if isinstance(c, BaseModel)
-                            else json.dumps(c)
+            try:
+                on_chunk = (
+                    (
+                        lambda c: self.queue.put_nowait(
+                            (
+                                c.model_dump_json(by_alias=True, exclude_none=True)
+                                if isinstance(c, BaseModel)
+                                else json.dumps(c)
+                            )
+                            + '\n'
                         )
-                        + '\n'
                     )
+                    if self.stream
+                    else None
                 )
-                if self.stream
-                else None
-            )
-            # A bidi action's fn already gives a single-turn view of a connection
-            # when driven through _run() (seed one input, stream chunks, return the
-            # output), so the HTTP path just needs _run(). The only bidi-specific
-            # step is normalizing the agent payload: minting a session id for a
-            # server-store agent and defaulting an absent turn to an empty input.
-            input_val = self.payload.get('input')
-            init = None
-            if isinstance(self.action, BidiAction):
-                init = resolve_agent_init(self.action, self.payload.get('init'))
-                if input_val is None:
-                    input_val = AgentInput()
-                else:
-                    input_val = AgentInput.model_validate(as_agent_input_dict(input_val))
+                # A bidi action's fn already gives a single-turn view of a connection
+                # when driven through _run() (seed one input, stream chunks, return the
+                # output), so the HTTP path just needs _run(). The only bidi-specific
+                # step is normalizing the agent payload: minting a session id for a
+                # server-store agent and defaulting an absent turn to an empty input.
+                input_val = self.payload.get('input')
+                init = None
+                if isinstance(self.action, BidiAction):
+                    init = resolve_agent_init(self.action, self.payload.get('init'))
+                    if input_val is None:
+                        input_val = AgentInput()
+                    else:
+                        input_val = AgentInput.model_validate(as_agent_input_dict(input_val))
 
-            output = await self.action._run(
-                input=input_from_json(input_val),
-                on_chunk=on_chunk,
-                context=self.payload.get('context', {}),
-                on_trace_start=self.on_trace_start,
-                telemetry_labels=self.payload.get('telemetryLabels'),
-                init=init,
-            )
-            result = (
-                output.response.model_dump(by_alias=True, exclude_none=True)
-                if isinstance(output.response, BaseModel)
-                else output.response
-            )
-            payload: dict[str, Any] = {'result': result}
-            if output.trace_id:
-                payload['telemetry'] = {'traceId': output.trace_id, 'spanId': output.span_id}
-            # Export the root span before answering, as v2 and JS do, so the
-            # Dev UI trace view is complete when the response lands.
-            await asyncio.to_thread(flush_instrumentations)
-            self.queue.put_nowait(json.dumps(payload))
-        except asyncio.CancelledError:
-            raise
-        except (Exception, Interrupt) as e:
-            # A tool run on its own has no generate loop to pause, so its
-            # Interrupt is reported like any other failure.
-            # Dev UI already shows the error + stack from the reflection response.
-            # Dumping a full traceback here turns every playground failure into
-            # terminal noise.
-            logger.debug('Action failed: %s: %s', type(e).__name__, e, exc_info=True)
-            error = get_reflection_json(interrupt_escape_error(e) or e, trace_id=self.trace_id)
-            if error.details is not None and not error.details.stack and e.__traceback__:
-                # Same as v2: `genkit flow:run` prints this, so give it Python frames.
-                stack = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
-                error = error.model_copy(update={'details': error.details.model_copy(update={'stack': stack})})
-            await asyncio.to_thread(flush_instrumentations)
-            self.queue.put_nowait(json.dumps({'error': error.model_dump(by_alias=True)}))
+                output = await self.action._run(
+                    input=input_from_json(input_val),
+                    on_chunk=on_chunk,
+                    context=self.payload.get('context', {}),
+                    on_trace_start=self.on_trace_start,
+                    telemetry_labels=self.payload.get('telemetryLabels'),
+                    init=init,
+                )
+                result = (
+                    output.response.model_dump(by_alias=True, exclude_none=True)
+                    if isinstance(output.response, BaseModel)
+                    else output.response
+                )
+                payload: dict[str, Any] = {'result': result}
+                if output.trace_id:
+                    payload['telemetry'] = {'traceId': output.trace_id, 'spanId': output.span_id}
+                response_json = json.dumps(payload)
+            except asyncio.CancelledError:
+                raise
+            except (Exception, Interrupt) as e:
+                # A tool run on its own has no generate loop to pause, so its
+                # Interrupt is reported like any other failure.
+                # Dev UI already shows the error + stack from the reflection response.
+                # Dumping a full traceback here turns every playground failure into
+                # terminal noise.
+                logger.debug('Action failed: %s: %s', type(e).__name__, e, exc_info=True)
+                error = get_reflection_json(interrupt_escape_error(e) or e, trace_id=self.trace_id)
+                if error.details is not None and not error.details.stack and e.__traceback__:
+                    # Same as v2: `genkit flow:run` prints this, so give it Python frames.
+                    stack = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
+                    error = error.model_copy(update={'details': error.details.model_copy(update={'stack': stack})})
+                response_json = json.dumps({'error': error.model_dump(by_alias=True)})
+
+            try:
+                # Export the root span before answering, as v2 and JS do, so the
+                # Dev UI trace view is complete when the response lands.
+                await asyncio.to_thread(flush_developer_ui_collector)
+            except Exception as e:
+                logger.debug('Failed to flush Developer UI trace collector: %s', e)
+            self.queue.put_nowait(response_json)
         finally:
             self.trace_ready.set()
             self.queue.put_nowait(None)

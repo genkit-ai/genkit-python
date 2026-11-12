@@ -454,27 +454,40 @@ class Registry:
         parent_catalog = await self._parent.list_actions(dap_timeout_seconds=dap_timeout_seconds)
         return {**parent_catalog, **catalog}
 
-    def register_value(self, kind: str, name: str, value: object) -> None:
+    def register_value(
+        self,
+        kind: str,
+        name: str,
+        value: object,
+        *,
+        allow_overwrite: bool = False,
+    ) -> None:
         """Registers a value with a given kind and name.
 
         This method stores a value in a nested dictionary, where the first level
         is keyed by the 'kind' and the second level is keyed by the 'name'.
-        It prevents duplicate registrations for the same kind and name.
+        It prevents duplicate registrations for the same kind and name unless
+        ``allow_overwrite`` is set.
 
         Args:
             kind: The kind of the value (e.g., "format", "default-model").
             name: The name of the value (e.g., "json", "text").
             value: The value to be registered. Can be of any non-serializable
                 type.
+            allow_overwrite: Replace an existing value under the same kind and
+                name instead of raising.
 
-        Registering the same kind and name again replaces the value.
+        Raises:
+            ValueError: If ``allow_overwrite`` is ``False`` and a value with the
+                given kind and name is already registered.
         """
         with self._lock:
             if kind not in self._value_by_kind_and_name:
                 self._value_by_kind_and_name[kind] = {}
 
             if name in self._value_by_kind_and_name[kind]:
-                # Re-running a notebook cell re-registers; overwrite like flows/tools do.
+                if not allow_overwrite:
+                    raise ValueError(f'value for kind "{kind}" and name "{name}" is already registered')
                 logger.debug(f'Overwriting value for kind "{kind}" and name "{name}"')
 
             self._value_by_kind_and_name[kind][name] = value

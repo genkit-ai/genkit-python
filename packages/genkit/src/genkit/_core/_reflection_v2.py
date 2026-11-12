@@ -447,7 +447,10 @@ class ReflectionServerV2:
         stream.close()
 
     async def flush_tracing(self) -> None:
-        await asyncio.to_thread(flush_developer_ui_collector)
+        try:
+            await asyncio.to_thread(flush_developer_ui_collector)
+        except Exception as e:
+            logger.debug('Failed to flush Developer UI trace collector: %s', e)
 
     @staticmethod
     def run_action_call_options(
@@ -538,6 +541,7 @@ class ReflectionServerV2:
             message=coerce_json_rpc_message(ref.message),
             details=ReflectionErrorDetails(stack=stack, trace_id=tid) if (stack or tid) else None,
         )
+        await self.flush_tracing()
         await self.send_error(
             sid,
             JSON_RPC_SERVER_ERROR,

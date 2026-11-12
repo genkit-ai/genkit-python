@@ -622,25 +622,92 @@ async def test_dev_ui_run_of_public_error_flow_returns_its_status_and_trace_id(h
 
 
 @pytest.mark.asyncio
-async def test_run_action_flushes_spans_before_responding(monkeypatch: pytest.MonkeyPatch) -> None:
-    """v1 matches v2: the root span is exported by the time the response lands."""
-    from genkit._core import _reflection
+async def test_run_action_flushes_dev_ui_collector_only() -> None:
+    """v1 flushes DevUIInstrumentation before responding and leaves remote backends untouched."""
+    from genkit._core._telemetry._http import DevUIInstrumentation
+    from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
 
     events: list[str] = []
-    monkeypatch.setattr(_reflection, 'flush_instrumentations', lambda: events.append('flush'))
-    ai = Genkit()
 
-    @ai.flow()
-    async def order_dish(dish: str) -> str:
-        events.append('run')
-        return dish
+    class RecordingSink:
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
 
-    app = create_reflection_asgi_app(ai._registry)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        response = await client.post('/api/runAction', json={'key': '/flow/order_dish', 'input': 'Tartine'})
+        def flush(self) -> None:
+            events.append('dev_flush')
 
-    assert response.status_code == 200
-    assert events == ['run', 'flush']
+        def shutdown(self) -> None:
+            pass
+
+    class SlowRemoteBackend:
+        async def run_in_new_span(self, metadata: Any, next: Any) -> Any:  # noqa: ANN401
+            return await next(MagicMock())
+
+        def flush(self) -> None:
+            events.append('remote_flush')
+            raise RuntimeError('remote exporter timed out')
+
+    reset_instrumentation()
+    try:
+        configure_instrumentation(DevUIInstrumentation(RecordingSink()))  # type: ignore[arg-type]
+        configure_instrumentation(SlowRemoteBackend())
+        ai = Genkit()
+
+        @ai.flow()
+        async def order_dish(dish: str) -> str:
+            events.append('run')
+            return dish
+
+        app = create_reflection_asgi_app(ai._registry)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/runAction', json={'key': '/flow/order_dish', 'input': 'Tartine'})
+
+        assert response.status_code == 200
+        assert response.json()['result'] == 'Tartine'
+        assert events == ['run', 'dev_flush']
+    finally:
+        reset_instrumentation()
+
+
+@pytest.mark.asyncio
+async def test_run_action_succeeds_when_dev_ui_collector_flush_raises() -> None:
+    """A broken Dev UI trace collector flush does not turn a completed action into an error response."""
+    from genkit._core._telemetry._http import DevUIInstrumentation
+    from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
+
+    class BrokenSink:
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            raise OSError('collector unreachable')
+
+        def shutdown(self) -> None:
+            pass
+
+    reset_instrumentation()
+    try:
+        configure_instrumentation(DevUIInstrumentation(BrokenSink()))  # type: ignore[arg-type]
+        ai = Genkit()
+
+        @ai.flow()
+        async def order_dish(dish: str) -> str:
+            return dish
+
+        @ai.flow()
+        async def fail_dish(dish: str) -> str:
+            raise ValueError(f'sold out: {dish}')
+
+        app = create_reflection_asgi_app(ai._registry)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+            ok_resp = await client.post('/api/runAction', json={'key': '/flow/order_dish', 'input': 'Tartine'})
+            err_resp = await client.post('/api/runAction', json={'key': '/flow/fail_dish', 'input': 'Tartine'})
+
+        assert ok_resp.status_code == 200
+        assert ok_resp.json()['result'] == 'Tartine'
+        assert 'sold out: Tartine' in err_resp.json()['error']['message']
+    finally:
+        reset_instrumentation()
 
 
 @pytest.mark.asyncio

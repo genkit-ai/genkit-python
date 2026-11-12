@@ -82,12 +82,47 @@ def unrecognized_level() -> str | None:
     return raw
 
 
+_DEFAULT_STRUCTLOG_FACTORY: object = (
+    structlog.get_config().get('logger_factory')
+    if not structlog.is_configured()
+    else getattr(getattr(structlog, '_config', None), '_BUILTIN_DEFAULT_LOGGER_FACTORY', None)
+)
+
+_stderr_lock = threading.Lock()
+
+
+class _StderrPrintLogger:
+    """structlog ``PrintLogger`` equivalent that resolves ``sys.stderr`` at emit time.
+
+    Passing ``file=sys.stderr`` to ``structlog.PrintLoggerFactory`` binds the
+    stream object once at factory creation, missing later ``sys.stderr`` swaps
+    from ``pytest`` capture, ``contextlib.redirect_stderr``, or notebooks.
+    """
+
+    def msg(self, message: object) -> None:
+        with _stderr_lock:
+            stream = sys.stderr
+            if stream is not None:
+                stream.write(f'{message}\n')
+                stream.flush()
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+
 def _app_chose_level() -> bool:
     """Report whether the application configured structlog with a level of its own."""
     if not structlog.is_configured():
         return False
     unfiltered = structlog.make_filtering_bound_logger(logging.NOTSET)
     return structlog.get_config().get('wrapper_class') is not unfiltered
+
+
+def _app_chose_logger_factory() -> bool:
+    """Report whether the application configured structlog with its own logger factory."""
+    if not structlog.is_configured():
+        return False
+    return structlog.get_config().get('logger_factory') is not _DEFAULT_STRUCTLOG_FACTORY
 
 
 def configure_structlog_level() -> bool:
@@ -103,16 +138,7 @@ def configure_structlog_level() -> bool:
     """
     if _app_chose_level():
         return False
-    if structlog.is_configured():
-        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(resolve_level()))
-    else:
-        # structlog's default factory prints to stdout, which corrupts
-        # `python cli.py | jq .`. Logs go to stderr; an app that already
-        # picked a logger factory keeps it.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(resolve_level()),
-            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        )
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(resolve_level()))
     ignored = unrecognized_level()
     if ignored is not None:
         get_logger(__name__).warning(
@@ -238,31 +264,53 @@ class ExportTee:
     above, so a quiet terminal can still fill the trace viewer's log panel.
     """
 
-    def __init__(self, bound: BindableLogger, attrs: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        bound: BindableLogger,
+        attrs: dict[str, object] | None = None,
+        *,
+        stderr_bound: BindableLogger | None = None,
+    ) -> None:
         self._bound = bound
+        self._stderr_bound = stderr_bound
         self._attrs = attrs or {}
 
+    def _active_bound(self) -> BindableLogger:
+        if self._stderr_bound is not None and not _app_chose_logger_factory():
+            return self._stderr_bound
+        return self._bound
+
     def bind(self, **new_values: object) -> ExportTee:
-        return ExportTee(self._bound.bind(**new_values), attrs={**self._attrs, **new_values})
+        stderr = self._stderr_bound.bind(**new_values) if self._stderr_bound is not None else None
+        return ExportTee(self._bound.bind(**new_values), attrs={**self._attrs, **new_values}, stderr_bound=stderr)
 
     def unbind(self, *keys: str) -> ExportTee:
         kept = {k: v for k, v in self._attrs.items() if k not in keys}
-        return ExportTee(self._bound.unbind(*keys), attrs=kept)
+        stderr = self._stderr_bound.unbind(*keys) if self._stderr_bound is not None else None
+        return ExportTee(self._bound.unbind(*keys), attrs=kept, stderr_bound=stderr)
 
     def try_unbind(self, *keys: str) -> ExportTee:
         kept = {k: v for k, v in self._attrs.items() if k not in keys}
-        return ExportTee(self._bound.try_unbind(*keys), attrs=kept)
+        stderr = self._stderr_bound.try_unbind(*keys) if self._stderr_bound is not None else None
+        return ExportTee(self._bound.try_unbind(*keys), attrs=kept, stderr_bound=stderr)
 
     def new(self, **new_values: object) -> ExportTee:
-        return ExportTee(self._bound.new(**new_values), attrs=dict(new_values))
+        bound_new = self._bound.new(**new_values)
+        stderr = (
+            cast(BindableLogger, structlog.wrap_logger(_StderrPrintLogger())).bind(**new_values)
+            if self._stderr_bound is not None
+            else None
+        )
+        return ExportTee(bound_new, attrs=dict(new_values), stderr_bound=stderr)
 
     def is_enabled_for(self, level: int) -> bool:
         from genkit._core._telemetry._log_exporter import log_export_is_enabled
 
         if level >= logging.DEBUG and log_export_is_enabled():
             return True
+        active = self._active_bound()
         for attr in ('is_enabled_for', 'isEnabledFor'):
-            check = getattr(self._bound, attr, None)
+            check = getattr(active, attr, None)
             if not callable(check):
                 continue
             try:
@@ -277,7 +325,7 @@ class ExportTee:
         emit_log(level=level, event=_interpolate_event(event, args), attrs={**self._attrs, **kw})
 
     def __getattr__(self, name: str) -> object:
-        target = getattr(self._bound, name)
+        target = getattr(self._active_bound(), name)
         if name == 'log' and callable(target):
 
             def emit_log(level: int, event: str, *args: object, **kw: object) -> object:
@@ -381,7 +429,9 @@ def get_logger(name: str | None = None) -> GenkitLogger:
             return 12
         ```
     """
-    return cast(GenkitLogger, ExportTee(structlog.get_logger(name)))
+    app_bound = structlog.get_logger(name) if name is not None else structlog.get_logger()
+    stderr_bound = cast(BindableLogger, structlog.wrap_logger(_StderrPrintLogger()))
+    return cast(GenkitLogger, ExportTee(app_bound, stderr_bound=stderr_bound))
 
 
 def is_debug_enabled(logger: GenkitLogger) -> bool:

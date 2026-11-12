@@ -24,9 +24,9 @@ from genkit._ai._agents._client import agent_interrupts_from_message
 from genkit._ai._generate import CallScope, augment_with_context, generate_action, restarted_tool_request
 from genkit._core._action import ActionRunContext
 from genkit._core._error import ErrorReason, GenkitError
-from genkit._core._model import GenerateActionOptions, ModelRequest
+from genkit._core._model import GenerateActionOptions, ModelRequest, MultipartToolResponse
 from genkit._core._typing import FinishReason, Role, ToolRequest
-from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
+from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams, ToolHookParams
 from genkit.testing import ScriptedModel, define_scripted_model
 
 
@@ -386,7 +386,8 @@ async def test_bare_restart_still_reads_as_resumed() -> None:
     assert len(seen) == 1
 
 
-def test_tool_accepts_an_async_callable_instance() -> None:
+@pytest.mark.asyncio
+async def test_tool_accepts_an_async_callable_instance() -> None:
     """A class with `async def __call__` is an async tool; sync callables still fail."""
 
     class AllergyCheck:
@@ -399,6 +400,8 @@ def test_tool_accepts_an_async_callable_instance() -> None:
 
     tool = Tool(AllergyCheck(), name='allergy_check')
     assert tool.name == 'allergy_check'
+    assert tool.input_schema == {'type': 'string'}
+    assert (await tool.run('peanuts')).response == 'peanuts: nut-free'
 
     with pytest.raises(TypeError, match='must be async'):
         Tool(SyncCheck(), name='sync_check')  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]
@@ -426,3 +429,73 @@ async def test_middleware_sees_the_context_passed_to_generate() -> None:
 
     assert seen == [{'tenant': 'bistro-9'}]
     assert Genkit.current_context() is None
+
+
+@pytest.mark.asyncio
+async def test_middleware_cleared_context_does_not_leak_to_tool() -> None:
+    """Clearing ctx.context in wrap_tool hides caller secrets from the tool."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    tool_seen: list[object] = []
+
+    @ai.tool(name='transfer')
+    async def transfer(inp: dict, ctx: ToolContext) -> str:
+        tool_seen.append(dict(ctx.context))
+        return 'ok'
+
+    class StripContext(Middleware):
+        async def wrap_tool(
+            self,
+            params: ToolHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ToolHookParams, MiddlewareContext], Awaitable[MultipartToolResponse]],
+        ) -> MultipartToolResponse:
+            ctx.context.clear()
+            return await next_fn(params, ctx)
+
+    pm.responses = [_transfer_request(1), _answers('done')]
+    await ai.generate(prompt='go', tools=['transfer'], context={'secrets': 'top-secret'}, use=[StripContext()])
+
+    assert tool_seen == [{}]
+
+
+@pytest.mark.asyncio
+async def test_middleware_context_mutations_sync_with_current_context_and_isolate_flow() -> None:
+    """Middleware mutations are visible via current_context() and do not mutate parent flow context."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok')]
+    seen_in_second: list[object] = []
+
+    class RewriteTenant(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            ctx.context['tenant'] = 'rewritten'
+            return await next_fn(params, ctx)
+
+    class ReadCurrentContext(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            current = Genkit.current_context()
+            seen_in_second.append(dict(current) if current is not None else None)
+            if current is not None:
+                current['leaked'] = True
+            return await next_fn(params, ctx)
+
+    @ai.flow()
+    async def parent_flow(ctx: ActionRunContext) -> dict[str, object]:
+        await ai.generate(prompt='hi', use=[RewriteTenant(), ReadCurrentContext()])
+        return dict(ctx.context)
+
+    flow_ctx = await parent_flow(context={'tenant': 'original'})
+
+    assert seen_in_second == [{'tenant': 'rewritten'}]
+    assert flow_ctx == {'tenant': 'original'}

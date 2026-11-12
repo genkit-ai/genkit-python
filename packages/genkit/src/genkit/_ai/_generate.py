@@ -886,15 +886,6 @@ async def generate_action(
         context = get_current_context()
 
     async def body(_span: SpanContext) -> ModelResponse:
-        # Middleware and hooks calling Genkit.current_context() see the
-        # context this generate runs with, not None or a stale outer one.
-        token = _action_context.set(context)
-        try:
-            return await run_body()
-        finally:
-            _action_context.reset(token)
-
-    async def run_body() -> ModelResponse:
         result = await run_generate(
             scope=scope,
             options=options,
@@ -964,69 +955,76 @@ async def run_generate(
         on_chunk=on_chunk,
     )
 
-    mw_pipeline: MiddlewarePipeline | None = None
-    if middleware:
-        mw_pipeline = prepare_middleware(middleware, ctx=ctx, caller_stopped=caller_stopped)
-        mw_tools: list[Tool] = []
-        for mw in mw_pipeline.middleware:
-            mw_tools.extend(mw.tools(mw_pipeline.ctx))
-
-        if mw_tools:
-            existing = list(options.tools) if options.tools else []
-            declared = set(existing)
-            contributed_names: list[str] = []
-            for t in mw_tools:
-                name = t.name
-                if name in declared or name in contributed_names:
-                    raise GenkitError(
-                        status='INVALID_ARGUMENT',
-                        message=(f"tool '{name}' is contributed by middleware but already declared elsewhere"),
-                        reason=ErrorReason.INVALID_INPUT,
-                    )
-                registry.register_action_from_instance(t)
-                contributed_names.append(name)
-            options = options.model_copy()
-            options.tools = existing + contributed_names
-    else:
-        mw_pipeline = MiddlewarePipeline(middleware=[], ctx=ctx, caller_stopped=caller_stopped)
-
-    call = GenerateRun(messages=list(options.messages or []), caller_stopped=caller_stopped)
-
-    if is_debug_enabled(logger):
-        resolved: dict[str, object] = {
-            'model': options.model,
-            'messages': len(options.messages),
-            'tools': len(options.tools or []),
-            'max_turns': options.max_turns,
-            'streaming': on_chunk is not None,
-        }
-        resolved['format'] = options.output.format if options.output else None
-        resolved['constrained'] = options.output.constrained if options.output else None
-        if middleware:
-            resolved['middleware'] = [middleware_name(m) for m in middleware]
-        logger.debug('generate request resolved', **resolved)
-
+    # Bind the generate-scoped copy so middleware and hooks calling
+    # Genkit.current_context() see ctx.context (including earlier mutations)
+    # without mutating an enclosing flow's context.
+    context_token = _action_context.set(ctx.context)
     try:
-        return await run_wrap_generate(
-            registry=registry,
-            options=options,
-            mw_pipeline=mw_pipeline,
-            message_index=message_index,
-            current_turn=current_turn,
-            call=call,
-        )
-    except asyncio.CancelledError as exc:
-        stamp_cancelled_error(exc=exc, messages=call.messages)
-        raise
-    except (Exception, _StreamingCallbackError) as exc:
-        if streaming_callback_cause(exc=exc) is None:
+        mw_pipeline: MiddlewarePipeline | None = None
+        if middleware:
+            mw_pipeline = prepare_middleware(middleware, ctx=ctx, caller_stopped=caller_stopped)
+            mw_tools: list[Tool] = []
+            for mw in mw_pipeline.middleware:
+                mw_tools.extend(mw.tools(mw_pipeline.ctx))
+
+            if mw_tools:
+                existing = list(options.tools) if options.tools else []
+                declared = set(existing)
+                contributed_names: list[str] = []
+                for t in mw_tools:
+                    name = t.name
+                    if name in declared or name in contributed_names:
+                        raise GenkitError(
+                            status='INVALID_ARGUMENT',
+                            message=(f"tool '{name}' is contributed by middleware but already declared elsewhere"),
+                            reason=ErrorReason.INVALID_INPUT,
+                        )
+                    registry.register_action_from_instance(t)
+                    contributed_names.append(name)
+                options = options.model_copy()
+                options.tools = existing + contributed_names
+        else:
+            mw_pipeline = MiddlewarePipeline(middleware=[], ctx=ctx, caller_stopped=caller_stopped)
+
+        call = GenerateRun(messages=list(options.messages or []), caller_stopped=caller_stopped)
+
+        if is_debug_enabled(logger):
+            resolved: dict[str, object] = {
+                'model': options.model,
+                'messages': len(options.messages),
+                'tools': len(options.tools or []),
+                'max_turns': options.max_turns,
+                'streaming': on_chunk is not None,
+            }
+            resolved['format'] = options.output.format if options.output else None
+            resolved['constrained'] = options.output.constrained if options.output else None
+            if middleware:
+                resolved['middleware'] = [middleware_name(m) for m in middleware]
+            logger.debug('generate request resolved', **resolved)
+
+        try:
+            return await run_wrap_generate(
+                registry=registry,
+                options=options,
+                mw_pipeline=mw_pipeline,
+                message_index=message_index,
+                current_turn=current_turn,
+                call=call,
+            )
+        except asyncio.CancelledError as exc:
+            stamp_cancelled_error(exc=exc, messages=call.messages)
             raise
-        return box_from_exc(
-            response=ModelResponse(),
-            messages=call.messages,
-            exc=exc,
-            caller_stopped=False,
-        )
+        except (Exception, _StreamingCallbackError) as exc:
+            if streaming_callback_cause(exc=exc) is None:
+                raise
+            return box_from_exc(
+                response=ModelResponse(),
+                messages=call.messages,
+                exc=exc,
+                caller_stopped=False,
+            )
+    finally:
+        _action_context.reset(context_token)
 
 
 class ChunkAccumulator:

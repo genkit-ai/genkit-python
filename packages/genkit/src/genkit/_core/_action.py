@@ -1237,9 +1237,9 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         init = self._validate_init(init)
 
         if context is None:
-            # Inherit the enclosing action's context as a copy, so concurrent
-            # child flows writing to ctx.context don't clobber each other or
-            # the parent (tools already get a copy in run_tool_request).
+            # Inherit the enclosing action's context as a shallow copy, so
+            # concurrent child flows setting top-level keys on ctx.context
+            # don't clobber each other or the parent (matching run_tool_request).
             ambient = _action_context.get(None)
             context = dict(ambient) if ambient is not None else None
         token = None

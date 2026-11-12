@@ -27,7 +27,7 @@ from genkit_openai import OpenAI
 from genkit_openai._models._mistral import mistral_chat_body
 from pydantic import BaseModel
 
-from genkit import FinishReason, Genkit, Part
+from genkit import FinishReason, Genkit, Message, Part, Role
 
 MISTRAL_URL = 'https://api.mistral.ai/v1'
 CODESTRAL_URL = 'https://codestral.mistral.ai/v1'
@@ -69,57 +69,88 @@ _CHAT_FIELDS = frozenset({
     'safe_prompt',
 })
 _EMBEDDING_FIELDS = frozenset({'model', 'input', 'metadata', 'output_dimension', 'output_dtype', 'encoding_format'})
-_MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'codestral.mistral.ai'})
+_MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai', 'codestral.mistral.ai'})
+# Chunk types a message's content list may hold, and the keys a thinking chunk
+# may carry (ContentChunk and ThinkChunk in the mistralai SDK).
+_CHUNK_TYPES = frozenset({
+    'text',
+    'image_url',
+    'reference',
+    'file',
+    'input_audio',
+    'document_url',
+    'resource',
+    'resource_link',
+    'thinking',
+})
+_THINKING_KEYS = frozenset({'type', 'thinking', 'signature', 'closed'})
 
-# A Magistral reply: reasoning in a thinking chunk, then the answer, in a content list.
-_THINKING = {'type': 'thinking', 'thinking': [{'type': 'text', 'text': 'Two loaves, one each.'}]}
+SIGNATURE = 'sig-abc'
+REASONING = 'Two loaves, one each.'
 
 
-def _content(model: str, text: str) -> Any:  # noqa: ANN401
-    if model.startswith('magistral'):
-        return [_THINKING, {'type': 'text', 'text': text}]
-    return text
+def _thinking(text: str, *, signature: str | None = None) -> dict[str, Any]:
+    chunk: dict[str, Any] = {'type': 'thinking', 'thinking': [{'type': 'text', 'text': text}]}
+    if signature is not None:
+        chunk['signature'] = signature
+    return chunk
 
 
-def _completion(model: str) -> dict[str, Any]:
+def _completion(body: dict[str, Any], finish_reason: str) -> dict[str, Any]:
+    # With reasoning_effort set, Mistral puts the reasoning in a thinking chunk
+    # ahead of the answer, in a content list.
+    content: Any = 'bonjour'
+    if body.get('reasoning_effort'):
+        content = [_thinking(REASONING, signature=SIGNATURE), {'type': 'text', 'text': 'bonjour'}]
     return {
         'id': 'cmpl-1',
         'object': 'chat.completion',
         'created': 0,
-        'model': model,
-        'choices': [
-            {
-                'index': 0,
-                'finish_reason': 'stop',
-                'message': {'role': 'assistant', 'content': _content(model, 'bonjour')},
-            }
-        ],
+        'model': body['model'],
+        'choices': [{'index': 0, 'finish_reason': finish_reason, 'message': {'role': 'assistant', 'content': content}}],
         'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5},
     }
 
 
-def _stream_body(model: str) -> bytes:
+def _stream_body(body: dict[str, Any]) -> bytes:
     # Mistral sends usage on the last chunk, beside finish_reason, without stream_options.
-    first: Any = [_THINKING] if model.startswith('magistral') else 'bon'
-    second: Any = [{'type': 'text', 'text': 'bonjour'}] if model.startswith('magistral') else 'jour'
-    chunks = [
-        {
+    # With reasoning_effort set, deltas go: a list with a thinking chunk, a list
+    # with the closing thinking chunk and the first text chunk, then strings.
+    deltas: list[Any] = ['bon', 'jour']
+    if body.get('reasoning_effort'):
+        deltas = [
+            [_thinking('Two loaves,')],
+            [_thinking(' one each.', signature=SIGNATURE), {'type': 'text', 'text': 'bon'}],
+            'jour',
+        ]
+    chunks = []
+    for i, delta in enumerate(deltas):
+        last = i == len(deltas) - 1
+        chunk: dict[str, Any] = {
             'id': 'cmpl-1',
             'object': 'chat.completion.chunk',
             'created': 0,
-            'model': model,
-            'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': first}, 'finish_reason': None}],
-        },
-        {
-            'id': 'cmpl-1',
-            'object': 'chat.completion.chunk',
-            'created': 0,
-            'model': model,
-            'choices': [{'index': 0, 'delta': {'content': second}, 'finish_reason': 'stop'}],
-            'usage': {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5},
-        },
-    ]
+            'model': body['model'],
+            'choices': [{'index': 0, 'delta': {'content': delta}, 'finish_reason': 'stop' if last else None}],
+        }
+        if last:
+            chunk['usage'] = {'prompt_tokens': 3, 'completion_tokens': 2, 'total_tokens': 5}
+        chunks.append(chunk)
     return b''.join(f'data: {json.dumps(c)}\n\n'.encode() for c in chunks) + b'data: [DONE]\n\n'
+
+
+def _bad_chunks(body: dict[str, Any]) -> list[str]:
+    bad: list[str] = []
+    for i, message in enumerate(body.get('messages', [])):
+        content = message.get('content')
+        if not isinstance(content, list):
+            continue
+        for j, chunk in enumerate(content):
+            if chunk.get('type') not in _CHUNK_TYPES:
+                bad.append(f'messages.{i}.content.{j}.type')
+            elif chunk['type'] == 'thinking' and set(chunk) - _THINKING_KEYS:
+                bad.append(f'messages.{i}.content.{j}')
+    return bad
 
 
 def _embeddings(body: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +179,7 @@ class _Server:
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
+        self.finish_reason = 'stop'
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -155,15 +187,13 @@ class _Server:
         embeddings = request.url.path.endswith('/embeddings')
         if request.url.host in _MISTRAL_HOSTS:
             allowed = _EMBEDDING_FIELDS if embeddings else _CHAT_FIELDS
-            if unknown := sorted(set(body) - allowed):
+            if unknown := sorted(set(body) - allowed) + _bad_chunks(body):
                 return _extra_forbidden(unknown)
         if embeddings:
             return httpx.Response(200, json=_embeddings(body))
         if body.get('stream'):
-            return httpx.Response(
-                200, content=_stream_body(body['model']), headers={'content-type': 'text/event-stream'}
-            )
-        return httpx.Response(200, json=_completion(body['model']))
+            return httpx.Response(200, content=_stream_body(body), headers={'content-type': 'text/event-stream'})
+        return httpx.Response(200, json=_completion(body, self.finish_reason))
 
     def bodies(self) -> list[dict[str, Any]]:
         return [json.loads(r.content) for r in self.requests]
@@ -251,7 +281,7 @@ async def test_mistral_max_output_tokens_goes_out_as_max_tokens(
     mistral: Genkit, server: _Server, config: dict[str, Any]
 ) -> None:
     """`max_output_tokens` reaches Mistral as `max_tokens`, even with `reasoning_effort` set."""
-    await mistral.generate(model='openai/magistral-medium-latest', prompt='salut', config=config)
+    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
 
     [body] = server.bodies()
     caps_sent = {k: body[k] for k in ('max_tokens', 'max_completion_tokens') if k in body}
@@ -265,14 +295,14 @@ async def test_mistral_seed_goes_out_as_random_seed(mistral: Genkit, server: _Se
     await mistral.generate(
         model='openai/mistral-small-latest',
         prompt='salut',
-        config={'seed': 7, 'temperature': 0.2, 'extra': {'safe_prompt': True}},
+        config={'seed': 7, 'temperature': 0.2, 'extra': {'min_tokens': 5}},
     )
 
     [body] = server.bodies()
     assert body['random_seed'] == 7
     assert 'seed' not in body
     assert body['temperature'] == 0.2
-    assert body['safe_prompt'] is True
+    assert body['min_tokens'] == 5
 
 
 @pytest.mark.asyncio
@@ -405,28 +435,103 @@ async def test_mistral_top_k_goes_out(mistral: Genkit, server: _Server) -> None:
     assert body['top_k'] == 5
 
 
+_REASONING_CONFIG = {'reasoning_effort': 'high'}
+
+
 @pytest.mark.asyncio
-async def test_mistral_magistral_reply_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
-    """A Magistral reply's `thinking` chunk comes back as a reasoning part, its `text` chunk as the text."""
-    response = await mistral.generate(model='openai/magistral-medium-latest', prompt='Bread for two?')
+async def test_mistral_reasoning_reply_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
+    """With `reasoning_effort` set, the reply's `thinking` chunk is a reasoning part and its `text` chunk the text."""
+    response = await mistral.generate(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+    )
 
     assert response.text == 'bonjour'
     assert response.message is not None
-    assert [p.reasoning for p in response.message.content if p.reasoning] == ['Two loaves, one each.']
+    [reasoning] = [p for p in response.message.content if p.reasoning]
+    assert reasoning.reasoning == REASONING
+    assert reasoning.metadata == {'thoughtSignature': SIGNATURE}
 
 
 @pytest.mark.asyncio
-async def test_mistral_magistral_stream_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
-    """Streamed `thinking` chunks arrive as reasoning parts, and the final response keeps reasoning before text."""
-    stream = mistral.generate_stream(model='openai/magistral-medium-latest', prompt='Bread for two?')
+async def test_mistral_reasoning_stream_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
+    """Streamed thinking chunks arrive as reasoning parts, through all three delta shapes Mistral sends."""
+    stream = mistral.generate_stream(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+    )
     chunks = [chunk async for chunk in stream.stream]
     response = await stream.response
 
-    assert [c.text for c in chunks] == ['', 'bonjour']
-    assert chunks[0].content[0].reasoning == 'Two loaves, one each.'
+    assert [c.text for c in chunks] == ['', 'bon', 'jour']
+    assert ''.join(p.reasoning for c in chunks for p in c.content if p.reasoning) == REASONING
     assert response.text == 'bonjour'
     assert response.message is not None
-    assert response.message.content[0].reasoning == 'Two loaves, one each.'
+    assert ''.join(p.reasoning for p in response.message.content if p.reasoning) == REASONING
+
+
+@pytest.mark.parametrize('streamed', [False, True], ids=['generate', 'stream'])
+@pytest.mark.asyncio
+async def test_mistral_replays_reasoning_as_a_thinking_chunk(mistral: Genkit, server: _Server, streamed: bool) -> None:
+    """The next turn sends the reply's reasoning back as one leading `thinking` chunk, signature included."""
+    if streamed:
+        stream = mistral.generate_stream(
+            model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        )
+        first = await stream.response
+    else:
+        first = await mistral.generate(
+            model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        )
+
+    second = await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+
+    assert second.finish_reason == FinishReason.STOP
+    body = server.bodies()[-1]
+    [assistant] = [m for m in body['messages'] if m['role'] == 'assistant']
+    assert assistant['content'] == [
+        {'type': 'thinking', 'thinking': [{'type': 'text', 'text': REASONING}], 'signature': SIGNATURE},
+        {'type': 'text', 'text': 'bonjour'},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_host_does_not_replay_reasoning(openai: Genkit, server: _Server) -> None:
+    """On any other host a model message's reasoning is still left out of the next turn."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Bread for two?')]),
+        Message(role=Role.MODEL, content=[Part.from_reasoning(REASONING), Part.from_text('bonjour')]),
+    ]
+
+    await openai.generate(model='openai/gpt-4o', messages=history, prompt='And three?')
+
+    [body] = server.bodies()
+    [assistant] = [m for m in body['messages'] if m['role'] == 'assistant']
+    assert assistant['content'] == 'bonjour'
+
+
+@pytest.mark.asyncio
+async def test_mistral_model_length_finish_is_length(mistral: Genkit, server: _Server) -> None:
+    """Mistral's `model_length` finish reason comes back as LENGTH."""
+    server.finish_reason = 'model_length'
+
+    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut')
+
+    assert response.finish_reason == FinishReason.LENGTH
+
+
+@pytest.mark.parametrize('host', ['api.eu.mistral.ai', 'api.us.mistral.ai'])
+@pytest.mark.asyncio
+async def test_mistral_regional_hosts_get_mistral_field_names(server: _Server, host: str) -> None:
+    """The EU and US endpoints get the same rewrite as the global one."""
+    ai = _ai(server, f'https://{host}/v1')
+
+    stream = ai.generate_stream(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+    await stream.response
+
+    [request] = server.requests
+    assert request.url.host == host
+    body = json.loads(request.content)
+    assert 'stream_options' not in body
+    assert body['random_seed'] == 7
 
 
 @pytest.mark.asyncio
@@ -506,7 +611,7 @@ def test_mistral_chat_body_leaves_its_input_alone() -> None:
         'seed': 7,
         'max_completion_tokens': 50,
         'stream_options': {'include_usage': True},
-        'extra_body': {'safe_prompt': True},
+        'extra_body': {'min_tokens': 5},
     }
     before = json.loads(json.dumps(body))
 
@@ -516,5 +621,5 @@ def test_mistral_chat_body_leaves_its_input_alone() -> None:
     assert out == {
         'model': 'mistral-small-latest',
         'max_tokens': 50,
-        'extra_body': {'random_seed': 7, 'top_k': 5, 'safe_prompt': True},
+        'extra_body': {'random_seed': 7, 'top_k': 5, 'min_tokens': 5},
     }

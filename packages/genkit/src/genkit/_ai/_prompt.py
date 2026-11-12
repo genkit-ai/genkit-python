@@ -66,7 +66,6 @@ from genkit._ai._model import (
 from genkit._core._action import (
     Action,
     ActionKind,
-    StreamingCallback,
     StreamResponse,
     create_action_key,
     get_current_context,
@@ -94,8 +93,6 @@ from genkit._core._typing import (
     MiddlewareRef,
     Role,
 )
-
-ModelStreamingCallback = StreamingCallback
 
 logger = get_logger(__name__)
 
@@ -283,7 +280,7 @@ class Prompt(Generic[InputT, OutputT]):
         metadata: dict[str, Any] | None = None,
         tools: Sequence[str | Tool] | None = None,
         tool_choice: ToolChoice | None = None,
-        use: Sequence[Middleware | MiddlewareRef] | None = None,
+        use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,
         name: str | None = None,
         ns: str | None = None,
@@ -434,7 +431,7 @@ class Prompt(Generic[InputT, OutputT]):
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        on_chunk: ModelStreamingCallback | None = None,
+        on_chunk: Callable[[ModelResponseChunk], Any] | None = None,
     ) -> ModelResponse[OutputT]:
         """Render the prompt with ``input`` as template variables, run it, and return the response.
 
@@ -464,7 +461,7 @@ class Prompt(Generic[InputT, OutputT]):
         *,
         input: InputT | dict[str, Any] | None,
         opts: PromptGenerateOptions,
-        on_chunk: ModelStreamingCallback | None,
+        on_chunk: Callable[[ModelResponseChunk], Any] | None,
         caller_stopped: asyncio.Event | None,
     ) -> ModelResponse[OutputT]:
         async def run() -> ModelResponse:

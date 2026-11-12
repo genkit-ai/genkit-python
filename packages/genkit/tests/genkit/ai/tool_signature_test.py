@@ -575,7 +575,7 @@ async def test_tool_with_typed_dict_input_receives_dict() -> None:
     assert seen == [{'city': 'Paris', 'days': 3}]
     assert _tool_output(response) == '3 days in Paris'
     with pytest.raises(GenkitError) as exc:
-        await forecast({'city': 'Paris'})  # ty: ignore[missing-typed-dict-key]
+        await forecast({'city': 'Paris'})
     assert exc.value.status == 'INVALID_ARGUMENT'
 
 

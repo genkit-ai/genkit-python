@@ -28,13 +28,13 @@ async def test_run_with_positional_on_chunk_raises_type_error() -> None:
     chunks: list[str] = []
 
     with pytest.raises(TypeError, match='positional argument'):
-        await _kitchen().run('salmon', chunks.append)  # pyright: ignore[reportCallIssue]  # ty: ignore[too-many-positional-arguments]  # pyrefly: ignore[bad-argument-count]
+        await _kitchen().run('salmon', chunks.append)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]
 
 
 def test_stream_with_positional_context_raises_type_error() -> None:
     """`stream(input, context)` raises TypeError; context is keyword-only."""
     with pytest.raises(TypeError, match='positional argument'):
-        _kitchen().stream('salmon', {'table': 4})  # pyright: ignore[reportCallIssue]  # ty: ignore[too-many-positional-arguments]  # pyrefly: ignore[bad-argument-count]
+        _kitchen().stream('salmon', {'table': 4})  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]
 
 
 async def _table_echo(init: str, inputs: AsyncIterator[str], send_chunk: Callable[[str], None]) -> dict[str, Any]:
@@ -71,7 +71,7 @@ async def test_run_rejects_public_abort_signal_kwarg() -> None:
     abort = asyncio.Event()
 
     with pytest.raises(TypeError, match='abort_signal'):
-        await _kitchen().run('salmon', abort_signal=abort)  # pyright: ignore[reportCallIssue]  # ty: ignore[unknown-argument]  # pyrefly: ignore[unexpected-keyword]
+        await _kitchen().run('salmon', abort_signal=abort)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[unexpected-keyword]
 
 
 def test_stream_rejects_public_abort_signal_kwarg() -> None:
@@ -79,7 +79,7 @@ def test_stream_rejects_public_abort_signal_kwarg() -> None:
     abort = asyncio.Event()
 
     with pytest.raises(TypeError, match='abort_signal'):
-        _kitchen().stream('salmon', abort_signal=abort)  # pyright: ignore[reportCallIssue]  # ty: ignore[unknown-argument]  # pyrefly: ignore[unexpected-keyword]
+        _kitchen().stream('salmon', abort_signal=abort)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[unexpected-keyword]
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,11 @@ from pydantic.alias_generators import to_camel
 import genkit
 import genkit.web
 from genkit import FlowContext, Genkit, PublicError
+
+# to_error_details and AgentOutput are private: this test pins the served wire shape.
+from genkit._ai._agents._runtime import to_error_details  # noqa: TID251
+from genkit._core._model import AgentOutput  # noqa: TID251
+from genkit._core._typing import AgentFinishReason  # noqa: TID251
 from genkit.plugin_api import Action
 from genkit.web import error_json, error_sse, read_body, result_json, to_sse, wants_stream
 
@@ -129,6 +134,23 @@ def test_wants_stream_on_event_stream_accept_or_stream_true() -> None:
     assert wants_stream(accept=None, stream=None) is False
 
 
+def test_result_json_redacts_a_failed_agent_turn_unless_public() -> None:
+    """Flask, Django and FastAPI all send result_json, so a failed turn's error leaves the process redacted."""
+    # to_error_details is the runtime's own Failure builder; it marks a PublicError.
+    private = AgentOutput(finish_reason='failed', error=to_error_details(ValueError('db password=hunter2')))
+    public = AgentOutput(finish_reason='failed', error=to_error_details(PublicError('NOT_FOUND', 'no order A-17')))
+
+    assert result_json(private) == (
+        '{"result":{"finishReason":"failed","error":{"status":"INTERNAL","message":"Internal Error"}}}'
+    )
+    assert result_json(public) == (
+        '{"result":{"finishReason":"failed","error":{"status":"NOT_FOUND","message":"no order A-17"}}}'
+    )
+    # The object itself still carries the text for in-process callers.
+    assert private.error is not None
+    assert private.error.message == 'db password=hunter2'
+
+
 def test_result_json_encodes_nested_models_by_alias_without_none_fields() -> None:
     """result_json emits compact camelCase JSON for nested models while preserving plain-dict nulls."""
     order_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
@@ -158,6 +180,32 @@ def test_error_json_and_error_sse_preserve_public_errors_and_redact_internal_one
     )
     assert error_json(secret) == '{"message":"Internal Error","status":"INTERNAL"}'
     assert error_sse(secret) == 'data: {"error":{"message":"Internal Error","status":"INTERNAL"}}\n\n'
+
+
+def test_genkit_env_dev_serves_the_real_error_text_like_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under GENKIT_ENV=dev a local curl sees the cause, like Go's wire.ClientMessage; statuses don't change."""
+    # 1. Dev mode, as `genkit start` sets it
+    monkeypatch.setenv('GENKIT_ENV', 'dev')
+
+    # 2. A failed agent turn keeps its own text and status
+    private = AgentOutput(
+        finish_reason=AgentFinishReason.FAILED, error=to_error_details(ValueError('db password=hunter2'))
+    )
+    not_found = AgentOutput(
+        finish_reason=AgentFinishReason.FAILED,
+        error=to_error_details(genkit.GenkitError(status='NOT_FOUND', message='no row for order A-17')),
+    )
+    assert result_json(private) == (
+        '{"result":{"finishReason":"failed","error":{"status":"INTERNAL","message":"db password=hunter2"}}}'
+    )
+    assert result_json(not_found) == (
+        '{"result":{"finishReason":"failed","error":{"status":"NOT_FOUND","message":"no row for order A-17"}}}'
+    )
+
+    # 3. A failed flow keeps its text and cause, still a 500 INTERNAL
+    crash = genkit.GenkitError(status='INTERNAL', message='model call failed', cause=ValueError('quota exceeded'))
+    assert error_json(crash) == '{"message":"model call failed: quota exceeded","status":"INTERNAL"}'
+    assert error_sse(RuntimeError('pg down')) == 'data: {"error":{"message":"pg down","status":"INTERNAL"}}\n\n'
 
 
 @pytest.mark.asyncio

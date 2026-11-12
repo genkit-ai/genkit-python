@@ -183,15 +183,108 @@ def test_lookup_value_unknown_returns_none() -> None:
     assert ai.lookup_value(kind='other-kind', name='banner') is None
 
 
-def test_define_value_same_name_twice_raises() -> None:
-    """Defining the same kind and name twice raises ValueError and the first value stays."""
+def test_define_value_same_name_twice_overwrites() -> None:
+    """Re-running a notebook cell redefines the value instead of raising."""
     ai = Genkit()
     ai.define_value(kind='catalog', name='banner', value='first')
+    ai.define_value(kind='catalog', name='banner', value='second')
 
-    with pytest.raises(ValueError, match='already registered'):
-        ai.define_value(kind='catalog', name='banner', value='second')
+    assert ai.lookup_value(kind='catalog', name='banner') == 'second'
 
-    assert ai.lookup_value(kind='catalog', name='banner') == 'first'
+
+def test_define_schema_same_name_twice_overwrites() -> None:
+    from pydantic import BaseModel
+
+    class Dish(BaseModel):
+        name: str
+
+    class DishV2(BaseModel):
+        name: str
+        allergens: list[str]
+
+    ai = Genkit()
+    ai.define_schema('Dish', Dish)
+    ai.define_schema('Dish', DishV2)
+
+    assert ai._registry.lookup_schema_type('Dish') is DishV2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_middleware_registration_raises() -> None:
+    """Middleware collisions raise instead of letting the last registration silently win."""
+
+    class PluginRetry(Middleware):
+        name = 'retry'
+        description = 'Plugin retry middleware.'
+
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: NextModel,
+        ) -> ModelResponse:
+            res = await next_fn(params, ctx)
+            return _answer(f'plugin:{res.text}')
+
+    class AppRetry(Middleware):
+        name = 'retry'
+        description = 'Conflicting app retry middleware.'
+
+    class MiddlewarePlugin(Plugin):
+        def __init__(self, plugin_name: str, mw_cls: type[Middleware]) -> None:
+            self.name = plugin_name
+            self._mw_cls = mw_cls
+
+        async def init(self) -> list[Action]:
+            return []
+
+        async def resolve(self, action_type: ActionKind, name: str) -> Action | None:
+            return None
+
+        async def list_actions(self) -> list[Action]:
+            return []
+
+        def list_middleware(self) -> list[type[Middleware]]:
+            return [self._mw_cls]
+
+    with pytest.raises(ValueError, match='value for kind "middleware" and name "retry" is already registered'):
+        Genkit(plugins=[MiddlewarePlugin('first-mw', PluginRetry), MiddlewarePlugin('second-mw', AppRetry)])
+
+    ai = Genkit(plugins=[MiddlewarePlugin('first-mw', PluginRetry)])
+    _define_answering_model(ai, 'kitchen', 'salmon')
+
+    with pytest.raises(ValueError, match='value for kind "middleware" and name "retry" is already registered'):
+        ai.define_middleware(AppRetry)
+
+    util = await ai._registry.resolve_action(ActionKind.UTIL, 'generate')  # pyright: ignore[reportPrivateUsage]
+    assert util is not None
+    out = await util.run(
+        GenerateActionOptions(
+            model='kitchen',
+            messages=[Message(role=Role.USER, content=[Part.from_text('dish?')])],
+            use=[MiddlewareRef(name='retry')],
+        )
+    )
+    assert out.response.text == 'plugin:salmon'
+
+
+def test_duplicate_format_registration_raises() -> None:
+    """Registering a format under an existing name raises instead of overwriting."""
+    from genkit.formats import FormatHandler, Formatter, FormatterConfig
+
+    class DuplicateJsonFormat(Formatter):
+        def __init__(self) -> None:
+            super().__init__('json', FormatterConfig(content_type='application/json'))
+
+        def handle(self, schema: dict[str, object] | None) -> FormatHandler[str, str]:
+            return FormatHandler(
+                message_parser=lambda msg: msg.text,
+                chunk_parser=lambda chunk: chunk.text,
+            )
+
+    ai = Genkit()
+    with pytest.raises(ValueError, match='value for kind "format" and name "json" is already registered'):
+        ai.define_format(DuplicateJsonFormat())
 
 
 def test_define_value_requires_keywords() -> None:

@@ -168,7 +168,7 @@ response = await ai.generate(
 )
 ```
 
-Skills are discovered by scanning for directories containing `SKILL.md` files. Each `SKILL.md` can have optional YAML frontmatter:
+Each direct subdirectory of a skill path that holds a `SKILL.md` is a skill, named after the directory (`skills/python-expert/SKILL.md` is `python-expert`). Frontmatter `description` shows up in the catalog; frontmatter `name` doesn't rename the skill:
 
 ```markdown
 ---
@@ -178,6 +178,8 @@ description: Expert Python programming assistance
 
 You are an expert Python programmer...
 ```
+
+When two skill paths hold the same name, the later path wins. A symlinked skill directory is followed, so `skills/plating -> ~/shared/plating` works. A `SKILL.md` that is itself a symlink, not a regular file, or over 1 MiB isn't read.
 
 ### Filesystem
 
@@ -205,6 +207,8 @@ Provides four tools:
 - `read_file`: Read file content
 - `write_file`: Write to a file (requires `allow_write_access=True`)
 - `edit_file`: Edit file with string replacements (requires `allow_write_access=True`)
+
+Paths resolve against `root_dir`. An absolute path works only if it already points inside the root; `/etc/hosts` is refused, not read as `{root}/etc/hosts`. Symlinks are resolved first, so a link out of the root is refused and left out of `list_files`. Tool errors come back as the tool response with the host root path removed.
 
 ### Artifacts
 

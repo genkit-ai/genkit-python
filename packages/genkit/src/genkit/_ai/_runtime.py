@@ -24,7 +24,7 @@ import os
 import signal
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import FrameType, TracebackType
@@ -36,6 +36,37 @@ from genkit._core._reflection import ServerSpec
 logger = get_logger(__name__)
 
 DEFAULT_RUNTIME_DIR_NAME = '.genkit/runtimes'
+
+# Same list as the CLI's ``findProjectRoot`` (genkit-tools/common/src/utils/utils.ts).
+# The CLI reads ``.genkit/runtimes`` under that root, so the runtime file has to
+# land there too.
+PROJECT_ROOT_MARKERS: tuple[str, ...] = (
+    'package.json',
+    'go.mod',
+    'pyproject.toml',
+    'requirements.txt',
+    'pom.xml',
+    'build.gradle',
+    'build.gradle.kts',
+    'pubspec.yaml',
+)
+
+
+def find_project_root(start: Path | None = None) -> Path:
+    """Nearest ancestor of ``start`` (default cwd) holding a project marker.
+
+    Mirrors the CLI: walk up from cwd, stop before the filesystem root, and
+    fall back to cwd when no marker is found.
+    """
+    cwd = Path(start) if start is not None else Path.cwd()
+    current = cwd
+    while current != Path(current.anchor):
+        if any((current / marker).exists() for marker in PROJECT_ROOT_MARKERS):
+            return current
+        current = current.parent
+    return cwd
+
+
 ACTIVE_CLEANUPS: list[Callable[[], None]] = []
 # RLock so a SIGINT/SIGTERM mid-update can re-enter: signal handlers run on the
 # main thread, and a plain Lock would deadlock if that thread already holds it.
@@ -82,8 +113,13 @@ def setup_signal_handlers() -> None:
         pass
 
 
-def _remove_file(file_path: Path | None) -> bool:
+def _remove_file(file_path: Path | None, created_dirs: Sequence[Path] = ()) -> bool:
     """Synchronously attempts to delete the file.
+
+    Args:
+        file_path: The runtime file to delete.
+        created_dirs: Directories this process created for the file, innermost
+            first; each is removed if it is left empty.
 
     Returns:
         True if cleanup was successful or file didn't exist, False on error.
@@ -94,17 +130,35 @@ def _remove_file(file_path: Path | None) -> bool:
     try:
         if file_path.exists():
             file_path.unlink()
+        _remove_empty_dirs(created_dirs)
         return True
     except Exception as e:
         print(f'Error deleting {file_path}: {e}')  # noqa: T201 - atexit handler, logger unavailable
         return False
 
 
-def _register_atexit_cleanup_handler(path_to_remove: Path | None) -> None:
+def _remove_empty_dirs(created_dirs: Sequence[Path]) -> None:
+    """Drop the runtime directories this process created, if left empty.
+
+    Only directories that did not exist on entry are removed. ``genkit start``
+    creates and watches ``.genkit/runtimes`` before it spawns the app; removing
+    and recreating that directory leaves the CLI's watcher blind to the next
+    runtime file. ``rmdir`` only removes an empty directory, so another
+    runtime's file or the CLI's traces keep them in place.
+    """
+    for directory in created_dirs:
+        try:
+            directory.rmdir()
+        except OSError:
+            return
+
+
+def _register_atexit_cleanup_handler(path_to_remove: Path | None, created_dirs: Sequence[Path] = ()) -> None:
     """Defines and registers the synchronous atexit cleanup handler for a path.
 
     Args:
         path_to_remove: The path to the file that needs cleanup.
+        created_dirs: Directories this process created, removed if left empty.
     """
     if not path_to_remove:
         logger.warning('Cannot register atexit cleanup: runtime file path not set.')
@@ -112,7 +166,7 @@ def _register_atexit_cleanup_handler(path_to_remove: Path | None) -> None:
 
     def sync_cleanup() -> None:
         # TODO(#4335): Neither print nor logger appears to work during atexit.
-        _ = _remove_file(path_to_remove)
+        _ = _remove_file(path_to_remove, created_dirs)
 
     logger.debug(f'Registering synchronous atexit cleanup for {path_to_remove}')
     _ = atexit.register(sync_cleanup)
@@ -204,7 +258,8 @@ class RuntimeManager:
         Args:
             spec: The server specification for the reflection server.
             runtime_dir: The directory to store the runtime file in.
-                         Defaults to .genkit/runtimes in the current directory.
+                         Defaults to .genkit/runtimes under the project root,
+                         found the same way the CLI finds it.
             lazy_write: If True, the runtime file will not be written immediately
                         on context entry. It must be written manually by calling
                         write_runtime_file().
@@ -213,18 +268,25 @@ class RuntimeManager:
         self.spec: ServerSpec = spec
         self._secret: str | None = secret
         if runtime_dir is None:
-            self._runtime_dir: Path = Path(Path.cwd()) / DEFAULT_RUNTIME_DIR_NAME
+            self._runtime_dir: Path = find_project_root() / DEFAULT_RUNTIME_DIR_NAME
         else:
             self._runtime_dir = Path(runtime_dir)
 
         self.lazy_write: bool = lazy_write
         self._runtime_file_path: Path | None = None
+        # Runtime directories this manager created, innermost first.
+        self._created_dirs: list[Path] = []
+
+    def _ensure_runtime_dir(self) -> None:
+        """Create the runtime directory, remembering which levels were new."""
+        self._created_dirs = [d for d in (self._runtime_dir, self._runtime_dir.parent) if not d.exists()]
+        _ = self._runtime_dir.mkdir(parents=True, exist_ok=True)
 
     async def __aenter__(self) -> RuntimeManager:
         """Create the runtime directory and file."""
         try:
             logger.debug(f'Ensuring runtime directory exists: {self._runtime_dir}')
-            _ = self._runtime_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_runtime_dir()
             if not self.lazy_write:
                 _ = self.write_runtime_file()
 
@@ -257,7 +319,7 @@ class RuntimeManager:
         """Synchronous entry point: Create the runtime directory and file."""
         try:
             logger.debug(f'[sync] Ensuring runtime directory exists: {self._runtime_dir}')
-            _ = self._runtime_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_runtime_dir()
             if not self.lazy_write:
                 _ = self.write_runtime_file()
 
@@ -297,7 +359,7 @@ class RuntimeManager:
             return self._runtime_file_path
 
         self._runtime_file_path = _create_and_write_runtime_file(self._runtime_dir, self.spec, self._secret)
-        _register_atexit_cleanup_handler(self._runtime_file_path)
+        _register_atexit_cleanup_handler(self._runtime_file_path, self._created_dirs)
         with ACTIVE_CLEANUPS_LOCK:
             ACTIVE_CLEANUPS.append(self.cleanup)
         return self._runtime_file_path
@@ -310,5 +372,8 @@ class RuntimeManager:
 
         if self._runtime_file_path:
             logger.debug(f'Cleaning up runtime file: {self._runtime_file_path}')
-            _ = _remove_file(self._runtime_file_path)
+            _ = _remove_file(self._runtime_file_path, self._created_dirs)
             self._runtime_file_path = None
+        else:
+            # lazy_write: the directory exists but no file was ever written.
+            _remove_empty_dirs(self._created_dirs)

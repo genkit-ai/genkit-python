@@ -182,6 +182,8 @@ jobs:
           mkdir -p "$SPEC_DIR"
           curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/agent.yaml -o "$SPEC_DIR/agent.yaml"
           curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/generate.yaml -o "$SPEC_DIR/generate.yaml"
+          curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/specs/reflection_api.yaml -o "$SPEC_DIR/reflection_api.yaml"
+          curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/tests/flow_server_tests.yaml -o "$SPEC_DIR/flow_server_tests.yaml"
           curl -sSfL https://raw.githubusercontent.com/genkit-ai/genkit/main/genkit-tools/genkit-schema.json -o "$SPEC_DIR/genkit-schema.json"
           echo "GENKIT_SPECS_DIR=$SPEC_DIR" >> "$GITHUB_ENV"
 

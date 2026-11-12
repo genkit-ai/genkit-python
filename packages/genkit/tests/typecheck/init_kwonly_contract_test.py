@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Callable
 
 import pytest
 
-from genkit import FlowContext, Genkit, Prompt, ToolContext
+from genkit import ErrorReason, FlowContext, Genkit, Prompt, PublicError, ToolContext
 from genkit._core._action import ActionRunContext, BidiAction
 from genkit.exp.agent import AgentContext
 from genkit.middleware import MiddlewareContext
@@ -93,12 +93,18 @@ def test_keyword_only_constructors_accept_documented_shapes() -> None:
         context={'table': 4},
         telemetry_labels={'service': 'dining'},
     )
+    pub_err = PublicError(
+        'NOT_FOUND',
+        "Snapshot 'snap-1' not found",
+        reason=ErrorReason.SNAPSHOT_NOT_FOUND,
+    )
 
     assert run_ctx.context == {'table': 4}
     assert model_ctx.context == {'table': 4}
     assert agent_ctx.context == {'table': 4}
     assert tool_ctx.is_resumed() is True
     assert mw_ctx.telemetry_labels == {'service': 'dining'}
+    assert pub_err.reason is ErrorReason.SNAPSHOT_NOT_FOUND
 
 
 def test_positional_arguments_past_star_fail_type_checkers_and_runtime() -> None:
@@ -133,6 +139,9 @@ def test_positional_arguments_past_star_fail_type_checkers_and_runtime() -> None
     with pytest.raises(TypeError, match='positional argument'):
         MiddlewareContext(ai, {'table': 4})  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
 
+    with pytest.raises(TypeError, match='positional argument'):
+        PublicError('NOT_FOUND', 'missing', None, ErrorReason.SNAPSHOT_NOT_FOUND)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
+
 
 @pytest.mark.parametrize(
     ('cls', 'positional_names'),
@@ -143,6 +152,7 @@ def test_positional_arguments_past_star_fail_type_checkers_and_runtime() -> None
         (ActionRunContext, ['self']),
         (ToolContext, ['self', 'ctx']),
         (MiddlewareContext, ['self', 'ai']),
+        (PublicError, ['self', 'status', 'message', 'details']),
     ],
 )
 def test_every_non_identity_init_param_is_keyword_only(

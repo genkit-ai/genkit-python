@@ -170,6 +170,7 @@ async def test_google_ai_sends_requests_through_your_http_client() -> None:
     ai = Genkit(plugins=[plugin])
 
     await plugin.init()
+    await plugin.list_actions()
     response = await ai.generate(model='googleai/gemini-2.5-flash', prompt='Suggest a dish.')
 
     assert response.text == 'Smoked Salmon Tartine'
@@ -185,6 +186,7 @@ async def test_vertex_ai_sends_requests_through_your_http_client() -> None:
     ai = Genkit(plugins=[plugin])
 
     await plugin.init()
+    await plugin.list_actions()
     response = await ai.generate(
         model='vertexai/gemini-2.5-flash',
         prompt='Suggest a dish.',
@@ -585,7 +587,8 @@ async def test_veo_start_and_check_overrides_use_http_client_factory(monkeypatch
 
     assert done.done is True
     assert isinstance(done.output, ModelResponse)
-    assert done.output.media[0].url == 'https://example.com/out.mp4'
+    assert done.output.media is not None
+    assert done.output.media.url == 'https://example.com/out.mp4'
     assert [
         (r.method, str(r.url), r.headers['x-team'])
         for r in api.requests

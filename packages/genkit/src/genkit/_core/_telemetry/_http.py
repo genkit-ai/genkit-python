@@ -45,6 +45,7 @@ from ._instrumentation import (
     SpanMetadata,
     SpanNext,
     configure_instrumentation,
+    instrumentations,
     is_instrumented_by,
     parent_path_context,
     span_is_action,
@@ -353,6 +354,21 @@ def connect_developer_ui_collector(*, url: str) -> None:
     if is_instrumented_by(DevUIInstrumentation):
         return
     configure_instrumentation(direct_http_for_collector(url=url))
+
+
+def flush_developer_ui_collector() -> None:
+    """Drain the local HTTP trace poster before a run response returns its trace id.
+
+    Flushes ``DirectHttpInstrumentation`` (``DevUIInstrumentation``) only; remote
+    APM backends (``GenAiInstrumentation``, Cloud Trace, custom providers) stay
+    isolated from interactive Dev UI clicks.
+    """
+    for inst in list(instrumentations):
+        if isinstance(inst, DirectHttpInstrumentation):
+            try:
+                inst.flush()
+            except Exception as e:
+                logger.debug('Failed to flush Developer UI trace collector: %s', e)
 
 
 def maybe_inject_dev_instrumentation() -> None:

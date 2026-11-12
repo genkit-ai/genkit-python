@@ -62,7 +62,7 @@ print(await greet('Grace'))
 
 ### Dynamic Models
 
-The plugin automatically discovers available models from the API upon initialization. You can use any model name supported by the API via model reference constructors (e.g., `GoogleAI.gemini('gemini-flash-latest')`, `VertexAI.gemini('gemini-3.1-pro-preview')`).
+The plugin registers a static catalog of known models at startup, with no network call, so a rate-limited or offline project still starts. Any other model id resolves by name on first use. The live model list is fetched only when the Dev UI lists actions, then cached for the process. You can use any model name supported by the API via model reference constructors (e.g., `GoogleAI.gemini('gemini-flash-latest')`, `VertexAI.gemini('gemini-3.1-pro-preview')`).
 
 ### Typed config
 

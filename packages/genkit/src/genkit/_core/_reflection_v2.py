@@ -59,8 +59,7 @@ from genkit._core._model import AgentInput, ModelRef
 from genkit._core._reflection import as_agent_input_dict, resolve_agent_init, resolve_runnable_key
 from genkit._core._reflection_config import REFLECTION_AUTH_ERROR_CODE
 from genkit._core._registry import Registry
-from genkit._core._telemetry._http import connect_developer_ui_collector
-from genkit._core._telemetry._instrumentation import flush_instrumentations
+from genkit._core._telemetry._http import connect_developer_ui_collector, flush_developer_ui_collector
 from genkit._core._telemetry._log_exporter import enable_log_export
 from genkit._core._typing import (
     ReflectionCancelActionParams,
@@ -79,6 +78,7 @@ from genkit._core._typing import (
 logger = get_logger(__name__)
 
 GENKIT_REFLECTION_API_SPEC_VERSION = 1
+_MAX_MESSAGE_BYTES = 100 * 1024 * 1024
 
 JSON_RPC_METHOD_NOT_FOUND = -32601
 JSON_RPC_INVALID_PARAMS = -32602
@@ -179,6 +179,9 @@ class ReflectionServerV2:
                     self.ws_url,
                     ping_interval=20,
                     ping_timeout=20,
+                    # websockets defaults to 1 MiB; one screenshot in runAction or
+                    # GoogleAI's listActions exceeds that. Match the CLI's 100 MiB.
+                    max_size=_MAX_MESSAGE_BYTES,
                 ) as ws:
                     self.ws = ws
                     attempt = 0
@@ -288,6 +291,9 @@ class ReflectionServerV2:
             envs=['dev'],
             secret=self.secret,
         ).model_dump(by_alias=True, exclude_none=True)
+        # The generated schema types these as float; send integers like JS.
+        params['pid'] = os.getpid()
+        params['reflectionApiSpecVersion'] = GENKIT_REFLECTION_API_SPEC_VERSION
         try:
             result = await self.send_request('register', params)
             if isinstance(result, dict) and (telemetry_url := result.get('telemetryServerUrl')):
@@ -441,7 +447,10 @@ class ReflectionServerV2:
         stream.close()
 
     async def flush_tracing(self) -> None:
-        await asyncio.to_thread(flush_instrumentations)
+        try:
+            await asyncio.to_thread(flush_developer_ui_collector)
+        except Exception as e:
+            logger.debug('Failed to flush Developer UI trace collector: %s', e)
 
     @staticmethod
     def run_action_call_options(
@@ -532,6 +541,7 @@ class ReflectionServerV2:
             message=coerce_json_rpc_message(ref.message),
             details=ReflectionErrorDetails(stack=stack, trace_id=tid) if (stack or tid) else None,
         )
+        await self.flush_tracing()
         await self.send_error(
             sid,
             JSON_RPC_SERVER_ERROR,

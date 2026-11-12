@@ -1389,12 +1389,16 @@ def log_dropped_failure(
     agent: str | None = None,
     redacted: bool = False,
 ) -> bool:
-    """Log a failure whose cause boxing or the agent wire hides.
+    """Log an unraised turn failure boxed onto ``ModelResponse`` or redacted on the agent wire.
 
-    ``generate`` only hides failures that collapse to ``internal error``; a
-    served agent's wire (``client_safe_failure``) hides every non-``PublicError``
-    message and passes ``redacted=True``. Returns True once ``exc`` has been
-    logged (on this call or an earlier inner one).
+    ``generate()`` returns ``finish_reason=failed`` instead of raising once a
+    turn has started, so callers reading ``response.text`` would otherwise get
+    an empty string with no log output. ``PublicError`` is an intentional
+    caller-facing rejection on ``response.error`` and is not logged. A served
+    agent's wire (``client_safe_failure``) hides every message not raised as a
+    ``PublicError`` itself and passes ``redacted=True``, so a ``PublicError``
+    wrapped as a cause is still logged there. Returns True once ``exc`` has
+    been logged (on this call or an earlier inner one).
 
     Args:
         exc: The exception about to be boxed.
@@ -1402,12 +1406,12 @@ def log_dropped_failure(
         tool: Tool that raised, when known. Named over ``model``.
         agent: Agent whose turn raised, when known. ``tool`` and ``model``
             are named over it.
-        redacted: Caller's boundary hides ``exc`` even when ``generate``'s
-            in-process finish message would keep its text.
+        redacted: Caller's boundary hides ``exc`` even when it wraps a
+            ``PublicError`` cause.
     """
     if getattr(exc, _LOGGED_ATTR, False):
         return True
-    if not redacted and boxed_finish_message(exc=exc, pipe_failed=False) != INTERNAL_FINISH_MESSAGE:
+    if not redacted and public_error(exc) is not None:
         return False
     mark_failure_logged(exc)
     fields: dict[str, object] = {}
@@ -1420,6 +1424,13 @@ def log_dropped_failure(
     span = current_span.get()
     if span is not None and span.trace_id:
         fields['trace_id'] = span.trace_id
+    message = str(exc)
+    fields['error'] = f'{type(exc).__name__}: {message}' if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        fields['at'] = f'{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
     if tool:
         culprit = f'tool {tool!r}'
     elif model:
@@ -1428,7 +1439,13 @@ def log_dropped_failure(
         culprit = f'agent {agent!r}'
     else:
         culprit = 'agent' if redacted else 'generate'
-    logger.error('%s raised, returning finish_reason=failed', culprit, exc_info=exc, **fields)
+    # one line, no traceback: a pretty-printed traceback with locals costs
+    # hundreds of ms per failed turn and dumps frame locals into the logs.
+    logger.error('%s raised, returning finish_reason=failed', culprit, **fields)
+    # The box hides the cause and no span keeps the stack, so a bug in Genkit
+    # or a plugin would otherwise leave no traceback anywhere. GENKIT_LOG=debug
+    # brings it back.
+    logger.debug('%s failure details', culprit, exc_info=exc, **fields)
     return True
 
 

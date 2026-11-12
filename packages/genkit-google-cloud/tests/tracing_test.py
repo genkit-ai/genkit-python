@@ -16,6 +16,9 @@
 
 """What enable_google_cloud_telemetry() does to Cloud Trace and the Developer UI."""
 
+import io
+import json
+import math
 import os
 from collections.abc import Generator
 from typing import Any
@@ -23,18 +26,23 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
+import structlog
 from genkit_google_cloud import enable_google_cloud_telemetry
 from genkit_google_cloud._telemetry._config import GcpTelemetry, _adc_project_id
+from genkit_google_cloud._telemetry._metrics_exporter import GenkitMetricExporter
 from genkit_google_cloud._telemetry._tracing import _reset_google_cloud_telemetry
 from genkit_otel import GenAiInstrumentation
 from google.auth.exceptions import DefaultCredentialsError
 from opentelemetry import _logs
+from opentelemetry.exporter.cloud_monitoring import CloudMonitoringMetricsExporter
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import AggregationTemporality, MetricExportResult, PeriodicExportingMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
-from genkit import GenkitError
+from genkit import GenkitError, get_logger
 from genkit.telemetry import (
     configure_instrumentation,
     is_instrumented_by,
@@ -44,6 +52,17 @@ from genkit.telemetry import (
 _GENKIT_ENV = 'GENKIT_ENV'
 _ENV_DEV = 'dev'
 _ENV_PROD = 'prod'
+
+
+def _service_account_key(project_id: str) -> dict[str, str]:
+    """A service-account key dict with every field google-auth requires; the key itself is fake."""
+    return {
+        'type': 'service_account',
+        'project_id': project_id,
+        'private_key': '-----BEGIN PRIVATE KEY-----\nsecret-key-material\n-----END PRIVATE KEY-----\n',
+        'client_email': f'telemetry@{project_id}.iam.gserviceaccount.com',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -420,7 +439,7 @@ def _exporter_project(mock_ctor: MagicMock) -> str | None:
         ),
         pytest.param(
             {'FIREBASE_PROJECT_ID': 'firebase-proj'},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'creds-proj',
             id='firebase_ignored_credentials_win',
         ),
@@ -450,13 +469,13 @@ def _exporter_project(mock_ctor: MagicMock) -> str | None:
         ),
         pytest.param(
             {'GOOGLE_CLOUD_PROJECT': 'gcp-proj'},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'gcp-proj',
             id='google_cloud_project_beats_credentials',
         ),
         pytest.param(
             {},
-            {'credentials': {'project_id': 'creds-proj'}},
+            {'credentials': _service_account_key('creds-proj')},
             'creds-proj',
             id='credentials_are_last_fallback',
         ),
@@ -485,6 +504,7 @@ def test_enable_sends_traces_metrics_and_logs_to_the_resolved_cloud_project(
         patch('genkit_google_cloud._telemetry._config.GenkitMetricExporter'),
         patch('genkit_google_cloud._telemetry._config.PeriodicExportingMetricReader'),
         patch('genkit_google_cloud._telemetry._config.metrics'),
+        patch('genkit_google_cloud._telemetry._config.ServiceAccountCredentials'),
     ):
         enable_google_cloud_telemetry(**kwargs)
     assert _exporter_project(traces) == expected
@@ -592,23 +612,25 @@ def test_adc_project_id_is_none_without_default_credentials() -> None:
 
 
 def test_enable_google_cloud_telemetry_is_fail_safe() -> None:
-    """A Cloud Trace auth failure does not crash the process."""
+    """Cloud Trace and Cloud Monitoring auth failures do not crash the process."""
     with (
         mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}),
         patch(
             'genkit_google_cloud._telemetry._config.GenkitGCPExporter',
-            side_effect=Exception('Auth failed'),
+            side_effect=Exception('Trace auth failed'),
         ),
-        patch('genkit_google_cloud._telemetry._config.handle_tracing_error') as mock_handler,
+        patch('genkit_google_cloud._telemetry._config.GoogleCloudResourceDetector'),
+        patch(
+            'genkit_google_cloud._telemetry._config.CloudMonitoringMetricsExporter',
+            side_effect=Exception('Metrics auth failed'),
+        ),
+        patch('genkit_google_cloud._telemetry._config.handle_tracing_error') as mock_trace_handler,
+        patch('genkit_google_cloud._telemetry._config.handle_metric_error') as mock_metric_handler,
     ):
-        # This should NOT raise an exception
-        try:
-            enable_google_cloud_telemetry()
-        except Exception as e:
-            raise AssertionError(f'enable_google_cloud_telemetry raised an exception: {e}') from e
+        enable_google_cloud_telemetry()
 
-        # Verify error handler was called
-        mock_handler.assert_called_once()
+        mock_trace_handler.assert_called_once()
+        mock_metric_handler.assert_called_once()
 
 
 def test_enable_google_cloud_telemetry_called_twice_raises() -> None:
@@ -723,3 +745,245 @@ def test_enable_under_genkit_start_with_force_exports_on_span_end() -> None:
         assert any(isinstance(proc, SimpleSpanProcessor) for proc in _processors(isolated))
     finally:
         isolated.shutdown()
+
+
+def test_genkit_metric_exporter_hands_reader_delta_temporality() -> None:
+    """PeriodicExportingMetricReader accepts the wrapper and collects counters as DELTA."""
+    underlying = MagicMock()
+    underlying.export.return_value = MetricExportResult.SUCCESS
+    reader = PeriodicExportingMetricReader(GenkitMetricExporter(underlying), export_interval_millis=math.inf)
+    provider = MeterProvider(metric_readers=[reader])
+    try:
+        provider.get_meter('orders').create_counter('orders_placed').add(3)
+        reader.force_flush()
+
+        metrics_data = underlying.export.call_args.args[0]
+        data = metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data
+        assert data.aggregation_temporality == AggregationTemporality.DELTA
+        assert data.data_points[0].value == 3
+    finally:
+        provider.shutdown()
+
+
+def test_up_down_counter_reaches_cloud_monitoring_as_running_total() -> None:
+    """Cloud Monitoring writes up/down counters as GAUGE points, so each point is the current total."""
+    client = MagicMock()
+    client.common_project_path.return_value = 'projects/kitchen-prod'
+    client.create_metric_descriptor.side_effect = lambda request, *_, **__: request.metric_descriptor
+    cloud_exporter = CloudMonitoringMetricsExporter(project_id='kitchen-prod', client=client)
+    reader = PeriodicExportingMetricReader(GenkitMetricExporter(cloud_exporter), export_interval_millis=math.inf)
+    provider = MeterProvider(metric_readers=[reader])
+    try:
+        open_orders = provider.get_meter('kitchen').create_up_down_counter('open_orders')
+        open_orders.add(5)
+        reader.force_flush()
+        open_orders.add(1)
+        reader.force_flush()
+
+        points = [call.args[0].time_series[0].points[0] for call in client.create_time_series.call_args_list]
+        assert [point.value.int64_value for point in points] == [5, 6]
+    finally:
+        provider.shutdown()
+
+
+def test_counter_immediate_flush_keeps_end_time_after_adjusted_start_time() -> None:
+    """Adding 1ms to DELTA start_time on a sub-1ms flush never leaves end_time <= start_time."""
+    client = MagicMock()
+    client.common_project_path.return_value = 'projects/kitchen-prod'
+    client.create_metric_descriptor.side_effect = lambda request, *_, **__: request.metric_descriptor
+    cloud_exporter = CloudMonitoringMetricsExporter(project_id='kitchen-prod', client=client)
+    reader = PeriodicExportingMetricReader(GenkitMetricExporter(cloud_exporter), export_interval_millis=math.inf)
+    provider = MeterProvider(metric_readers=[reader])
+    try:
+        provider.get_meter('kitchen').create_counter('orders_placed').add(3)
+        reader.force_flush()
+
+        point = client.create_time_series.call_args.args[0].time_series[0].points[0]
+        assert point.interval.end_time > point.interval.start_time
+    finally:
+        provider.shutdown()
+
+
+def test_enable_telemetry_with_credentials_dict_creates_clients() -> None:
+    """A credentials dict becomes a client on each Cloud exporter; raw credentials never reach them."""
+    sample_creds = _service_account_key('creds-project')
+    with (
+        mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False),
+        patch('genkit_google_cloud._telemetry._config.GenkitGCPExporter') as mock_trace_exp,
+        patch('genkit_google_cloud._telemetry._config.CloudMonitoringMetricsExporter') as mock_metric_exp,
+        patch('genkit_google_cloud._telemetry._config.CloudLoggingExporter') as mock_log_exp,
+        patch('genkit_google_cloud._telemetry._config.GcpAdjustingTraceExporter'),
+        patch('genkit_google_cloud._telemetry._config._hang_exporter_on_process_tracer'),
+        patch('genkit_google_cloud._telemetry._config._hang_exporter_on_process_logger'),
+        patch('genkit_google_cloud._telemetry._config.GoogleCloudResourceDetector'),
+        patch('genkit_google_cloud._telemetry._config.GenkitMetricExporter'),
+        patch('genkit_google_cloud._telemetry._config.PeriodicExportingMetricReader'),
+        patch('genkit_google_cloud._telemetry._config.metrics'),
+        patch('genkit_google_cloud._telemetry._config.ServiceAccountCredentials') as mock_sa_creds,
+        patch('genkit_google_cloud._telemetry._config.TraceServiceClient') as mock_trace_client_cls,
+        patch('genkit_google_cloud._telemetry._config.MetricServiceClient') as mock_metric_client_cls,
+        patch('genkit_google_cloud._telemetry._config.LoggingServiceV2Client') as mock_log_client_cls,
+    ):
+        # Project must come from the credentials dict, not the developer's shell.
+        for key in ['FIREBASE_PROJECT_ID', 'GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT']:
+            os.environ.pop(key, None)
+        creds_obj = mock_sa_creds.from_service_account_info.return_value
+
+        enable_google_cloud_telemetry(credentials=sample_creds)
+
+        mock_sa_creds.from_service_account_info.assert_called_once_with(sample_creds)
+        for client_cls, exporter_cls in [
+            (mock_trace_client_cls, mock_trace_exp),
+            (mock_metric_client_cls, mock_metric_exp),
+            (mock_log_client_cls, mock_log_exp),
+        ]:
+            client_cls.assert_called_once_with(credentials=creds_obj)
+            kwargs = exporter_cls.call_args.kwargs
+            assert kwargs['project_id'] == 'creds-project'
+            assert kwargs['client'] is client_cls.return_value
+            assert 'credentials' not in kwargs
+
+
+@pytest.mark.parametrize(
+    ('credentials', 'expected_message'),
+    [
+        pytest.param(
+            {'type': 'service_account', 'project_id': 'orders-prod', 'private_key': 'secret-key-material'},
+            'credentials= is not a service account key; missing client_email, token_uri',
+            id='missing_fields',
+        ),
+        pytest.param({}, 'missing client_email, private_key, token_uri', id='empty_dict'),
+        pytest.param(
+            {**_service_account_key('orders-prod'), 'private_key': 'secret-key-material'},
+            'credentials= could not be loaded as a service account key',
+            id='private_key_not_pem',
+        ),
+        pytest.param(
+            'secrets/secret-key-material.json',
+            'credentials= must be a service account key dict, got str',
+            id='non_dict_string_path',
+        ),
+    ],
+)
+def test_enable_rejects_unusable_credentials_without_echoing_them(
+    credentials: Any,  # noqa: ANN401 - tests runtime rejection of non-dict inputs too
+    expected_message: str,
+) -> None:
+    """A bad credentials= raises INVALID_ARGUMENT naming fields, not values, and can be retried."""
+    with mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False):
+        with pytest.raises(GenkitError) as exc_info:
+            enable_google_cloud_telemetry(credentials=credentials)
+
+    err = exc_info.value
+    assert err.status == 'INVALID_ARGUMENT'
+    assert expected_message in str(err)
+    assert 'secret-key-material' not in str(err)
+    # No google-auth or cryptography error rides along in the exception chain.
+    assert err.__cause__ is None
+    assert err.__context__ is None or err.__suppress_context__
+
+    # Rejected before the once-per-process latch, so a fixed call goes through.
+    with (
+        mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_DEV}, clear=False),
+        patch('genkit_google_cloud._telemetry._config.ServiceAccountCredentials'),
+    ):
+        enable_google_cloud_telemetry(credentials=_service_account_key('orders-prod'))
+
+
+def test_enable_telemetry_without_credentials_passes_no_client() -> None:
+    """Without credentials=, the exporters build their own ADC clients."""
+    with (
+        mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}, clear=False),
+        patch('genkit_google_cloud._telemetry._config.GenkitGCPExporter') as mock_trace_exp,
+        patch('genkit_google_cloud._telemetry._config.CloudMonitoringMetricsExporter') as mock_metric_exp,
+        patch('genkit_google_cloud._telemetry._config.CloudLoggingExporter') as mock_log_exp,
+        patch('genkit_google_cloud._telemetry._config.GcpAdjustingTraceExporter'),
+        patch('genkit_google_cloud._telemetry._config._hang_exporter_on_process_tracer'),
+        patch('genkit_google_cloud._telemetry._config._hang_exporter_on_process_logger'),
+        patch('genkit_google_cloud._telemetry._config.GoogleCloudResourceDetector'),
+        patch('genkit_google_cloud._telemetry._config.GenkitMetricExporter'),
+        patch('genkit_google_cloud._telemetry._config.PeriodicExportingMetricReader'),
+        patch('genkit_google_cloud._telemetry._config.metrics'),
+    ):
+        enable_google_cloud_telemetry(project='orders-prod')
+
+        assert mock_trace_exp.call_args.kwargs == {'project_id': 'orders-prod'}
+        assert mock_metric_exp.call_args.kwargs == {'project_id': 'orders-prod'}
+        assert mock_log_exp.call_args.kwargs == {'project_id': 'orders-prod', 'default_log_name': 'genkit'}
+
+
+@pytest.fixture
+def _restore_structlog() -> Generator[None, None, None]:
+    saved = structlog.get_config()
+    yield
+    structlog.configure(**saved)
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+@pytest.mark.parametrize(
+    'renderer',
+    [
+        pytest.param(structlog.dev.ConsoleRenderer(), id='console'),
+        pytest.param(structlog.processors.JSONRenderer(), id='json'),
+        pytest.param(structlog.stdlib.ProcessorFormatter.wrap_for_formatter, id='stdlib_wrap_for_formatter'),
+    ],
+)
+def test_structlog_trace_processor_runs_before_the_renderer(renderer: object) -> None:
+    """The trace processor goes right before the last processor, whatever renders."""
+    # ReturnLogger takes any return shape, including wrap_for_formatter's (args, kwargs).
+    structlog.configure(
+        processors=[structlog.processors.add_log_level, renderer],
+        logger_factory=structlog.ReturnLoggerFactory(),
+    )
+
+    GcpTelemetry(project='test-proj')._configure_logging()
+
+    names = [getattr(p, '__name__', type(p).__name__) for p in structlog.get_config()['processors']]
+    assert names[-2] == '_genkit_inject_trace_context'
+    assert structlog.get_config()['processors'][-1] is renderer
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_structlog_json_line_carries_cloud_logging_trace_fields() -> None:
+    """A JSON log line inside a span carries the keys Cloud Logging uses to link it to the trace."""
+    out = io.StringIO()
+    structlog.configure(
+        processors=[structlog.processors.add_log_level, structlog.processors.JSONRenderer()],
+        logger_factory=structlog.PrintLoggerFactory(out),
+        cache_logger_on_first_use=False,
+    )
+    GcpTelemetry(project='test-proj')._configure_logging()
+
+    with TracerProvider().get_tracer('test').start_as_current_span('answer') as span:
+        get_logger('orders').info('generating answer')
+        ctx = span.get_span_context()
+
+    lines = [json.loads(raw) for raw in out.getvalue().splitlines()]
+    line = next(entry for entry in lines if entry['event'] == 'generating answer')
+    assert line['logging.googleapis.com/trace'] == f'projects/test-proj/traces/{ctx.trace_id:032x}'
+    assert line['logging.googleapis.com/spanId'] == f'{ctx.span_id:016x}'
+    assert line['logging.googleapis.com/trace_sampled'] == '1'
+
+
+@pytest.mark.usefixtures('_restore_structlog')
+def test_structlog_trace_processor_replaces_prior_closure_without_duplicating() -> None:
+    """Re-configuring with a new GcpTelemetry updates self.project instead of keeping a stale closure."""
+    out = io.StringIO()
+    structlog.configure(
+        processors=[structlog.processors.add_log_level, structlog.processors.JSONRenderer()],
+        logger_factory=structlog.PrintLoggerFactory(out),
+        cache_logger_on_first_use=False,
+    )
+    GcpTelemetry(project=None)._configure_logging()
+    GcpTelemetry(project='orders-prod')._configure_logging()
+
+    names = [getattr(p, '__name__', type(p).__name__) for p in structlog.get_config()['processors']]
+    assert names.count('_genkit_inject_trace_context') == 1
+
+    with TracerProvider().get_tracer('test').start_as_current_span('answer') as span:
+        get_logger('orders').info('generating answer')
+        ctx = span.get_span_context()
+
+    lines = [json.loads(raw) for raw in out.getvalue().splitlines()]
+    line = next(entry for entry in lines if entry['event'] == 'generating answer')
+    assert line['logging.googleapis.com/trace'] == f'projects/orders-prod/traces/{ctx.trace_id:032x}'

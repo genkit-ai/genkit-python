@@ -47,6 +47,7 @@ from genkit._core._error import (
     client_safe_failure,
     mark_logged_failure,
 )
+from genkit._core._logger import GENKIT_LOG
 from genkit._core._model import (
     AgentInit,
     AgentInput,
@@ -1753,11 +1754,12 @@ def _logged_errors(entries: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
 
 
 @pytest.mark.asyncio
-async def test_custom_agent_raising_foreign_error_keeps_text_and_logs_cause() -> None:
-    """In process, res.error keeps the ValueError's text; the cause is also logged with its traceback.
+async def test_custom_agent_raising_foreign_error_keeps_text_and_logs_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In process, res.error keeps the ValueError's text; the cause is logged on one line, traceback at debug.
 
     Redaction happens where a served agent writes to HTTP (genkit.web), not here.
     """
+    monkeypatch.setenv(GENKIT_LOG, 'debug')
     structlog.reset_defaults()
     agent = _flaky(
         Genkit(),
@@ -1775,7 +1777,12 @@ async def test_custom_agent_raising_foreign_error_keeps_text_and_logs_cause() ->
     assert len(errors) == 1
     assert errors[0]['event'] == "agent 'ordersDb' raised, returning finish_reason=failed"
     assert errors[0]['agent'] == 'ordersDb'
-    assert str(errors[0]['exc_info']) == 'db password=hunter2'
+    assert errors[0]['error'] == 'ValueError: db password=hunter2'
+    assert 'exc_info' not in errors[0]
+    details = [e for e in entries if e['event'] == "agent 'ordersDb' failure details"]
+    assert len(details) == 1
+    assert details[0]['log_level'] == 'debug'
+    assert str(details[0]['exc_info']) == 'db password=hunter2'
 
 
 @pytest.mark.asyncio
@@ -1797,7 +1804,7 @@ async def test_custom_agent_raising_genkit_error_keeps_status_and_message() -> N
     errors = _logged_errors(entries)
     assert len(errors) == 1
     assert errors[0]['agent'] == 'orderLookup'
-    assert 'no order A-17' in str(errors[0]['exc_info'])
+    assert 'no order A-17' in errors[0]['error']
 
 
 @pytest.mark.asyncio
@@ -1819,7 +1826,7 @@ async def test_custom_agent_raising_internal_genkit_error_logs_once() -> None:
     errors = _logged_errors(entries)
     assert len(errors) == 1
     assert errors[0]['agent'] == 'ordersDb'
-    assert 'db password=hunter2' in str(errors[0]['exc_info'])
+    assert 'db password=hunter2' in errors[0]['error']
 
 
 @pytest.mark.asyncio
@@ -1884,7 +1891,7 @@ async def test_prompt_agent_with_crashing_tool_logs_cause_once() -> None:
 
 @pytest.mark.asyncio
 async def test_prompt_agent_tool_genkit_error_logs_once_and_public_error_skips_log() -> None:
-    """A tool's plain GenkitError wasn't logged by generate, so the agent logs it once; a PublicError is not logged."""
+    """A tool's GenkitError is logged once at the tool site, not again by the agent; PublicError isn't logged."""
     structlog.reset_defaults()
     ai = Genkit()
     pm, _ = define_scripted_model(ai)
@@ -1913,8 +1920,8 @@ async def test_prompt_agent_tool_genkit_error_logs_once_and_public_error_skips_l
     assert private_err.status == 'NOT_FOUND'
     private_errors = _logged_errors(private_entries)
     assert len(private_errors) == 1
-    assert private_errors[0]['agent'] == 'allergyAgent'
-    assert 'secret row missing' in str(private_errors[0]['exc_info'])
+    assert private_errors[0]['tool'] == 'check_allergens'
+    assert 'secret row missing' in private_errors[0]['error']
 
     mode = 'public'
     with capture_logs() as public_entries:

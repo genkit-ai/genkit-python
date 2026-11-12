@@ -290,3 +290,60 @@ def test_poster_reuses_one_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         assert set(threading.enumerate()) - before == {sink.worker}
     finally:
         sink.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_dev_ui_run_flush_flushes_dev_ui_collector_only() -> None:
+    """Before a run response, the reflection server drains DevUIInstrumentation only, not remote APM backends."""
+
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.flushes = 0
+
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+        def shutdown(self) -> None:
+            pass
+
+    class RemoteBackend:
+        def __init__(self) -> None:
+            self.flushes = 0
+
+        async def run_in_new_span(self, metadata: Any, next: Any) -> Any:  # noqa: ANN401
+            return await next()
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    dev_sink = RecordingSink()
+    remote = RemoteBackend()
+    configure_instrumentation(DevUIInstrumentation(dev_sink))  # type: ignore[arg-type]
+    configure_instrumentation(remote)
+
+    await _handshake_server().flush_tracing()
+
+    assert dev_sink.flushes == 1
+    assert remote.flushes == 0
+
+
+@pytest.mark.asyncio
+async def test_dev_ui_run_flush_ignores_broken_collector_sink() -> None:
+    """A raising Dev UI collector sink does not fail reflection v2 flush_tracing."""
+
+    class BrokenSink:
+        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+            pass
+
+        def flush(self) -> None:
+            raise OSError('collector closed')
+
+        def shutdown(self) -> None:
+            pass
+
+    configure_instrumentation(DevUIInstrumentation(BrokenSink()))  # type: ignore[arg-type]
+
+    await _handshake_server().flush_tracing()

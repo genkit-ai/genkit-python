@@ -23,13 +23,18 @@ and initialization of tracing, metrics, and logging.
 import logging
 import os
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import structlog
 from genkit_otel import GenAiInstrumentation
 from google.auth import default as google_auth_default
+from google.auth.credentials import Credentials as GoogleCredentials
 from google.auth.exceptions import DefaultCredentialsError
+from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
+from google.cloud.monitoring_v3 import MetricServiceClient
+from google.cloud.trace_v2 import TraceServiceClient
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from opentelemetry import _logs, metrics, trace as trace_api
 from opentelemetry.exporter.cloud_logging import CloudLoggingExporter  # ty: ignore[deprecated]
 from opentelemetry.exporter.cloud_monitoring import CloudMonitoringMetricsExporter
@@ -183,10 +188,46 @@ def resolve_project(
             return env_value
 
     # Check credentials for project_id
-    if credentials and 'project_id' in credentials:
-        return credentials['project_id']
+    if credentials and isinstance(credentials, Mapping):
+        project_id = credentials.get('project_id')
+        if project_id:
+            return str(project_id)
 
     return None
+
+
+# Keys google-auth needs to build service-account credentials from a dict.
+_SERVICE_ACCOUNT_REQUIRED_FIELDS = ('client_email', 'private_key', 'token_uri')
+
+
+def _load_service_account_credentials(info: dict[str, Any]) -> GoogleCredentials:
+    """Build service-account credentials from ``credentials=``, or raise INVALID_ARGUMENT.
+
+    Messages name fields and types, never values: the argument may hold a private key.
+    """
+    if not isinstance(info, Mapping):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'credentials= must be a service account key dict, got {type(info).__name__}',
+        )
+    missing = [field for field in _SERVICE_ACCOUNT_REQUIRED_FIELDS if not info.get(field)]
+    if missing:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'credentials= is not a service account key; missing {", ".join(missing)}',
+        )
+    try:
+        return ServiceAccountCredentials.from_service_account_info(dict(info))
+    except Exception as e:
+        # google-auth and cryptography errors are dropped (from None) so no part of
+        # the key can reach a log line through the exception chain.
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=(
+                f'credentials= could not be loaded as a service account key ({type(e).__name__}); '
+                'check that private_key is the PEM key from the downloaded JSON key file'
+            ),
+        ) from None
 
 
 def _adc_project_id() -> str | None:
@@ -226,7 +267,8 @@ class GcpTelemetry:
 
         Args:
             project: GCP project ID.
-            credentials: Optional credentials dict.
+            credentials: Optional service-account key dict. Parsed here, so a
+                bad key raises ``INVALID_ARGUMENT`` before anything is installed.
             sampler: Trace sampler.
             force_dev_export: Check to force export in dev environment.
             disable_metrics: If True, metrics are not exported.
@@ -235,6 +277,7 @@ class GcpTelemetry:
             metric_export_timeout_ms: Export timeout in ms.
         """
         self.credentials = credentials
+        self._google_credentials = _load_service_account_credentials(credentials) if credentials is not None else None
         self.sampler = sampler
         self.force_dev_export = force_dev_export
         self.disable_metrics = disable_metrics
@@ -266,17 +309,20 @@ class GcpTelemetry:
 
         self.metric_export_timeout_ms = metric_export_timeout_ms or self.metric_export_interval_ms
 
-    def _build_exporter_kwargs(self) -> dict[str, Any]:
-        """Build kwargs for the OTel Cloud exporters, which take ``project_id``.
+    def _build_exporter_kwargs(self, client_cls: Callable[..., object]) -> dict[str, Any]:
+        """Build kwargs for an OTel Cloud exporter, which takes ``project_id`` and ``client``.
+
+        The exporters have no ``credentials`` argument, so explicit credentials
+        ride on a ``client_cls(credentials=...)`` instance instead.
 
         Returns:
-            A dict with project_id and/or credentials if available, empty dict otherwise.
+            A dict with project_id and client if available, empty dict otherwise.
         """
         kwargs: dict[str, Any] = {}
         if self.project:
             kwargs['project_id'] = self.project
-        if self.credentials:
-            kwargs['credentials'] = self.credentials
+        if self._google_credentials is not None:
+            kwargs['client'] = client_cls(credentials=self._google_credentials)
         return kwargs
 
     def initialize(self) -> None:
@@ -319,11 +365,11 @@ class GcpTelemetry:
         """Stamp Cloud Logging trace correlation fields on structlog events."""
         try:
             current_config = structlog.get_config()
-            processors = list(current_config.get('processors', []))
-
-            # Early return if already configured
-            if any(getattr(p, '__name__', '') == '_genkit_inject_trace_context' for p in processors):
-                return
+            processors = [
+                p
+                for p in current_config.get('processors', [])
+                if getattr(p, '__name__', '') != '_genkit_inject_trace_context'
+            ]
 
             # Define processor function that captures self
             def _genkit_inject_trace_context(
@@ -333,8 +379,11 @@ class GcpTelemetry:
             ) -> Mapping[str, Any]:
                 return self._inject_trace_context(logger_instance, method_name, event_dict)
 
-            # Append processor to chain
-            processors.append(_genkit_inject_trace_context)
+            # structlog hands the last processor's return value to the logger, so the
+            # last one is the renderer (JSONRenderer, ConsoleRenderer, or stdlib's
+            # ProcessorFormatter.wrap_for_formatter). It turns the event dict into a
+            # str, bytes, or tuple, so fields added after it are dropped.
+            processors.insert(max(len(processors) - 1, 0), _genkit_inject_trace_context)
             structlog.configure(processors=processors)
             logger.debug('Configured structlog for GCP trace correlation')
 
@@ -344,8 +393,7 @@ class GcpTelemetry:
     def _configure_tracing(self) -> None:
         try:
             if not self.disable_traces:
-                exporter_kwargs = self._build_exporter_kwargs()
-                base_exporter = GenkitGCPExporter(**exporter_kwargs) if exporter_kwargs else GenkitGCPExporter()
+                base_exporter = GenkitGCPExporter(**self._build_exporter_kwargs(TraceServiceClient))
 
                 trace_exporter = GcpAdjustingTraceExporter(
                     exporter=base_exporter,
@@ -362,7 +410,7 @@ class GcpTelemetry:
     def _configure_otel_logs(self) -> None:
         try:
             exporter = CloudLoggingExporter(  # ty: ignore[deprecated]
-                project_id=self.project,
+                **self._build_exporter_kwargs(LoggingServiceV2Client),
                 default_log_name='genkit',
             )
             _hang_exporter_on_process_logger(exporter=exporter)
@@ -401,8 +449,9 @@ class GcpTelemetry:
             finally:
                 detector_logger.setLevel(original_level)
 
-            exporter_kwargs = self._build_exporter_kwargs()
-            cloud_monitoring_exporter = CloudMonitoringMetricsExporter(**exporter_kwargs)
+            cloud_monitoring_exporter = CloudMonitoringMetricsExporter(
+                **self._build_exporter_kwargs(MetricServiceClient)
+            )
 
             metrics_exporter = GenkitMetricExporter(
                 exporter=cloud_monitoring_exporter,

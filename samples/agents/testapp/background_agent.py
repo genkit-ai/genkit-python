@@ -45,7 +45,7 @@ background_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_background_agent(text: str, ctx: FlowContext) -> dict[str, Any]:
     """Detach a report, poll to completion, and return the settled status."""
     chat = background_agent.chat()

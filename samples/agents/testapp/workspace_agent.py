@@ -61,7 +61,7 @@ workspace_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_workspace_agent(text: str, ctx: FlowContext) -> dict[str, Any]:
     """Ask for a file; watch it arrive as an artifact chunk, then in chat.artifacts."""
     chat = workspace_agent.chat()

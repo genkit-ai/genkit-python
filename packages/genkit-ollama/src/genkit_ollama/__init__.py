@@ -20,8 +20,9 @@ This plugin provides integration with Ollama for running local LLMs and text
 embedders directly on your own infrastructure.
 
 Prerequisites:
-    - Install Ollama: https://ollama.ai/
-    - Ensure the Ollama server is running (default: ``http://localhost:11434``).
+    - Install Ollama: https://ollama.com/download
+    - Ensure the Ollama server is running (default: ``http://127.0.0.1:11434``,
+      or ``OLLAMA_HOST``).
     - Pull target models locally (e.g., ``ollama pull llama3.2``).
 
 Example:
@@ -44,7 +45,7 @@ Example:
     ```
 
 See Also:
-    - Ollama documentation: https://ollama.ai/
+    - Ollama documentation: https://ollama.com/
 """
 
 from genkit_ollama._models import OllamaConfig

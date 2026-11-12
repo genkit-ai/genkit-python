@@ -32,18 +32,20 @@ async def main() -> None:
         prompt='Welcome to the Genkit media sample.',
         config={'voice': 'Kore'},
     )
-    print(voice.media.url if voice.media else 'no audio')
+    print(voice.media.url[:60] if voice.media else 'no audio')
+    # => data:audio/L16;codec=pcm;rate=24000;base64,...
 
     # Image: same generate(), different model.
     poster = await ai.generate(
         model=GoogleAI.gemini_image('gemini-2.5-flash-image'),
         prompt='A watercolor postcard of San Francisco at sunrise',
     )
-    print(poster.media.url if poster.media else 'no image')
+    print(poster.media.url[:60] if poster.media else 'no image')
+    # => data:image/png;base64,...
 
     # Video is a job, not a round-trip. generate_operation hands back a
     # ticket; check_operation is how you find out when the video is ready.
-    # Vertex often returns the mp4 inline; operation.output still has a url.
+    # Vertex often returns the mp4 inline, so media.url can be a data: URL.
     operation = await ai.generate_operation(
         model=VertexAI.veo('veo-3.1-generate-001'),
         prompt='A paper airplane gliding through a bright classroom',
@@ -51,7 +53,9 @@ async def main() -> None:
     while not operation.done:
         await asyncio.sleep(3)
         operation = await ai.check_operation(operation)
-    print(operation.output)
+    video = operation.output.media if operation.output else None
+    print(video.url[:60] if video else operation.error)
+    # => data:video/mp4;base64,...
 
 
 if __name__ == '__main__':

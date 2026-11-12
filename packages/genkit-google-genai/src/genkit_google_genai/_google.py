@@ -492,12 +492,10 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
     models work without an SDK update. The live catalog is listed only when
     the Dev UI asks for it, then cached.
 
-    Model Types:
-        | Type | Action Kind | Example |
-        |---|---|---|
-        | Gemini / Gemma | MODEL | ``googleai/gemini-flash-latest`` |
-        | Embedders | EMBEDDER | ``googleai/gemini-embedding-001`` |
-        | Veo (Video) | BACKGROUND_MODEL | ``googleai/veo-3.1-generate-preview`` |
+    Model types:
+        - Gemini / Gemma (MODEL): ``googleai/gemini-flash-latest``
+        - Embedders (EMBEDDER): ``googleai/gemini-embedding-001``
+        - Veo (BACKGROUND_MODEL): ``googleai/veo-3.1-generate-preview``
 
     Example:
         ```python
@@ -1016,13 +1014,11 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         - Data residency controls
         - IAM-based access control
 
-    Model Types:
-        | Type | Action Kind | Example |
-        |---|---|---|
-        | Gemini | MODEL | ``vertexai/gemini-2.5-flash`` |
-        | Veo (Video) | BACKGROUND_MODEL | ``vertexai/veo-3.1-generate-001`` |
-        | Virtual Try-On | MODEL | ``vertexai/virtual-try-on-001`` |
-        | Embedders | EMBEDDER | ``vertexai/text-embedding-005`` |
+    Model types:
+        - Gemini (MODEL): ``vertexai/gemini-2.5-flash``
+        - Veo (BACKGROUND_MODEL): ``vertexai/veo-3.1-generate-001``
+        - Virtual Try-On (MODEL): ``vertexai/virtual-try-on-001``
+        - Embedders (EMBEDDER): ``vertexai/text-embedding-005``
 
     Example:
         ```python

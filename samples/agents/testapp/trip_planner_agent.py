@@ -70,7 +70,7 @@ trip_planner_agent = ai.define_agent(
 )
 
 
-@ai.flow()
+@ai.flow
 async def test_trip_planner_agent(text: str, ctx: FlowContext) -> str:
     chat = trip_planner_agent.chat()
     turn = chat.send_stream(text or 'I want to plan a trip to Paris. What should I see there?')

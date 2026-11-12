@@ -29,8 +29,9 @@ from genkit import Genkit
 from genkit.telemetry import configure_instrumentation
 from genkit_otel import GenAiInstrumentation
 
-trace.set_tracer_provider(TracerProvider())
-trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+provider = TracerProvider()
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+trace.set_tracer_provider(provider)
 
 configure_instrumentation(GenAiInstrumentation())
 ai = Genkit()

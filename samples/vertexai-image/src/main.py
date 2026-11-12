@@ -28,7 +28,8 @@ async def main() -> None:
         prompt='Draw a cat in a hat',
         model=VertexAI.gemini_image('gemini-2.5-flash-image'),
     )
-    print(response.media.url if response.media else response.text)
+    print(response.media.url[:40] if response.media else response.text)
+    # => data:image/png;base64,...
 
 
 if __name__ == '__main__':

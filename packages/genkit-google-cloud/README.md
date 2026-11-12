@@ -81,8 +81,9 @@ pip install 'genkit-google-cloud[firestore]'
 ```python
 from genkit.exp import Genkit
 from genkit_google_cloud.exp import FirestoreSessionStore
+from genkit_google_genai import GoogleAI
 
-ai = Genkit()
+ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 store = FirestoreSessionStore()  # uses Application Default Credentials
 agent = ai.define_agent(name='assistant', store=store)
 ```

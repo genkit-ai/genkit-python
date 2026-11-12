@@ -100,7 +100,7 @@ def serve_agent(
     base_path: str | None = None,
     context_dependency: Callable[..., Any] | None = None,
 ) -> APIRouter:
-    """Build an APIRouter serving an agent and its snapshot/abort endpoints over HTTP.
+    """Build an APIRouter serving an agent over HTTP.
 
     Mount the returned router like any other::
 
@@ -114,7 +114,8 @@ def serve_agent(
             Use this to reuse existing ``Depends``-based auth / resources.
 
     Returns:
-        An APIRouter with the turn route plus snapshot/abort endpoints.
+        An APIRouter with the turn route. When the agent has a ``store``, it
+        also serves ``<base_path>/getSnapshot`` and ``<base_path>/abort``.
     """
     resolved_base_path = f'/{agent.name}' if base_path is None else base_path
     router = APIRouter(tags=[agent.name])

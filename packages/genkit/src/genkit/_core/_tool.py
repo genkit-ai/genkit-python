@@ -246,7 +246,7 @@ class ToolContext(ActionRunContext[ChunkT]):
 
     Annotate a tool parameter with it to receive it:
 
-        @ai.tool()
+        @ai.tool
         async def check_allergens(dish: str, ctx: ToolContext) -> str:
             return 'resumed' if ctx.is_resumed() else ctx.context.get('user', 'guest')
 
@@ -258,12 +258,26 @@ class ToolContext(ActionRunContext[ChunkT]):
             return ctx.context['auth']['uid']
 
         # 2. Call it from the tool
-        @ai.tool()
+        @ai.tool
         async def list_allergies(guest: str, ctx: ToolContext) -> str:
             return f'{guest} ({user_id(ctx)}): shellfish'
 
         await list_allergies('Ana', context={'auth': {'uid': 'diner-42'}})
         # => 'Ana (diner-42): shellfish'
+
+    On a restart after an interrupt, ``is_resumed()`` is ``True`` and
+    ``resumed_metadata`` is the dict passed to
+    ``interrupt.restart(resumed_metadata=...)``, or ``{}`` when the restart
+    carried none. On a first run, ``resumed_metadata`` is ``None``. Check
+    ``resumed_metadata is None`` so static type checkers narrow the dict:
+
+        @ai.tool
+        async def refund_order(order_id: str, ctx: ToolContext) -> str:
+            # Interrupt is exported from genkit
+            if ctx.resumed_metadata is None:
+                raise Interrupt({'reason': 'needs approval'})
+            approved = ctx.resumed_metadata.get('approved_by')
+            return f'Refunded {order_id} (approved by {approved})'
     """
 
     def __init__(
@@ -288,7 +302,11 @@ class ToolContext(ActionRunContext[ChunkT]):
         self.original_input = original_input
 
     def is_resumed(self) -> bool:
-        """Return True if this execution is resuming after an interrupt."""
+        """Return True if this run is a restart after an interrupt.
+
+        Same as ``self.resumed_metadata is not None``. An empty ``{}`` still
+        counts as resumed.
+        """
         return self.resumed_metadata is not None
 
 
@@ -410,7 +428,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
     ) -> None:
         """Build a tool from an async function without registering it.
 
-        ``define_tool`` / ``@ai.tool()`` register it. Passed straight to
+        ``define_tool`` / ``@ai.tool`` register it. Passed straight to
         ``generate(tools=[...])``, it is an ephemeral tool for that call.
 
         Args:

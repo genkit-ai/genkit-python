@@ -15,8 +15,10 @@ Expose Genkit flows and agents as HTTP endpoints in a FastAPI application.
 ## Installation
 
 ```bash
-uv add genkit-fastapi genkit-google-genai
+uv add genkit-fastapi genkit-google-genai uvicorn
 ```
+
+`uvicorn` runs the examples below. Any ASGI server works; the adapter doesn't depend on one.
 
 ## Usage
 
@@ -39,7 +41,7 @@ async def get_weather(location: str) -> str:
     return f'Sunny in {location}'
 
 
-@ai.flow()
+@ai.flow
 async def chat_flow(prompt: str) -> str:
     response = await ai.generate(
         prompt=prompt,
@@ -78,7 +80,8 @@ weather_agent = ai.define_agent(
     tools=[get_weather],
 )
 
-# Mount agent turn route at POST /api/weatherAgent (plus /getSnapshot and /abort companion endpoints)
+# Mount agent turn route at POST /api/weatherAgent
+# (/getSnapshot and /abort are added only when the agent has a store=)
 app.include_router(serve_agent(weather_agent), prefix='/api')
 ```
 
@@ -87,7 +90,7 @@ app.include_router(serve_agent(weather_agent), prefix='/api')
 Customize the base path or resolve request context using FastAPI's dependency injection system:
 
 ```python
-from fastapi import Depends, Header
+from fastapi import Header
 from genkit_fastapi import serve_flow
 
 
@@ -119,12 +122,14 @@ ai = Genkit(...)
 app = FastAPI()
 
 
-@ai.flow()
+@ai.flow
 async def ask_chef(prompt: str, ctx: FlowContext[str]) -> str:
-    stream = ai.generate_stream(prompt=prompt)
-    async for chunk in stream:
-        ctx.send_chunk(chunk.text)
-    return (await stream.response).text
+    result = ai.generate_stream(prompt=prompt)
+    # The context manager closes the model stream if the client disconnects.
+    async with result.stream as chunks:
+        async for chunk in chunks:
+            ctx.send_chunk(chunk.text)
+    return (await result.response).text
 
 
 @app.post('/chat/stream')
@@ -172,7 +177,7 @@ from genkit_fastapi import genkit_fastapi_handler
 
 @app.post('/custom-chat')
 @genkit_fastapi_handler(ai)
-@ai.flow()
+@ai.flow
 async def custom_chat(prompt: str) -> str:
     response = await ai.generate(
         prompt=prompt,

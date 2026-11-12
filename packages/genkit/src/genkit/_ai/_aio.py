@@ -174,7 +174,7 @@ class Genkit:
     Registers plugins, defines flows and tools, and runs generation. Both
     ``Genkit(model=...)`` and ``ai.generate(model=...)`` accept a typed
     ``ModelRef`` from a plugin constructor (recommended, e.g.
-    ``GoogleAI.gemini_model('gemini-flash-latest')``) or a plugin-prefixed
+    ``GoogleAI.gemini('gemini-flash-latest')``) or a plugin-prefixed
     string (``'googleai/gemini-flash-latest'``). Plugins resolve models lazily
     on demand when ``ai.generate()`` is called, without needing pre-registration
     or SDK updates.
@@ -185,17 +185,21 @@ class Genkit:
 
         ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
-        @ai.tool()
+        @ai.tool
         async def current_weather(city: str) -> str:
             return f'Sunny in {city}'
 
-        @ai.flow()
-        async def my_flow(prompt: str) -> str:
-            res = await ai.generate(prompt=prompt, tools=['current_weather'])
+        @ai.flow
+        async def weather_report(prompt: str) -> str:
+            res = await ai.generate(prompt=prompt, tools=[current_weather])
             return res.text
 
+        async def main() -> None:
+            print(await weather_report('Weather in Paris?'))
+            # => It's sunny in Paris.
+
         if __name__ == '__main__':
-            ai.run_main(my_flow('Weather in Paris?'))
+            ai.run_main(main())
     """
 
     _registry: Registry
@@ -232,7 +236,7 @@ class Genkit:
                 plugins: Plugins to register (e.g. ``[GoogleAI()]``). Plugins resolve
                     models lazily on demand when ``ai.generate()`` is called.
                 model: Default model for ``ai.generate()``. Accepts a typed ``ModelRef``
-                    (recommended, e.g. ``GoogleAI.gemini_model('gemini-flash-latest')``) or
+                    (recommended, e.g. ``GoogleAI.gemini('gemini-flash-latest')``) or
                     a plugin-prefixed string (``'googleai/gemini-flash-latest'``).
                 prompt_dir: Optional directory for loading ``.prompt`` files.
             """
@@ -402,7 +406,37 @@ class Genkit:
         return _FlowDecorator(self._registry, name, description)
 
     def define_helper(self, name: str, fn: Callable[..., Any]) -> None:
-        """Register a Handlebars helper function."""
+        """Register a Handlebars helper for prompt templates.
+
+        Dotprompt calls the helper as ``fn(params, options)``: ``params`` is a
+        list of the positional arguments from the template, and ``options``
+        carries the named arguments in ``options.hash``. A one-argument
+        function such as ``lambda s: s.upper()`` raises ``TypeError`` at
+        render time. Return a ``str``.
+
+        Example:
+            ```python
+            # 1. Register a helper that takes one positional and one named argument
+            def menu_item(params: list[Any], options: Any) -> str:
+                dish = str(params[0])
+                return dish.upper() if options.hash.get('loud') else dish
+
+
+            ai.define_helper('menu_item', menu_item)
+
+            # 2. Use it in a prompt template
+            special = ai.define_prompt(
+                name='special',
+                model='googleai/gemini-flash-latest',
+                prompt="Describe today's special, {{menu_item dish loud=true}}, in one line.",
+            )
+
+            # 3. Render to check the expanded text
+            request = await special.render(input={'dish': 'smoked salmon tartine'})
+            print(request.messages[0].content[0].text)
+            # => Describe today's special, SMOKED SALMON TARTINE, in one line.
+            ```
+        """
         define_helper(self._registry, name, fn)
 
     def define_partial(self, name: str, source: str) -> None:
@@ -685,14 +719,14 @@ class Genkit:
     async def lookup_tool(self, name: str) -> Tool | None:
         """Return the tool registered under ``name``, or None.
 
-        The same handle ``@ai.tool()`` returns, so a tool defined in one module
+        The same handle ``@ai.tool`` returns, so a tool defined in one module
         can be called or passed in ``tools=[...]`` from another without
         importing it.
 
         Example:
             ```python
             # 1. Define a tool in one module
-            @ai.tool()
+            @ai.tool
             async def menu_price(dish: str) -> float:
                 return 14.5
 
@@ -700,6 +734,7 @@ class Genkit:
             # 2. Find it by name somewhere else
             price_tool = await ai.lookup_tool('menu_price')
             response = await ai.generate(prompt='How much is the ramen?', tools=[price_tool])
+            print(response.text)
             # => The ramen is $14.50.
             ```
         """
@@ -979,6 +1014,7 @@ class Genkit:
             joke = ai.define_prompt(name='joke', prompt='Tell a joke about {{topic}}.')
             res = await joke(input={'topic': 'cats'})
             print(res.text)
+            # => Why did the cat sit on the keyboard? To keep an eye on the mouse.
         """
         executable_prompt = Prompt(
             self,
@@ -1280,7 +1316,7 @@ class Genkit:
             ai = Genkit(plugins=[GoogleAI()], model=GoogleAI.gemini('gemini-flash-latest'))
 
 
-            @ai.flow()
+            @ai.flow
             async def suggest_dish(cuisine: str) -> str:
                 response = await ai.generate(prompt=f'Suggest one {cuisine} dish.')
                 return response.text
@@ -1573,7 +1609,7 @@ class Genkit:
         """Generate text or structured data using a language model.
 
         ``model`` accepts a typed ``ModelRef`` from a plugin constructor
-        (recommended, e.g. ``GoogleAI.gemini_model('gemini-flash-latest')``,
+        (recommended, e.g. ``GoogleAI.gemini('gemini-flash-latest')``,
         which takes the bare model ID, stamps the ``'googleai/'`` namespace
         prefix, and type-checks ``config``), a plugin-prefixed string
         (``'googleai/gemini-flash-latest'``), a registered model ``Action``, or
@@ -1598,19 +1634,18 @@ class Genkit:
 
             res = await ai.generate(
                 prompt='Weather in Paris?',
-                tools=['current_weather'],
+                tools=[current_weather],
                 output_schema=Weather,
             )
-            print(res.text)
-            print(res.output)
+            if res.output:
+                print(res.output)
+            # => city='Paris' forecast='Sunny'
 
         ``prompt`` and ``system`` strings are sent exactly as written. Braces
-        are content (JSON, code, or another template), not Handlebars. If a
-        generate string used to rely on a registered partial (``{{> persona}}``),
-        a ``define_helper`` helper, or ``{{media url=...}}``, move it into
-        ``define_prompt`` (or a ``.prompt`` file), or build the text /
-        ``Part.from_media(...)`` yourself. ``{{role}}`` in a generate string
-        already raised; it now goes to the model as written too.
+        are content (JSON, code, or another template), not Handlebars.
+        Partials (``{{> persona}}``), ``define_helper`` helpers and
+        ``{{media url=...}}`` only render in ``define_prompt`` or a ``.prompt``
+        file; otherwise build the text or ``Part.from_media(...)`` yourself.
         """
         return await self._generate(
             model=model,
@@ -1781,11 +1816,27 @@ class Genkit:
         ending at the last complete turn, so it's safe to send back. The
         chunks you already received are the record of what was shown.
 
+        Use ``async with result.stream as stream:`` so that leaving the loop
+        early (``break``, an exception, a disconnected client) closes the
+        stream and stops the model call.
+
         Example:
+            ```python
+            # 1. Start streaming
             result = ai.generate_stream(prompt='Write a haiku about rain.')
-            async for chunk in result.stream:
-                print(chunk.text)
+
+            # 2. Print chunks as they arrive; the context manager closes the stream
+            async with result.stream as stream:
+                async for chunk in stream:
+                    print(chunk.text, end='')
+            print()
+            # => Soft rain on the roof...
+
+            # 3. Await the final response
             final = await result.response
+            print(final.finish_reason)
+            # => stop
+            ```
         """
         initial_msgs: list[Message] = []
         if not isinstance(messages, str):
@@ -1932,9 +1983,10 @@ class Genkit:
 
         ``context`` reaches the embedder as ``ctx.context``, as on
         ``generate``. Omitted, the embedder sees the enclosing action's
-        context. Provider plugins read a per-request key from
-        ``context={'secrets': {'api_key': ...}}`` so the tenant, not the
-        plugin key, is billed.
+        context. The GoogleAI, VertexAI and OpenAI embedders read a
+        per-request key from ``context={'secrets': {'api_key': ...}}``, so
+        the tenant, not the plugin key, is billed. Ollama and Bedrock
+        embedders always use the plugin's client.
 
         Example:
             from genkit_google_genai import GoogleAI
@@ -2003,7 +2055,21 @@ class Genkit:
         fn: Callable[[], Awaitable[T]],
         metadata: dict[str, Any] | None = None,
     ) -> T:
-        """Run a function as a discrete traced step within a flow."""
+        """Run a coroutine function as a discrete traced step within a flow.
+
+        ``fn`` is a zero-argument ``async def`` function; each call creates its
+        own ``flowStep`` span in the trace.
+
+        Example:
+            ```python
+            # 1. Wrap a step in an async def and pass it with name= and fn=
+            async def fetch_menu() -> list[str]:
+                return await load_daily_specials()
+
+
+            menu = await ai.run(name='fetch-menu', fn=fetch_menu)
+            ```
+        """
         if not inspect.iscoroutinefunction(fn):
             raise TypeError('fn must be a coroutine function')
 
@@ -2068,7 +2134,8 @@ class Genkit:
             # 3. Poll until done; output is a ModelResponse
             while not op.done:
                 op = await ai.check_operation(op)
-            print(op.output.media.url)
+            if op.output and op.output.media:
+                print(op.output.media.url)
             # => https://storage.googleapis.com/.../risotto.mp4
             ```
         """

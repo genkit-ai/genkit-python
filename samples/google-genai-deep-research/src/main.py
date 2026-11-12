@@ -58,7 +58,7 @@ async def deep_research_flow(input: ResearchInput) -> dict[str, str | bool | Non
 
 async def main() -> None:
     """Start one Deep Research job and check it once — does not wait for the report."""
-    print(await deep_research_flow(ResearchInput()))  # noqa: T201
+    print(await deep_research_flow(ResearchInput()))
 
 
 if __name__ == '__main__':

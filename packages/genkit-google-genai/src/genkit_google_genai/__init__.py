@@ -73,7 +73,9 @@ Example:
     ```
 
 Requirements:
-    - GoogleAI requires the ``GEMINI_API_KEY`` environment variable or explicit ``api_key``.
+    - GoogleAI reads ``api_key``, then ``GEMINI_API_KEY``, ``GOOGLE_API_KEY``,
+      ``GOOGLE_GENAI_API_KEY``. With none set it still loads; pass
+      ``context={'secrets': {'api_key': ...}}`` per call.
     - VertexAI requires Google Cloud Application Default Credentials (ADC) or explicit credentials.
 
 See Also:

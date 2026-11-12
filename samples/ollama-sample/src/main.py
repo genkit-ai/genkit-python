@@ -36,7 +36,7 @@ class WeatherInput(BaseModel):
     city: str
 
 
-@ai.tool()
+@ai.tool
 async def current_weather(input: WeatherInput) -> str:
     return f'The weather in {input.city} is 18C and partly cloudy.'
 
@@ -55,8 +55,7 @@ async def main() -> None:
             raise SystemExit(1)
         print(response.text)
 
-        # Ollama streams text on the chunks and returns an empty final
-        # message, so join the chunks instead of reading response.text.
+        # Chunks print as Ollama streams them; stream.response holds the joined text.
         stream = ai.generate_stream(prompt='One sentence on why local models matter.')
         async for chunk in stream.stream:
             if chunk.text:

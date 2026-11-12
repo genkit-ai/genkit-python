@@ -162,18 +162,60 @@ def _to_anthropic_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# The field a non-object tool input rides under on the wire.
+_TOOL_INPUT_FIELD = 'input'
+
+
+def _wraps_tool_input(schema: dict[str, Any] | None) -> bool:
+    """Whether a tool's input has to ride under ``input`` to reach Claude.
+
+    Claude only takes object tool inputs, so ``city: str`` or ``cities: list[str]``
+    would be a 400. A schema with properties but no type is still an object.
+    """
+    if not schema:
+        return False
+    if 'type' in schema:
+        return schema['type'] != 'object'
+    return 'properties' not in schema
+
+
+def _is_nullable(schema: dict[str, Any]) -> bool:
+    schema_type = schema.get('type')
+    if schema_type == 'null' or (isinstance(schema_type, list) and 'null' in schema_type):
+        return True
+    variants = schema.get('anyOf') or schema.get('oneOf') or []
+    return any(isinstance(v, dict) and _is_nullable(cast(dict[str, Any], v)) for v in variants)
+
+
 def _to_tool_input_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     """Ensure a tool input schema is valid for the Anthropic API.
 
-    Anthropic requires ``input_schema.type`` to be present and rejects a
-    missing or empty schema with a 400, so no-input tools get a default
-    object schema.
+    Anthropic rejects a missing, empty, or non-object ``input_schema`` with a
+    400. No-input tools get an empty object schema; anything else that isn't an
+    object goes under ``input``, left optional when it accepts None so Claude
+    can leave it out.
     """
     if not schema:
         return {'type': 'object', 'properties': {}}
+    if _wraps_tool_input(schema):
+        wrapped: dict[str, Any] = {'type': 'object', 'properties': {_TOOL_INPUT_FIELD: schema}}
+        if not _is_nullable(schema):
+            wrapped['required'] = [_TOOL_INPUT_FIELD]
+        return wrapped
     if 'type' not in schema:
         return {**schema, 'type': 'object'}
     return schema
+
+
+def _wrapped_tool_names(request: ModelRequest) -> frozenset[str]:
+    return frozenset(t.name for t in request.tools or [] if _wraps_tool_input(t.input_schema))
+
+
+def _from_tool_input(name: str, tool_input: object, wrapped_tools: frozenset[str]) -> object:
+    """The value the tool runs with: Claude's ``{'input': x}`` becomes ``x`` for a wrapped tool."""
+    if name in wrapped_tools and isinstance(tool_input, dict):
+        return cast(dict[str, object], tool_input).get(_TOOL_INPUT_FIELD)
+    return tool_input
 
 
 def _normalize_config(config: object | None) -> AnthropicConfig:
@@ -367,13 +409,16 @@ class AnthropicModel:
         except ValueError as e:
             raise GenkitError(status='INVALID_ARGUMENT', message=str(e), cause=e) from e
         streaming = ctx and ctx.is_streaming
+        wrapped_tools = _wrapped_tool_names(request)
 
         logger.debug('Anthropic generate request', model=self.model_name, streaming=bool(streaming))
 
         try:
             if streaming:
                 assert ctx is not None  # streaming requires ctx
-                response = await self._generate_streaming(params, ctx, client=client, use_beta=use_beta)
+                response = await self._generate_streaming(
+                    params, ctx, client=client, use_beta=use_beta, wrapped_tools=wrapped_tools
+                )
             else:
                 active_client = cast(Any, client)
                 messages_client = active_client.beta.messages if use_beta else active_client.messages
@@ -396,7 +441,7 @@ class AnthropicModel:
             output_tokens=response.usage.output_tokens,
         )
 
-        content = self._to_genkit_content(response.content)
+        content = self._to_genkit_content(response.content, wrapped_tools=wrapped_tools)
         content = maybe_strip_fences(request, content)
 
         response_message = Message(role=Role.MODEL, content=content)
@@ -509,7 +554,7 @@ class AnthropicModel:
         disable_parallel_tool_use = bool(config.disable_parallel_tool_use)
 
         params['model'] = config.version or self.model_name
-        params['messages'] = self._to_anthropic_messages(request.messages)
+        params['messages'] = self._to_anthropic_messages(request.messages, wrapped_tools=_wrapped_tool_names(request))
         params['max_tokens'] = max_tokens
 
         if use_beta:
@@ -608,6 +653,7 @@ class AnthropicModel:
         ctx: ModelContext,
         client: object | None = None,
         use_beta: bool = False,
+        wrapped_tools: frozenset[str] = frozenset(),
     ) -> AnthropicMessage:
         """Handle streaming generation.
 
@@ -695,7 +741,7 @@ class AnthropicModel:
                                         tool_request=ToolRequest(
                                             ref=tool_info['id'],
                                             name=tool_info['name'],
-                                            input=tool_input,
+                                            input=_from_tool_input(tool_info['name'], tool_input, wrapped_tools),
                                         )
                                     )
                                 ],
@@ -715,12 +761,16 @@ class AnthropicModel:
                 return ''.join(texts) if texts else None
         return None
 
-    def _to_anthropic_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+    def _to_anthropic_messages(
+        self, messages: list[Message], wrapped_tools: frozenset[str] = frozenset()
+    ) -> list[dict[str, Any]]:
         """Convert Genkit messages to Anthropic format.
 
         Handles text, media (images), tool use/result, and document
         (PDF/plain-text) content parts. Applies ``cache_control``
-        metadata when present on a part's metadata.
+        metadata when present on a part's metadata. An earlier call to a tool
+        in ``wrapped_tools`` goes back as ``{'input': ...}``, the shape it was
+        declared with.
         """
         result = []
         for msg in messages:
@@ -730,6 +780,8 @@ class AnthropicModel:
             content: list[dict[str, Any]] = []
             for part in msg.content:
                 block = self._to_anthropic_block(part)
+                if block is not None and block['type'] == 'tool_use' and block['name'] in wrapped_tools:
+                    block['input'] = {_TOOL_INPUT_FIELD: block['input']}
                 if block is not None:
                     # Apply cache_control from part metadata if present; the API
                     # rejects it on thinking blocks.
@@ -785,7 +837,7 @@ class AnthropicModel:
             }
         return None
 
-    def _to_genkit_content(self, content_blocks: list[Any]) -> list[Part]:
+    def _to_genkit_content(self, content_blocks: list[Any], wrapped_tools: frozenset[str] = frozenset()) -> list[Part]:
         """Convert Anthropic response to Genkit format."""
         parts = []
         for block in content_blocks:
@@ -797,7 +849,7 @@ class AnthropicModel:
                         tool_request=ToolRequest(
                             ref=block.id,
                             name=block.name,
-                            input=block.input,
+                            input=_from_tool_input(block.name, block.input, wrapped_tools),
                         )
                     )
                 )

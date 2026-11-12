@@ -491,12 +491,16 @@ class Model(Action[ModelRequest, ModelResponse, ModelResponseChunk]):
         model_options = _model_options(name=name, info=info, config_schema=config_schema, metadata=metadata)
         model_meta: dict[str, object] = metadata.copy() if metadata else {}
         model_meta['model'] = model_options
+        config_class = python_config_schema(config_schema)
+        # Built at runtime, so checkers can't read ``ModelRequest[config_class]`` as a type.
+        request_type = cast(Any, ModelRequest)[config_class] if config_class is not None else ModelRequest
         super().__init__(
             kind=ActionKind.MODEL,
             name=name,
             # An unannotated request parameter would get the raw JSON dict from
-            # a Dev UI or CLI run; give it ModelRequest, like Embedder does.
-            fn=with_request_annotation(fn, ModelRequest, kind=ActionKind.MODEL),
+            # a Dev UI or CLI run; give it ModelRequest (typed by config_schema
+            # when there is one), like Embedder does.
+            fn=with_request_annotation(fn, request_type, kind=ActionKind.MODEL),
             metadata=model_meta,
             description=get_func_description(fn, description),
             config_schema=config_schema,

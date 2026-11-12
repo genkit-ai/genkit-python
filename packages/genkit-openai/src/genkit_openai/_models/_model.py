@@ -246,17 +246,54 @@ def _finish_state(
 
 # The field a non-object tool input rides under on the wire, as in genkit-google-genai.
 _TOOL_INPUT_FIELD = 'input'
+# Definitions a root ``$ref`` points into. They stay at the root when the
+# schema is wrapped so ``#/$defs/...`` still resolves.
+_DEFS_KEYS = ('$defs', 'definitions')
+
+
+def _root_ref_target(schema: dict[str, Any]) -> dict[str, Any] | None:
+    """The definition a root ``$ref`` points at (``#/$defs/SpiceLevel``), or None."""
+    ref = schema.get('$ref')
+    if not isinstance(ref, str):
+        return None
+    for key in _DEFS_KEYS:
+        prefix = f'#/{key}/'
+        defs = schema.get(key)
+        if ref.startswith(prefix) and isinstance(defs, dict):
+            target = cast(dict[str, Any], defs).get(ref[len(prefix) :])
+            return cast(dict[str, Any], target) if isinstance(target, dict) else None
+    return None
 
 
 def _is_wrapped_tool_schema(schema: dict[str, Any] | None) -> bool:
-    """True for a non-empty schema that is not an object (``{'type': 'string'}``)."""
+    """True for a non-empty schema that is not an object (``{'type': 'string'}``).
+
+    A root ``$ref`` is judged by its target: Pydantic emits one for an Enum
+    input, which is a string, not an object.
+    """
     if not schema:
         return False
     schema_type = schema.get('type')
     if schema_type is None:
-        # anyOf/oneOf/$ref roots: only an object schema is safe to send as-is.
-        return not ('properties' in schema or '$ref' in schema)
+        if '$ref' in schema:
+            target = _root_ref_target(schema)
+            # An unresolvable ref is sent as is rather than guessed at.
+            return target is not None and _is_wrapped_tool_schema(target)
+        # anyOf/oneOf roots: only an object schema is safe to send as-is.
+        return 'properties' not in schema
     return schema_type != 'object'
+
+
+def _wrap_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` under one ``input`` property, with any ``$defs`` kept at the root."""
+    defs = {k: schema[k] for k in _DEFS_KEYS if k in schema}
+    inner = {k: v for k, v in schema.items() if k not in defs}
+    return {
+        'type': 'object',
+        'properties': {_TOOL_INPUT_FIELD: inner},
+        'required': [_TOOL_INPUT_FIELD],
+        **defs,
+    }
 
 
 def _wrapped_tool_names(tools: list[ToolDefinition] | None) -> frozenset[str]:
@@ -283,6 +320,21 @@ def _map_tool_requests(message: Message, wrapped: frozenset[str], wrap: bool) ->
         else:
             content.append(part)
     return message.model_copy(update={'content': content}) if changed else message
+
+
+def _unwrapped_args_text(arguments: str) -> str:
+    """JSON text of the bare value in a wrapped call's ``'{"input": ...}'`` arguments.
+
+    Arguments that are not exactly that shape are returned unchanged, as
+    ``_unwrap_tool_inputs`` leaves them.
+    """
+    try:
+        parsed = json.loads(arguments)
+    except ValueError:
+        return arguments
+    if isinstance(parsed, dict) and set(cast(dict[str, Any], parsed)) == {_TOOL_INPUT_FIELD}:
+        return json.dumps(parsed[_TOOL_INPUT_FIELD], ensure_ascii=False)
+    return arguments
 
 
 def _wrap_tool_inputs(messages: list[Message], wrapped: frozenset[str]) -> list[Message]:
@@ -358,11 +410,7 @@ class OpenAIModel:
             if _is_wrapped_tool_schema(parameters):
                 # Function parameters must be an object; a scalar tool input
                 # (``async def tool(city: str)``) rides under one field.
-                parameters = {
-                    'type': 'object',
-                    'properties': {_TOOL_INPUT_FIELD: parameters},
-                    'required': [_TOOL_INPUT_FIELD],
-                }
+                parameters = _wrap_tool_schema(parameters)
             if parameters:
                 parameters = _ensure_strict_json_schema(parameters, path=(), root=parameters)
 
@@ -612,6 +660,7 @@ class OpenAIModel:
         stream = await self._openai_client.chat.completions.create(**openai_config)
 
         tool_calls: dict[int, Any] = {}
+        wrapped = _wrapped_tool_names(request.tools)
         reasoning_parts: list[Part] = []
         text_parts: list[Part] = []
         metadata: dict[str, Any] = {}
@@ -666,9 +715,11 @@ class OpenAIModel:
                         existing = tool_calls[tool_call.index]
                         if hasattr(existing, 'function') and existing.function and tool_call.function:
                             existing.function.arguments = (existing.function.arguments or '') + fragment
-                    parts.append(
-                        MessageConverter.tool_call_to_genkit(tool_calls[tool_call.index], args_segment=fragment)
-                    )
+                    call = tool_calls[tool_call.index]
+                    if call.function and call.function.name in wrapped:
+                        # Fragments are pieces of '{"input": ...}'; sent unwrapped once complete.
+                        continue
+                    parts.append(MessageConverter.tool_call_to_genkit(call, args_segment=fragment))
 
             if parts:
                 callback(ModelResponseChunk(role=Role.MODEL, content=parts))
@@ -680,11 +731,27 @@ class OpenAIModel:
                 details={'usage': _usage_from_completion(usage).model_dump(exclude_none=True)},
             )
 
+        # A stream consumer joining tool_request.input fragments sees the bare
+        # value, same as response.message, not the '{"input": ...}' wire shape.
+        held = [c for c in tool_calls.values() if c.function and c.function.name in wrapped]
+        if held:
+            callback(
+                ModelResponseChunk(
+                    role=Role.MODEL,
+                    content=[
+                        MessageConverter.tool_call_to_genkit(
+                            c, args_segment=_unwrapped_args_text(c.function.arguments or '')
+                        )
+                        for c in held
+                    ],
+                )
+            )
+
         accumulated_content: list[Part] = [*reasoning_parts, *text_parts]
         if tool_calls:
             message = _unwrap_tool_inputs(
                 MessageConverter.to_genkit(DictMessageAdapter({'tool_calls': tool_calls.values(), 'role': Role.MODEL})),
-                _wrapped_tool_names(request.tools),
+                wrapped,
             )
             accumulated_content.extend(message.content)
 

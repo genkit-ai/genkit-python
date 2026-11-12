@@ -16,9 +16,10 @@
 
 """Plugin-author surface: unannotated models and DAPs returned from ``init()``."""
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
 
 from genkit import Genkit, Message, ModelResponse, Part, Role
 from genkit._core._action import GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR  # noqa: TID251
@@ -36,10 +37,32 @@ async def test_unannotated_model_gets_model_request_from_raw_json() -> None:
         return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text(request.messages[0].text)]))
 
     model = Model('echo', fn)
-    out = await model.run({'messages': [{'role': 'user', 'content': [{'text': 'hi'}]}]})
+    # Raw JSON, as a Dev UI or CLI run sends it.
+    out = await model.run(cast(Any, {'messages': [{'role': 'user', 'content': [{'text': 'hi'}]}]}))
 
     assert isinstance(seen[0], ModelRequest)
     assert out.response.text == 'hi'
+
+
+@pytest.mark.asyncio
+async def test_unannotated_model_with_config_schema_gets_typed_config() -> None:
+    """With config_schema, an unannotated handler's request.config is the config model, not a dict."""
+
+    class KitchenConfig(BaseModel):
+        temperature: float = 0.5
+
+    seen: list[object] = []
+
+    async def fn(request, ctx: ModelContext) -> ModelResponse:  # noqa: ANN001  # pyright: ignore[reportMissingParameterType]
+        seen.append(request.config)
+        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
+
+    model = Model('chef', fn, config_schema=KitchenConfig)
+    await model.run(
+        cast(Any, {'messages': [{'role': 'user', 'content': [{'text': 'hi'}]}], 'config': {'temperature': 0.9}})
+    )
+
+    assert seen == [KitchenConfig(temperature=0.9)]
 
 
 class _DapPlugin(Plugin):

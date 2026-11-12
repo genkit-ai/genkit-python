@@ -19,6 +19,7 @@
 import json
 from collections.abc import Callable
 from functools import reduce
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -209,3 +210,72 @@ async def test_scalar_tool_schema_is_wrapped_and_round_trips(make_completion: Ca
     assert response.message is not None
     assert response.message.content[0].tool_request is not None
     assert response.message.content[0].tool_request.input == 'Paris'
+
+
+def test_enum_and_defs_tool_schemas_wrap_with_defs_at_root() -> None:
+    """A $ref root to an Enum is wrapped; $defs stay at the root so refs still resolve."""
+    from genkit_openai._models._model import _is_wrapped_tool_schema, _wrap_tool_schema
+
+    spice = {'enum': ['mild', 'hot'], 'type': 'string'}
+    enum_root = {'$defs': {'SpiceLevel': spice}, '$ref': '#/$defs/SpiceLevel'}
+    order = {
+        '$defs': {'Order': {'type': 'object', 'properties': {'dish': {'type': 'string'}}}},
+        '$ref': '#/$defs/Order',
+    }
+    dangling = {'$ref': '#/$defs/Missing'}
+
+    assert _is_wrapped_tool_schema(enum_root) is True
+    assert _is_wrapped_tool_schema(order) is False
+    assert _is_wrapped_tool_schema(dangling) is False
+    assert _wrap_tool_schema(enum_root) == {
+        'type': 'object',
+        'properties': {'input': {'$ref': '#/$defs/SpiceLevel'}},
+        'required': ['input'],
+        '$defs': {'SpiceLevel': spice},
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_of_scalar_tool_call_sends_unwrapped_input(sample_request: ModelRequest) -> None:
+    """Joined tool_request.input chunks match response.message: the bare value, not {"input": ...}."""
+    from genkit.model import ToolDefinition
+
+    def tool_chunk(args: str) -> object:
+        call = MagicMock(id='call1', index=0)
+        call.function.name = 'current_weather'
+        call.function.arguments = args
+        delta = MagicMock(content=None, role=None, tool_calls=[call], reasoning_content=None, refusal=None)
+        return MagicMock(choices=[MagicMock(delta=delta, finish_reason=None, model_extra={})], usage=None)
+
+    class Stream:
+        def __init__(self) -> None:
+            self._chunks = iter([tool_chunk(''), tool_chunk('{"input": "Pa'), tool_chunk('ris"}')])
+
+        def __aiter__(self) -> 'Stream':
+            return self
+
+        async def __anext__(self) -> object:
+            try:
+                return next(self._chunks)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=Stream())
+    model = OpenAIModel(model='gpt-4', client=mock_client)
+    request = sample_request.model_copy(
+        update={
+            'tools': [ToolDefinition(name='current_weather', description='Weather', input_schema={'type': 'string'})]
+        }
+    )
+    streamed: list[ModelResponseChunk] = []
+
+    response = await model._generate_stream(request, streamed.append)
+
+    parts = [p for c in streamed for p in c.content if p.tool_request is not None]
+    joined = ''.join(cast(str, p.tool_request.input) for p in parts if p.tool_request is not None)
+    assert json.loads(joined) == 'Paris'
+    assert response.message is not None
+    final_request = response.message.content[-1].tool_request
+    assert final_request is not None
+    assert final_request.input == 'Paris'

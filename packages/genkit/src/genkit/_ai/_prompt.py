@@ -59,6 +59,7 @@ from genkit._ai._model import (
     clear_on_hop,
     config_schema_at_define,
     normalize_config,
+    python_config_schema,
     resolve_call_model,
     resolve_for_generate,
     resolve_model_name,
@@ -71,7 +72,7 @@ from genkit._core._action import (
     create_action_key,
     get_current_context,
 )
-from genkit._core._config_check import check_config_values, config_field_names
+from genkit._core._config_check import check_config_values, config_field_names, wire_config
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._logger import get_logger
 from genkit._core._middleware import Middleware, _dump_middleware_ref_config, middleware_class_index
@@ -849,6 +850,13 @@ async def to_generate_options(
     default_model = registry.lookup_value('defaultModel', 'defaultModel')
     uses_ref = isinstance(call.model, ModelRef) or isinstance(default_model, ModelRef)
     config = resolved.config if uses_ref else call.config
+    # The generate and render spans record these options, and the Dev UI
+    # model runner reads config back by camelCase key. Rename fields the
+    # model's class declares; with no class the keys are the model's own.
+    action = await registry.resolve_model(model)
+    schema = (python_config_schema(action.config_schema) if action is not None else None) or resolved.config_schema
+    if schema is not None and config is not None:
+        config = wire_config(config=normalize_config(config=config), schema=schema)
 
     resolved_msgs: list[Message] = list(call.messages or [])
 

@@ -2076,12 +2076,6 @@ class Genkit:
             'fn must return an awaitable: pass an async def, a lambda returning a coroutine, '
             'or wrap blocking work in asyncio.to_thread'
         )
-        # A named `def` that isn't async is rejected before it runs, so a sync
-        # `charge_card` never charges and then raises. Lambdas and other
-        # callables can't be told apart until called; they get the check below.
-        is_named_def = (inspect.isfunction(fn) or inspect.ismethod(fn)) and fn.__name__ != '<lambda>'
-        if is_named_def and not inspect.iscoroutinefunction(fn):
-            raise TypeError(not_awaitable)
 
         async def body(_span: object) -> T:
             result = fn()

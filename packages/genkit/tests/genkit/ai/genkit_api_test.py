@@ -5,6 +5,7 @@
 
 """Tests for the Genkit extra API methods."""
 
+import asyncio
 import json
 import os
 import signal
@@ -172,23 +173,22 @@ async def test_genkit_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_genkit_run_rejects_a_sync_def_before_it_runs() -> None:
-    """A sync step raises before its body runs, so the card is never charged."""
+async def test_genkit_run_accepts_sync_def_and_bound_method_returning_awaitable() -> None:
+    """Any callable returning an awaitable works, including named defs and bound methods."""
     ai = Genkit()
-    charges: list[int] = []
 
-    def charge_card() -> str:
-        charges.append(40)
-        return 'charged'
+    async def inner(x: int) -> int:
+        return x * 2
 
-    with pytest.raises(TypeError, match='fn must return an awaitable'):
-        await ai.run('charge', charge_card)  # type: ignore[arg-type]
-    assert charges == []
+    def fan() -> asyncio.Future[tuple[int, int]]:
+        return asyncio.gather(inner(1), inner(2))
 
-    # A lambda can't be inspected up front; it still fails, after the call.
-    with pytest.raises(TypeError, match='fn must return an awaitable'):
-        await ai.run('charge', lambda: charge_card())  # type: ignore[arg-type]
-    assert charges == [40]
+    class Runner:
+        def go(self) -> asyncio.Future[tuple[int, int]]:
+            return asyncio.gather(inner(3), inner(4))
+
+    assert await ai.run('fan', fan) == [2, 4]
+    assert await ai.run('bound', Runner().go) == [6, 8]
 
 
 @pytest.mark.asyncio

@@ -193,7 +193,10 @@ async def test_prompt_whose_model_fails_shows_the_cause_on_the_prompt_span(expor
     assert _tree(spans) == PROMPT_TREE
     prompt_span = next(s for s in spans if s.name == 'greeting_prompt')
     assert prompt_span.attributes[Attr.STATE] == 'error'
+    assert prompt_span.attributes[Attr.ERROR] == 'fake model failure'
+    assert prompt_span.status_message == 'fake model failure'
     assert prompt_span.status_code == 2
+    assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == [MODEL]
     assert '"finishReason":"failed"' in str(prompt_span.attributes[Attr.OUTPUT])
 
 

@@ -82,7 +82,7 @@ class SpanContext(Protocol):
         """Attach custom metadata. Safe to call multiple times."""
         ...
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         """Override genkit:state. ``error`` marks a failed generate that returned."""
         ...
 
@@ -255,11 +255,11 @@ def set_custom_metadata_attributes(attributes: Mapping[str, object]) -> None:
         span.set_metadata(attributes)
 
 
-def set_span_state(state: SpanState) -> None:
-    """Write genkit:state on the active span. No-op outside a span."""
+def set_span_state(state: SpanState, *, message: str | None = None) -> None:
+    """Write genkit:state (and an error's status text) on the active span. No-op outside a span."""
     span = current_span.get()
     if span is not None:
-        span.set_state(state)
+        span.set_state(state, message=message)
 
 
 async def run_in_new_span(
@@ -336,7 +336,7 @@ class NoopSpanContext:
     def set_metadata(self, metadata: Mapping[str, object]) -> None:
         return
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         return
 
 
@@ -359,10 +359,10 @@ class CompositeSpanContext:
             with contextlib.suppress(Exception):
                 span.set_metadata(metadata)
 
-    def set_state(self, state: SpanState) -> None:
+    def set_state(self, state: SpanState, *, message: str | None = None) -> None:
         for span in self._spans:
             with contextlib.suppress(Exception):
-                span.set_state(state)
+                span.set_state(state, message=message)
 
     def _first_non_empty(self, get: Callable[[SpanContext], str]) -> str:
         for span in self._spans:

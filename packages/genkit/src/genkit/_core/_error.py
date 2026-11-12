@@ -424,7 +424,8 @@ class Interrupt(BaseException):
     swallow it and skip the approval. Catch ``Interrupt`` by name if a tool
     needs to clean up, then re-raise. Raised anywhere else (a flow, an
     agent turn body), the action fails with ``GenkitError`` INTERNAL.
-    Tracing treats it as control flow, not a failed span.
+    In the trace the tool's own span shows as interrupted; the generate
+    that paused on it stays green.
     """
 
     def __init__(self, metadata: dict[str, Any] | None = None) -> None:
@@ -895,6 +896,9 @@ class BoxedFailure:
     is_public: bool = False
     details: Any = None  # noqa: ANN401
     source: str | None = None
+    # A plain exception's own words, without the type name ``message`` adds.
+    # The caller gets ``internal error``; the failed generate span shows this.
+    trace_message: str = ''
 
     @classmethod
     def from_exc(cls, exc: BaseException) -> Self:
@@ -912,6 +916,7 @@ class BoxedFailure:
         return cls(
             status='INTERNAL',
             message=f'{type(exc).__name__}: {text}' if text else type(exc).__name__,
+            trace_message=text or type(exc).__name__,
         )
 
     def to_exception(self) -> GenkitError:

@@ -257,8 +257,10 @@ async def test_cancelled_span_leaves_state_unset(exporter, caplog: pytest.LogCap
 
 
 @pytest.mark.asyncio
-async def test_tool_interrupt_is_not_recorded_as_span_error(exporter, caplog: pytest.LogCaptureFixture) -> None:
-    """Tool interrupts are control flow — the tool span must not look like a failure.
+async def test_tool_interrupt_marks_the_tool_span_interrupted_without_an_error_text(
+    exporter, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tool interrupt draws the tool span as interrupted, with no error text and no error log.
 
     Drives a real ``@ai.tool`` that raises ``Interrupt``; the caller gets that
     same ``Interrupt`` back.
@@ -280,9 +282,9 @@ async def test_tool_interrupt_is_not_recorded_as_span_error(exporter, caplog: py
 
     span = _by_name(exporter.get_finished_spans(), 'transfer')
     attrs = dict(span.attributes or {})
-    assert attrs['genkit:state'] == 'success'
+    assert attrs['genkit:state'] == 'error'
     assert 'genkit:error' not in attrs
-    assert span.status_code != 2
+    assert (span.status_code, span.status_message) == (2, None)
     assert json.loads(attrs['genkit:metadata:interrupt']) == {'reason': 'needs_approval'}
     assert not any('Error in run_in_new_span' in r.message for r in caplog.records)
 

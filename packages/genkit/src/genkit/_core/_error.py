@@ -35,6 +35,7 @@ from pydantic_core.core_schema import ErrorType
 from typing_extensions import Self
 
 from genkit._core._compat import StrEnum
+from genkit._core._environment import is_dev_environment
 from genkit._core._typing import _RuntimeErrorWire
 
 
@@ -223,10 +224,9 @@ def client_safe_failure(failure: Failure) -> Failure:
     and cleaned details go out as is. Anything else keeps its status, since
     callers branch on it, but gets a generic message for that status and no
     details, so exception text, provider responses and internal ids stay in
-    the process, the store and the server log. Mirrors Go's
-    ``clientSafeError``, except ``GENKIT_ENV=dev`` still redacts here
-    (matching ``error_body``; the Dev UI reads unredacted errors over
-    reflection).
+    the process, the store and the server log. Under ``GENKIT_ENV=dev`` the
+    failure goes out unredacted, so a local curl shows the real cause. Mirrors
+    Go's ``clientSafeError`` / ``wire.ClientMessage``.
     """
     if failure._public:
         details = _client_details(failure.details)
@@ -239,6 +239,8 @@ def client_safe_failure(failure: Failure) -> Failure:
                 details=details if isinstance(details, dict) else None,
             )
         )
+    if is_dev_environment():
+        return failure
     status = failure.status
     message = 'Internal Error' if status is None or status == 'INTERNAL' else status.replace('_', ' ').title()
     return Failure(status=status, message=message)
@@ -777,6 +779,13 @@ def _client_facing_error(error: object) -> GenkitError | None:
     return None
 
 
+def _dev_client_message(error: object) -> str:
+    """The text ``GENKIT_ENV=dev`` serves in place of ``Internal Error``, like Go's ``err.Error()``."""
+    if isinstance(error, GenkitError):
+        return _split_rendered(error)[1]
+    return str(error) or type(error).__name__
+
+
 # Pydantic's built-in messages read from the schema (expected type, length,
 # Literal choices). These also put the input or the server's own text in the
 # message: a validator's ValueError/assertion, a discriminator tag the caller
@@ -965,6 +974,9 @@ def error_body(error: Exception) -> dict[str, Any]:
     fields without their values, such as ``"Invalid input for flow 'save':
     qty: Input should be a valid integer"``. Any other GenkitError, a provider
     error, and anything else become ``{"message": "Internal Error", "status": "INTERNAL"}``.
+    Under ``GENKIT_ENV=dev`` that body carries the error's own text instead,
+    so a local curl shows the real cause; the status stays ``INTERNAL``.
+    Mirrors Go's ``wire.ClientMessage``.
 
     Example:
         ```python
@@ -978,6 +990,8 @@ def error_body(error: Exception) -> dict[str, Any]:
     """
     facing = _client_facing_error(error)
     if facing is None:
+        if is_dev_environment():
+            return {'message': _dev_client_message(error), 'status': 'INTERNAL'}
         return dict(_INTERNAL_CLIENT_BODY)
     message = facing.message if isinstance(facing, PublicError) else _request_client_message(facing)
     body: dict[str, Any] = {

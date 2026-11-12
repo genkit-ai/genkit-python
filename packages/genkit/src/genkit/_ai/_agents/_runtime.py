@@ -1203,8 +1203,8 @@ def to_error_details(exc: BaseException, *, agent: str | None = None) -> Failure
     The Failure keeps the exception's own text, like JS ``toErrorDetails``
     and Go ``convertKeepText``, so in-process callers, the session store and
     the Dev UI see what went wrong. A served agent's HTTP caller doesn't:
-    ``genkit.web`` swaps in a generic message unless the turn raised a
-    ``PublicError`` (see ``client_safe_failure``). Every non-``PublicError``
+    outside ``GENKIT_ENV=dev``, ``genkit.web`` swaps in a generic message
+    unless the turn raised a ``PublicError`` (see ``client_safe_failure``). Every non-``PublicError``
     failure (except an escaped ``Interrupt``) is logged here unless
     ``generate`` already logged it, so the server log has what the wire
     redacts.

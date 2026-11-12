@@ -28,6 +28,8 @@ fields; anything else is a generic ``Internal Error`` so server details stay in
 your logs. ``result_json`` and ``to_sse`` apply the same rule to a failed
 agent turn's ``error`` (an ``AgentOutput`` or ``SessionSnapshot``), which goes
 out in a 200: it keeps its status, and a non-public message becomes generic.
+Under ``GENKIT_ENV=dev`` both keep the error's own text, like Go, so a local
+curl against a served flow or agent shows the real cause.
 A ``ContextProvider`` reads the ``RequestData`` for one request and returns
 what goes into the flow's context.
 

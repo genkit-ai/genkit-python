@@ -442,6 +442,22 @@ def test_error_status_matches_error_body_status() -> None:
     assert (error_status(crash), error_body(crash)['status']) == (500, 'INTERNAL')
 
 
+def test_error_body_under_genkit_env_dev_keeps_text_but_not_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GENKIT_ENV=dev swaps only the message, so error_status and the body's status still agree."""
+    monkeypatch.setenv('GENKIT_ENV', 'dev')
+    unavailable = GenkitError(status='UNAVAILABLE', message='overloaded', cause=RuntimeError('503 from provider'))
+    public = PublicError('NOT_FOUND', 'no order 99')
+
+    assert error_body(ValueError('secret')) == {'message': 'secret', 'status': 'INTERNAL'}
+    assert error_body(ValueError()) == {'message': 'ValueError', 'status': 'INTERNAL'}
+    assert error_body(unavailable) == {'message': 'overloaded: 503 from provider', 'status': 'INTERNAL'}
+    assert error_status(unavailable) == 500
+    assert error_body(public) == {'message': 'no order 99', 'status': 'NOT_FOUND'}
+
+    monkeypatch.setenv('GENKIT_ENV', 'prod')
+    assert error_body(ValueError('secret')) == {'message': 'Internal Error', 'status': 'INTERNAL'}
+
+
 def test_served_error_body_for_internal_wrapper_around_wrapped_raw_error_is_internal_error() -> None:
     """An INTERNAL wrapper around another wrapped raw raise sends neither wrapper's text."""
     nested = GenkitError(

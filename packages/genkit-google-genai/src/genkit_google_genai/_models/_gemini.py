@@ -835,52 +835,56 @@ class GemmaConfig(GeminiConfig):
     common_field_bounds = {'top_p': (0.0, 1.0)}
 
 
-# Native JSON mode combined with function declarations causes Gemini to
-# re-call tools in a loop; NO_TOOLS keeps native constrained JSON when no
-# tools are attached and switches to schema prompt instructions with tools.
 GEMINI_TEXT_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
     tool_choice=True,
     system_role=True,
-    constrained=ConstrainedSupport.NO_TOOLS,
+    constrained=ConstrainedSupport.ALL,
     output=['text', 'json'],
+)
+
+# Gemini 2.5 HTTP-400s on response_mime_type='application/json' alongside tools,
+# and gemini-3.7/3.8-flash (including gemini-flash-latest) loops tool calls or
+# 504s when response_json_schema is sent next to function declarations.
+GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS = GEMINI_TEXT_SUPPORTS.model_copy(
+    update={'constrained': ConstrainedSupport.NO_TOOLS}
 )
 
 GEMINI_2_5_PRO_EXP_03_25 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Exp 03-25',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO_PREVIEW_03_25 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Preview 03-25',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO_PREVIEW_05_06 = ModelInfo(
     label='Google AI - Gemini 2.5 Pro Preview 05-06',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH_PREVIEW_04_17 = ModelInfo(
     label='Google AI - Gemini 2.5 Flash Preview 04-17',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_PRO = ModelInfo(
     label='Google AI - Gemini 2.5 Pro',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH = ModelInfo(
     label='Google AI - Gemini 2.5 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_2_5_FLASH_LITE = ModelInfo(
     label='Google AI - Gemini 2.5 Flash Lite',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_FLASH_PREVIEW = ModelInfo(
@@ -905,12 +909,17 @@ GEMINI_3_6_FLASH = ModelInfo(
 
 GEMINI_3_7_FLASH = ModelInfo(
     label='Google AI - Gemini 3.7 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_8_FLASH = ModelInfo(
     label='Google AI - Gemini 3.8 Flash',
-    supports=GEMINI_TEXT_SUPPORTS,
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
+)
+
+GEMINI_FLASH_LATEST = ModelInfo(
+    label='Google AI - Gemini Flash Latest',
+    supports=GEMINI_NO_TOOLS_CONSTRAINED_SUPPORTS,
 )
 
 GEMINI_3_1_PRO_PREVIEW = ModelInfo(
@@ -1013,13 +1022,15 @@ GEMINI_3_8_FLASH_LITE_TTS = ModelInfo(
     supports=GEMINI_TTS_SUPPORTS,
 )
 
+# Gemma 4 504s or skips tool calls when native JSON mode is sent alongside
+# function declarations; NO_TOOLS uses prompt-instructed JSON when tools are attached.
 GEMMA_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
     tool_choice=True,
     system_role=True,
-    constrained=ConstrainedSupport.ALL,
+    constrained=ConstrainedSupport.NO_TOOLS,
     output=['text', 'json'],
 )
 
@@ -1131,7 +1142,8 @@ _add_model(GEMINI_2_5_FLASH_LITE, ['gemini-2.5-flash-lite'])
 _add_model(GEMINI_FLASH_LITE_LATEST, ['gemini-flash-lite-latest'])
 _add_model(GEMINI_3_FLASH_PREVIEW, ['gemini-3-flash-preview'])
 _add_model(GEMINI_3_PRO_PREVIEW, ['gemini-3-pro-preview', 'gemini-pro-latest'])
-_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash', 'gemini-flash-latest'])
+_add_model(GEMINI_3_5_FLASH, ['gemini-3.5-flash'])
+_add_model(GEMINI_FLASH_LATEST, ['gemini-flash-latest'])
 _add_model(GEMINI_3_6_FLASH, ['gemini-3.6-flash'])
 _add_model(GEMINI_3_7_FLASH, ['gemini-3.7-flash'])
 _add_model(GEMINI_3_8_FLASH, ['gemini-3.8-flash'])
@@ -1180,7 +1192,7 @@ DEFAULT_SUPPORTS_MODEL = ModelSupports(
     tools=True,
     tool_choice=True,
     system_role=True,
-    constrained=ConstrainedSupport.NO_TOOLS,
+    constrained=ConstrainedSupport.ALL,
 )
 
 
@@ -1349,6 +1361,29 @@ def get_model_config_schema(name: str) -> type[GeminiConfig]:
     return GeminiConfig
 
 
+_LEGACY_NO_TOOLS_GEMINI_PREFIXES = ('gemini-1.', 'gemini-2.0-', 'gemini-2.5-')
+
+
+def _json_schema_instruction(schema: Mapping[str, Any]) -> str:
+    """Prompt instruction matching JsonFormat when native constrained output is unavailable."""
+    return (
+        'Output should be in JSON format and conform to the following schema:\n\n'
+        f'```\n{json.dumps(schema, indent=2)}\n```\n'
+    )
+
+
+def _has_instruction_text(
+    messages: Iterable[Message],
+    system_parts: Iterable[genai_types.Part],
+    instruction: str,
+) -> bool:
+    """Whether *instruction* already appears in request messages or system parts."""
+    needle = instruction.strip()
+    if any(part.text and needle in part.text for msg in messages for part in msg.content):
+        return True
+    return any(part.text and needle in part.text for part in system_parts)
+
+
 def google_model_info(
     version: str,
 ) -> ModelInfo:
@@ -1365,6 +1400,9 @@ def google_model_info(
     """
     if version in SUPPORTED_MODELS:
         return SUPPORTED_MODELS[version]
+    local = version.split('/')[-1]
+    if local in SUPPORTED_MODELS:
+        return SUPPORTED_MODELS[local]
 
     if is_tts_model(version):
         return GENERIC_TTS_MODEL
@@ -1372,6 +1410,12 @@ def google_model_info(
         return GENERIC_IMAGE_MODEL
     if is_gemma_model(version):
         return GENERIC_GEMMA_MODEL
+
+    if local.lower().startswith(_LEGACY_NO_TOOLS_GEMINI_PREFIXES):
+        return ModelInfo(
+            label=f'Google AI - {version}',
+            supports=DEFAULT_SUPPORTS_MODEL.model_copy(update={'constrained': ConstrainedSupport.NO_TOOLS}),
+        )
 
     return ModelInfo(
         label=f'Google AI - {version}',
@@ -1822,8 +1866,12 @@ class GeminiModel:
         """
         model_name = self._version
         if request.config:
-            version = getattr(request.config, 'version', None)
-            if version:
+            version = (
+                cast(Mapping[str, Any], request.config).get('version')
+                if isinstance(request.config, Mapping)
+                else getattr(request.config, 'version', None)
+            )
+            if isinstance(version, str) and version:
                 model_name = version
 
         declared_tools, tool_table = self._declare_tools(request)
@@ -2334,8 +2382,12 @@ class GeminiModel:
             if has_output:
                 model_name = self._version
                 if request.config:
-                    version = getattr(request.config, 'version', None)
-                    if version:
+                    version = (
+                        cast(Mapping[str, Any], request.config).get('version')
+                        if isinstance(request.config, Mapping)
+                        else getattr(request.config, 'version', None)
+                    )
+                    if isinstance(version, str) and version:
                         model_name = version
 
                 # Check if the model supports constrained generation with this configuration
@@ -2353,6 +2405,17 @@ class GeminiModel:
                 # follow-up turn, where tool_choice is back to 'auto'.
                 if supports_constrained and tool_choice != 'required':
                     self._apply_output_config(cfg, request)
+                elif (
+                    not supports_constrained
+                    and request.output_constrained
+                    and request.output_schema
+                    and request.output_format in (None, 'json')
+                    and (request.output_format == 'json' or request.output_content_type == 'application/json')
+                    and (model_info.supports is None or model_info.supports.system_role is not False)
+                ):
+                    fallback_instruction = _json_schema_instruction(request.output_schema)
+                    if not _has_instruction_text(request.messages, system_instruction, fallback_instruction):
+                        system_instruction.append(genai_types.Part(text=fallback_instruction))
 
             if tools:
                 cfg.tools = cast(genai_types.ToolListUnion, tools)
@@ -2402,7 +2465,10 @@ class GeminiModel:
 
         JSON output turns on JSON mode, and constrained JSON output also sends
         the schema verbatim as ``response_json_schema``, or as a converted
-        ``response_schema`` when ``legacy_response_schema`` is set. Constrained
+        ``response_schema`` when ``legacy_response_schema`` is set. When tools
+        are attached and a schema was explicitly marked unconstrained
+        (``output_constrained=False``), JSON mode is omitted so prompt-instructed
+        schema generation does not collide with function calling. Constrained
         enum output sends ``text/x.enum`` with a converted ``response_schema``;
         enum output without a constrained schema sends neither.
         """
@@ -2411,7 +2477,8 @@ class GeminiModel:
         enum_mode = request.output_format == 'enum' or request.output_content_type == 'text/enum'
 
         if json_mode:
-            cfg.response_mime_type = 'application/json'
+            if not (schema and not request.output_constrained and request.tools):
+                cfg.response_mime_type = 'application/json'
             if schema and request.output_constrained:
                 if self._legacy_response_schema:
                     cfg.response_schema = self._output_response_schema(schema)

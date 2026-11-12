@@ -70,7 +70,8 @@ EXPORT_TIMEOUT_SECONDS = 300
 # The Developer UI flushes right before it reads a trace. A hung collector
 # should cost it a couple of seconds, not the full export timeout.
 FLUSH_TIMEOUT_SECONDS = 2.0
-# instrumentationLibrary on every posted span; JS and Go send the same value.
+# Cross-SDK constant for each span's ``instrumentationLibrary`` field in the
+# /api/traces body (a span field, not an attribute). Same value as JS and Go.
 INSTRUMENTATION_LIBRARY = {'name': 'genkit-tracer', 'version': 'v1'}
 
 

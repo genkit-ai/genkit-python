@@ -105,6 +105,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     as_message,
+    check_max_turns,
     chunk_for_stream,
     reject_config_api_key,
     reject_unanswered_interrupts,
@@ -125,6 +126,8 @@ from genkit._core._typing import (
     ToolResponse,
 )
 
+# Tool rounds allowed when the caller sets no max_turns; matches Go default.
+# Each round is a paid model call; a run stops after this many turns.
 DEFAULT_MAX_TURNS = 50
 
 # Interrupt is a BaseException so a tool's `except Exception` can't swallow it.
@@ -675,7 +678,12 @@ def last_user_message(*, messages: list[Message]) -> Message | None:
 
 
 def context_item_template(d: Document, index: int) -> str:
-    """Render a document as a citation line for context injection."""
+    """Render a document as a citation line for context injection.
+
+    Only ``ref``/``id`` goes on the line, same as JS. Other metadata (ACLs,
+    embeddings, tenant ids) stays out of the prompt. Only the document's text
+    is rendered; media parts in a document are not sent.
+    """
     out = '- '
     ref = (d.metadata and (d.metadata.get('ref') or d.metadata.get('id'))) or index
     out += f'[{ref}]: '
@@ -890,12 +898,7 @@ async def run_generate(
     )
     if caller_stopped is not None and caller_stopped.is_set():
         return box_aborted_turn(messages=list(options.messages or []))
-    if options.max_turns is not None and options.max_turns < 0:
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'max turns cannot be negative, got {options.max_turns}',
-            reason=ErrorReason.INVALID_INPUT,
-        )
+    check_max_turns(options.max_turns)
     # The veneer already checked ahead of its span. /util/generate (Dev UI,
     # reflection) starts here, so it fails before middleware or the model runs.
     reject_config_api_key(options.config)
@@ -2908,20 +2911,8 @@ async def resolve_resumed_tool(
         tool_request=tool_req_root,
     )
     if provided_response:
-        # remove the 'interrupt' but leave a 'resolvedInterrupt'
-        metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.get('interrupt')
-        if interrupt:
-            del metadata['interrupt']
         return (
-            Part(
-                tool_request=ToolRequest(
-                    name=tool_req.name,
-                    ref=tool_req.ref,
-                    input=tool_req.input,
-                ),
-                metadata={**metadata, 'resolvedInterrupt': interrupt},
-            ),
+            resolved_interrupt_part(original=tool_req_root, tool_input=tool_req.input),
             provided_response,
         )
 
@@ -2937,6 +2928,8 @@ async def resolve_resumed_tool(
                 message=f'Tool {tool_req.name} not found',
                 reason=ErrorReason.TOOL_NOT_FOUND,
             )
+        restart_req = restart_trp.tool_request
+        assert restart_req is not None
         try:
             executed = await run_restart(
                 tool=tool,
@@ -2947,22 +2940,15 @@ async def resolve_resumed_tool(
         except TOOL_RAISES as e:
             intr = interrupt_from_exc(e)
             if intr is not None:
-                return (interrupt_request_part(tool_req_root, intr), None)
+                # Paused again on the input it actually ran with, so the next
+                # answer (and the history) sees the approved input.
+                metadata, _ = strip_interrupt_metadata(tool_req_root)
+                paused_req = ToolRequest(name=tool_req.name, ref=tool_req.ref, input=restart_req.input)
+                return (interrupt_request_part(Part(tool_request=paused_req, metadata=metadata), intr), None)
             log_dropped_failure(e, tool=tool_req.name)
             raise
-        metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.get('interrupt')
-        if interrupt:
-            del metadata['interrupt']
         return (
-            Part(
-                tool_request=ToolRequest(
-                    name=tool_req.name,
-                    ref=tool_req.ref,
-                    input=tool_req.input,
-                ),
-                metadata={**metadata, 'resolvedInterrupt': interrupt},
-            ),
+            resolved_interrupt_part(original=tool_req_root, tool_input=restart_req.input),
             executed,
         )
 
@@ -3055,6 +3041,30 @@ async def run_restart(
             content=parts_to_wire(multipart.content, tool_name=tool_req.name),
         ),
         metadata=multipart.metadata,
+    )
+
+
+def strip_interrupt_metadata(part: Part) -> tuple[dict[str, Any], object]:
+    """Return metadata without ``interrupt`` or ``replacedInput``, plus the interrupt payload.
+
+    On a tool request in history, ``replacedInput`` would read as a pending
+    restart, so both ``interrupt`` and ``replacedInput`` are cleared when an
+    interrupt is resolved or re-paused.
+    """
+    metadata = dict(part.metadata) if part.metadata else {}
+    interrupt = metadata.pop('interrupt', None)
+    metadata.pop('replacedInput', None)
+    return metadata, interrupt
+
+
+def resolved_interrupt_part(*, original: Part, tool_input: object) -> Part:
+    """Return the resolved history ToolRequest part with ``resolvedInterrupt``."""
+    orig_req = original.tool_request
+    assert orig_req is not None
+    metadata, interrupt = strip_interrupt_metadata(original)
+    return Part(
+        tool_request=ToolRequest(name=orig_req.name, ref=orig_req.ref, input=tool_input),
+        metadata={**metadata, 'resolvedInterrupt': interrupt},
     )
 
 

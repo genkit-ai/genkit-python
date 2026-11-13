@@ -27,6 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
+from numbers import Integral
 from typing import Any, ClassVar, Final, Generic, Literal, TypeGuard, cast, get_args
 
 from pydantic import (
@@ -923,6 +924,7 @@ def reject_unanswered_interrupts(
                     f'resume part for {name!r} is still an interrupt; '
                     'use Part.restart(...) or Part.respond(...) before generate.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )
     for part in respond or []:
         if part.tool_request is not None and part.tool_response is None:
@@ -930,6 +932,7 @@ def reject_unanswered_interrupts(
             raise GenkitError(
                 status='INVALID_ARGUMENT',
                 message=(f'resume_respond got the paused request for {name!r}; answer it with Part.respond(output)'),
+                reason=ErrorReason.INVALID_RESUME,
             )
 
 
@@ -971,6 +974,38 @@ class Message(GenkitModel):
         return [p for p in self.tool_requests if p.metadata and p.metadata.get('interrupt')]
 
 
+def check_max_turns(max_turns: object) -> None:
+    """Validate that ``max_turns`` is a whole, non-negative count of tool rounds.
+
+    ``True`` would pass as 1 and ``nan`` would fail deep in validation, so
+    both get the same INVALID_ARGUMENT as a negative count. ``3.0`` (what
+    dotprompt's float field carries) and ``numbers.Integral`` values (such as
+    ``np.int64``) are accepted.
+    """
+    if max_turns is None:
+        return
+    if isinstance(max_turns, bool):
+        whole = False
+    elif isinstance(max_turns, Integral):
+        whole = True
+    elif isinstance(max_turns, float):
+        whole = max_turns.is_integer()
+    else:
+        whole = False
+    if not whole:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns must be a whole number, got {max_turns!r}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
+    if cast(float, max_turns) < 0:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns cannot be negative, got {max_turns}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
+
+
 class GenerateActionOptions(GenkitModel):
     """Generate options with messages as list[Message] for type-safe use with ai.generate()."""
 
@@ -987,6 +1022,12 @@ class GenerateActionOptions(GenkitModel):
     max_turns: float | None = None
     step_name: str | None = None
     use: list[MiddlewareRef] | None = None
+
+    @field_validator('max_turns', mode='before')
+    @classmethod
+    def _check_max_turns(cls, v: object) -> object:
+        check_max_turns(v)
+        return v
 
     @field_validator('messages', mode='before')
     @classmethod

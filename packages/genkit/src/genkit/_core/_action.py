@@ -25,7 +25,7 @@ import sys
 import time
 import types
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -44,7 +44,7 @@ from pydantic.alias_generators import to_camel
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError, PydanticUserError
 from typing_extensions import Self, TypeVar
 
-from genkit._core._channel import Channel, CloseableQueue, StoppableStream
+from genkit._core._channel import Channel, CloseableQueue, StoppableStream, _stop_scope
 from genkit._core._compat import StrEnum
 from genkit._core._config_check import (
     check_config_json_schema,
@@ -237,9 +237,10 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
       ``await result.aclose()``) stops the run and awaits ``finally:`` cleanup;
       ``.response`` then raises
       ``GenkitError`` with status ``CANCELLED`` (``ModelStreamResponse``
-      resolves with ``finish_reason == ABORTED`` instead). Reading to the end
-      or leaving a bare ``async for`` without closing doesn't stop the run.
-      See ``Action.stream``.
+      resolves with ``finish_reason == ABORTED`` instead). A reader cancelled
+      mid-``async for`` (e.g. a client disconnect) also stops the run, and so
+      does dropping a stream left unfinished after ``break``. Not iterating at
+      all leaves the run going. See ``Action.stream``.
 
     Example:
         ```python
@@ -1296,9 +1297,11 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         Iterate ``.stream`` for chunks and await ``.response`` for the output.
         Closing early via ``async with my_flow.stream(x) as res:`` (or
         ``await res.aclose()``) cancels the run and awaits ``finally:`` cleanup,
-        and ``.response`` then raises ``GenkitError`` with status ``CANCELLED``. Python does not tear down an
-        ``AsyncIterator`` on ``break`` alone, so wrap the stream in ``async with``
-        when exiting early should cancel the action.
+        and ``.response`` then raises ``GenkitError`` with status ``CANCELLED``. Cancelling
+        the reader mid-``async for`` stops the run the same way. Python does not
+        tear down an ``AsyncIterator`` on ``break`` alone: the run stops once the
+        stream is dropped, so wrap it in ``async with`` when the stop should
+        happen (and finish) right at the ``break``.
 
         Example:
             async with my_flow.stream(x) as res:
@@ -1338,19 +1341,30 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             init=init,
             input_stream=input_stream,
         )
-        run_task = asyncio.create_task(resp)
+        child_stops: set[asyncio.Task[None]] = set()
+
+        def _create_run_task() -> asyncio.Task[ActionResponse[OutputT]]:
+            _stop_scope.set(child_stops)
+            return asyncio.create_task(resp)
+
+        run_task = copy_context().run(_create_run_task)
         channel.set_close_future(run_task)
         reader_stopped = asyncio.Event()
 
         async def stop() -> None:
-            if run_task.done():
-                return
-            if not reader_stopped.is_set():
-                reader_stopped.set()
-                run_task.cancel()
-            # waiting here is what lets aclosing(...) promise the run is over
-            # once the block exits.
-            await asyncio.wait([run_task])
+            if not run_task.done():
+                if not reader_stopped.is_set():
+                    reader_stopped.set()
+                    run_task.cancel()
+                # waiting here is what lets aclosing(...) promise the run is over
+                # once the block exits.
+                await asyncio.wait([run_task])
+            # Let done-callbacks on run_task (e.g. inner StoppableStream._on_reader_done)
+            # schedule their _spawn_stop tasks, then drain any stops spawned in this scope.
+            await asyncio.sleep(0)
+            while child_stops:
+                await asyncio.wait(list(child_stops))
+                await asyncio.sleep(0)
 
         # Mirror the run's terminal state onto .response so a caller awaiting it
         # sees the same success/error/cancel the run ended with, instead of

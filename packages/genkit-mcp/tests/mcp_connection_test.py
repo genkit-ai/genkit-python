@@ -1068,7 +1068,7 @@ async def test_startup_failure_is_terminal_and_names_the_server_and_why(tmp_path
     assert isinstance(cause, OSError)
     assert attached_cause(failure.value) is cause
     assert str(cause) in str(failure.value)
-    assert repr(cause) in get_reflection_json(failure.value).message
+    assert get_reflection_json(failure.value).message == str(failure.value)
     assert connection._state is _ConnectionState.FAILED
 
     with pytest.raises(_ConnectionFailedError, match='failed'):

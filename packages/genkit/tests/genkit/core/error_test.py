@@ -17,6 +17,7 @@
 """Unit tests for the error module."""
 
 import json
+import os
 from typing import Any, Literal
 from unittest.mock import MagicMock
 
@@ -32,6 +33,7 @@ from genkit._core._error import (
     GenkitError,
     PublicError,
     ReflectionError,
+    format_exception_stack,
     format_validation_error,
     get_error_stack,
     get_reflection_json,
@@ -241,7 +243,7 @@ def test_genkit_error_to_json() -> None:
     serializable = get_reflection_json(error)
     assert isinstance(serializable, ReflectionError)
     assert serializable.code == 5
-    assert serializable.message == 'Resource not found'
+    assert serializable.message == 'NOT_FOUND: Resource not found'
     assert serializable.details is not None
     assert serializable.details.model_dump()['id'] == 123
 
@@ -773,3 +775,119 @@ def test_genkit_error_with_empty_validation_error_has_no_trailing_colon() -> Non
     )
 
     assert str(error) == 'INVALID_ARGUMENT: title missing'
+
+
+def test_reflection_message_matches_the_span_status_text() -> None:
+    """The runner heading is str(error), the same `STATUS: message: cause` the trace shows, not the cause's repr."""
+    error = GenkitError(
+        status='UNAVAILABLE',
+        message='pricing service unavailable for ribeye',
+        cause=ConnectionError('pricing upstream timed out'),
+    )
+
+    assert get_reflection_json(error).message == (
+        'UNAVAILABLE: pricing service unavailable for ribeye: pricing upstream timed out'
+    )
+
+
+class _SdkError(Exception):
+    """Shaped like google-genai's APIError: .message is the text, str() wraps it in a dict repr."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"404 NOT_FOUND. {{'error': {{'message': {message!r}}}}}")
+        self.message = message
+
+
+def test_cause_whose_message_is_ours_is_not_appended() -> None:
+    """A provider error built from the SDK error's own message doesn't repeat it as a dict repr."""
+    cause = _SdkError('models/gemini-0.9-menu is not found')
+
+    error = GenkitError(status='NOT_FOUND', message=cause.message, cause=cause)
+
+    assert str(error) == 'NOT_FOUND: models/gemini-0.9-menu is not found'
+    assert error.__cause__ is cause
+
+
+def test_cause_with_a_different_message_is_still_appended() -> None:
+    """Only an exact repeat is dropped; a cause that says something new still shows."""
+    error = GenkitError(status='UNAVAILABLE', message='menu lookup failed', cause=_SdkError('quota exhausted'))
+
+    assert str(error).startswith('UNAVAILABLE: menu lookup failed: 404 NOT_FOUND.')
+
+
+# Code compiled under genkit/_core stands in for the action runtime that wraps
+# every user function, so the test controls which frames count as internal.
+_FAKE_RUNTIME = os.path.join(os.path.dirname(error_mod.__file__), '_fake_runtime.py')
+
+
+def _runtime(source: str) -> dict[str, Any]:
+    scope: dict[str, Any] = {}
+    exec(compile(source, _FAKE_RUNTIME, 'exec'), scope)  # noqa: S102 - test-only stand-in for Genkit frames
+    return scope
+
+
+def _check_allergens(dish: str) -> str:
+    raise ValueError(f'allergen db unavailable for {dish}')
+
+
+def _frames(stack: str) -> list[str]:
+    return [line.strip() for line in stack.splitlines() if line.strip().startswith('File ')]
+
+
+def test_stack_drops_leading_genkit_frames_so_the_user_frame_comes_first() -> None:
+    """A tool failure's stack starts at the tool, not at run_in_new_span."""
+    runtime = _runtime(
+        'def run_action(fn, arg):\n'
+        '    try:\n'
+        '        return invoke(fn, arg)\n'
+        '    except Exception as e:\n'
+        '        return e\n'
+        'def invoke(fn, arg):\n'
+        '    return fn(arg)\n'
+    )
+
+    exc = runtime['run_action'](_check_allergens, 'pad thai')
+    stack = format_exception_stack(exc)
+
+    frames = _frames(stack)
+    assert len(frames) == 1
+    assert __file__ in frames[0] and 'in _check_allergens' in frames[0]
+    assert stack.rstrip().endswith('ValueError: allergen db unavailable for pad thai')
+
+
+def test_stack_keeps_every_frame_when_all_are_genkit() -> None:
+    """A failure inside Genkit itself keeps its frames, so the bug still has a location."""
+    runtime = _runtime(
+        'def run_action():\n'
+        '    try:\n'
+        '        return resolve()\n'
+        '    except Exception as e:\n'
+        '        return e\n'
+        'def resolve():\n'
+        '    raise KeyError("model")\n'
+    )
+
+    stack = format_exception_stack(runtime['run_action']())
+
+    assert [f.split(', in ')[-1] for f in _frames(stack)] == ['run_action', 'resolve']
+
+
+def test_stack_trims_each_traceback_in_the_cause_chain() -> None:
+    """Both the cause and the wrapping error lose their leading Genkit frames."""
+
+    def surge_pricing(dish: str) -> str:
+        try:
+            _check_allergens(dish)
+        except ValueError as e:
+            raise GenkitError(status='UNAVAILABLE', message='pricing unavailable', cause=e) from e
+        return dish
+
+    runtime = _runtime(
+        'def run_action(fn, arg):\n    try:\n        return fn(arg)\n    except Exception as e:\n        return e\n'
+    )
+
+    stack = format_exception_stack(runtime['run_action'](surge_pricing, 'ribeye'))
+
+    assert _FAKE_RUNTIME not in stack
+    assert 'The above exception was the direct cause of the following exception' in stack
+    assert [f.split(', in ')[-1] for f in _frames(stack)] == ['surge_pricing', '_check_allergens', 'surge_pricing']

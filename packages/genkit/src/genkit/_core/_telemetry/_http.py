@@ -41,7 +41,7 @@ from typing import Literal, TypeVar
 from urllib.parse import urljoin, urlparse
 
 from .._environment import is_dev_environment
-from .._error import GenkitError, Interrupt, _StreamingCallbackError, format_exception_traceback
+from .._error import GenkitError, Interrupt, _StreamingCallbackError, format_exception_stack
 from .._logger import get_logger
 from .._reflection_config import reflection_enabled
 from ._attrs import Attr, State, metadata_key
@@ -131,6 +131,12 @@ class DirectSpanContext:
             if message:
                 self._span.attributes[Attr.ERROR] = message
                 self._span.status_message = message
+                # A span that fails without raising (a boxed generate, a
+                # dotprompt) has no exception event, and the Traces tab titles
+                # it "Error". The boxed response holds no traceback, so this
+                # one carries the message only; the span that raised has the stack.
+                if self._span.exception is None:
+                    self._span.exception = {'exception.message': message}
             if not self._span.has_failed_child:
                 self._span.attributes[Attr.IS_FAILURE_SOURCE] = True
             note_child_failed(self._span)
@@ -160,7 +166,7 @@ def exception_attributes(exc: BaseException) -> dict[str, str]:
     message = str(exc)
     if message:
         attrs['exception.message'] = message
-    attrs['exception.stacktrace'] = format_exception_traceback(exc)
+    attrs['exception.stacktrace'] = format_exception_stack(exc)
     return attrs
 
 

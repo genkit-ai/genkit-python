@@ -49,7 +49,7 @@ from genkit._core._error import (
     ReflectionError,
     ReflectionErrorDetails,
     StatusCodes,
-    format_exception_traceback,
+    format_exception_stack,
     get_reflection_json,
     interrupt_escape_error,
 )
@@ -534,7 +534,7 @@ class ReflectionServerV2:
         ref = get_reflection_json(exc)
         stack = ref.details.stack if ref.details else None
         if not stack and exc.__traceback__:
-            stack = format_exception_traceback(exc)
+            stack = format_exception_stack(exc)
         tid = trace_holder[0] or (ref.details.trace_id if ref.details else None)
         status = ReflectionError(
             code=ref.code,

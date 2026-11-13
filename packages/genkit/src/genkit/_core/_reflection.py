@@ -42,7 +42,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from genkit._core._action import Action, BidiAction, input_from_json, parse_action_key
 from genkit._core._constants import GENKIT_VERSION
 from genkit._core._environment import is_dev_environment
-from genkit._core._error import Interrupt, format_exception_traceback, get_reflection_json, interrupt_escape_error
+from genkit._core._error import Interrupt, format_exception_stack, get_reflection_json, interrupt_escape_error
 from genkit._core._logger import get_logger
 from genkit._core._middleware import _MiddlewareMetadata
 from genkit._core._model import AgentInit, AgentInput, ModelRef
@@ -186,7 +186,7 @@ class ActionRunner:
                 error = get_reflection_json(interrupt_escape_error(e) or e, trace_id=self.trace_id)
                 if error.details is not None and not error.details.stack and e.__traceback__:
                     # Same as v2: `genkit flow:run` prints this, so give it Python frames.
-                    stack = format_exception_traceback(e)
+                    stack = format_exception_stack(e)
                     error = error.model_copy(update={'details': error.details.model_copy(update={'stack': stack})})
                 response_json = json.dumps({'error': error.model_dump(by_alias=True)})
 

@@ -106,6 +106,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     as_message,
+    check_max_turns,
     chunk_for_stream,
     reject_config_api_key,
     reject_unanswered_interrupts,
@@ -751,30 +752,6 @@ def augment_with_context(
         new_user.content.append(text_part)
 
     return new_req
-
-
-def check_max_turns(max_turns: object) -> None:
-    """max_turns is a whole, non-negative count of tool rounds.
-
-    ``True`` would pass as 1 and ``nan`` would fail deep in validation, so
-    both get the same INVALID_ARGUMENT as a negative count. ``3.0`` (what
-    dotprompt's float field carries) is fine.
-    """
-    if max_turns is None:
-        return
-    whole = isinstance(max_turns, int) or (isinstance(max_turns, float) and max_turns.is_integer())
-    if isinstance(max_turns, bool) or not whole:
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'max turns must be a whole number, got {max_turns!r}',
-            reason=ErrorReason.INVALID_INPUT,
-        )
-    if cast(float, max_turns) < 0:
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'max turns cannot be negative, got {max_turns}',
-            reason=ErrorReason.INVALID_INPUT,
-        )
 
 
 def raise_if_stopped(caller_stopped: asyncio.Event | None) -> None:
@@ -2786,29 +2763,6 @@ async def resolve_tool(registry: Registry, tool_ref: str | Tool) -> Action:
     return tool
 
 
-def resume_precondition_message(messages: list[Message]) -> str:
-    """Why a resume can't answer this history, naming prompt= when that's the cause.
-
-    ``prompt=`` with ``resume_respond``/``resume_restart`` appends a user turn
-    after the paused tool request, so the last message is no longer the one
-    the resume answers.
-    """
-    message = (
-        "Cannot 'resume' generation unless the previous message is a model message with at least one tool request."
-    )
-    if (
-        len(messages) >= 2
-        and messages[-1].role == Role.USER
-        and messages[-2].role == Role.MODEL
-        and any(p.tool_request is not None for p in messages[-2].content)
-    ):
-        message += (
-            ' The last message is a user turn after the paused tool request;'
-            ' resume_respond/resume_restart cannot be combined with prompt=.'
-        )
-    return message
-
-
 async def resolve_resume_options(
     *,
     options: GenerateActionOptions,
@@ -2827,7 +2781,10 @@ async def resolve_resume_options(
     if last_message is None or last_message.role != Role.MODEL or len(tool_requests) == 0:
         raise PublicError(
             'FAILED_PRECONDITION',
-            resume_precondition_message(messages),
+            (
+                "Cannot 'resume' generation unless the previous message is a model "
+                'message with at least one tool request.'
+            ),
             reason=ErrorReason.INVALID_RESUME,
         )
 
@@ -2966,20 +2923,8 @@ async def resolve_resumed_tool(
         tool_request=tool_req_root,
     )
     if provided_response:
-        # remove the 'interrupt' but leave a 'resolvedInterrupt'
-        metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.get('interrupt')
-        if interrupt:
-            del metadata['interrupt']
         return (
-            Part(
-                tool_request=ToolRequest(
-                    name=tool_req.name,
-                    ref=tool_req.ref,
-                    input=tool_req.input,
-                ),
-                metadata={**metadata, 'resolvedInterrupt': interrupt},
-            ),
+            resolved_interrupt_part(original=tool_req_root, tool_input=tool_req.input),
             provided_response,
         )
 
@@ -2995,7 +2940,8 @@ async def resolve_resumed_tool(
                 message=f'Tool {tool_req.name} not found',
                 reason=ErrorReason.TOOL_NOT_FOUND,
             )
-        ran_request, metadata, interrupt = restarted_tool_request(original=tool_req_root, restart=restart_trp)
+        restart_req = restart_trp.tool_request
+        assert restart_req is not None
         try:
             executed = await run_restart(
                 tool=tool,
@@ -3008,11 +2954,13 @@ async def resolve_resumed_tool(
             if intr is not None:
                 # Paused again on the input it actually ran with, so the next
                 # answer (and the history) sees the approved input.
-                return (interrupt_request_part(Part(tool_request=ran_request, metadata=metadata), intr), None)
+                metadata, _ = strip_interrupt_metadata(tool_req_root)
+                paused_req = ToolRequest(name=tool_req.name, ref=tool_req.ref, input=restart_req.input)
+                return (interrupt_request_part(Part(tool_request=paused_req, metadata=metadata), intr), None)
             log_dropped_failure(e, tool=tool_req.name)
             raise
         return (
-            Part(tool_request=ran_request, metadata={**metadata, 'resolvedInterrupt': interrupt}),
+            resolved_interrupt_part(original=tool_req_root, tool_input=restart_req.input),
             executed,
         )
 
@@ -3108,23 +3056,28 @@ async def run_restart(
     )
 
 
-def restarted_tool_request(*, original: Part, restart: Part) -> tuple[ToolRequest, dict[str, Any], object]:
-    """The tool request history keeps for a restart: the input the tool ran with.
+def strip_interrupt_metadata(part: Part) -> tuple[dict[str, Any], object]:
+    """Return metadata without ``interrupt`` or ``replacedInput``, plus the interrupt payload.
 
-    ``restart(replace_input=...)`` swaps the input. History and the model's
-    next turn read the approved input. The original input is not recorded:
-    on a tool request in history, ``replacedInput`` would read as a pending
-    restart. Returns the request, its metadata without ``interrupt`` or
-    ``replacedInput``, and the interrupt payload.
+    On a tool request in history, ``replacedInput`` would read as a pending
+    restart, so both ``interrupt`` and ``replacedInput`` are cleared when an
+    interrupt is resolved or re-paused.
     """
-    original_req = original.tool_request
-    restart_req = restart.tool_request
-    assert original_req is not None and restart_req is not None
-    metadata = dict(original.metadata) if original.metadata else {}
+    metadata = dict(part.metadata) if part.metadata else {}
     interrupt = metadata.pop('interrupt', None)
     metadata.pop('replacedInput', None)
-    ran = ToolRequest(name=original_req.name, ref=original_req.ref, input=restart_req.input)
-    return ran, metadata, interrupt
+    return metadata, interrupt
+
+
+def resolved_interrupt_part(*, original: Part, tool_input: object) -> Part:
+    """Return the resolved history ToolRequest part with ``resolvedInterrupt``."""
+    orig_req = original.tool_request
+    assert orig_req is not None
+    metadata, interrupt = strip_interrupt_metadata(original)
+    return Part(
+        tool_request=ToolRequest(name=orig_req.name, ref=orig_req.ref, input=tool_input),
+        metadata={**metadata, 'resolvedInterrupt': interrupt},
+    )
 
 
 def matching_restart(

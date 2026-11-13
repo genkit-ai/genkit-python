@@ -87,13 +87,14 @@ def _write_pkg(
 
 def _make_workspace_fixture(py_root: Path, version: str = '0.12.0', *, include_evaluators: bool = True) -> None:
     cap = consistency.expected_major_cap(version)
+    eval_cap = consistency.expected_major_cap(version, zero_x_only=True)
     extras: dict[str, list[str]] = {
         'openai': [f'genkit-openai>={version},<{cap}'],
         'vertex-ai': [f'genkit-vertexai[anthropic,openai]>={version},<{cap}'],
         'vertexai': [f'genkit-vertexai[anthropic,openai]>={version},<{cap}'],
     }
     if include_evaluators:
-        extras['evaluators'] = [f'genkit-evaluators>={version},<1']
+        extras['evaluators'] = [f'genkit-evaluators>={version},<{eval_cap}']
 
     _write_pkg(
         py_root,
@@ -129,7 +130,7 @@ def _make_workspace_fixture(py_root: Path, version: str = '0.12.0', *, include_e
             py_root,
             'genkit-evaluators',
             version,
-            dependencies=[f'genkit>={version},<1', 'jsonata-python>=0.6.0'],
+            dependencies=[f'genkit>={version},<{eval_cap}', 'jsonata-python>=0.6.0'],
         )
 
 
@@ -165,7 +166,8 @@ def test_real_workspace_passes_consistency_and_extras_contract() -> None:
     assert opt_deps['vertex-ai'] == [f'genkit-vertexai[anthropic,openai]>={core_version},<2']
     assert opt_deps['vertexai'] == [f'genkit-vertexai[anthropic,openai]>={core_version},<2']
     if 'evaluators' in opt_deps:
-        assert opt_deps['evaluators'] == [f'genkit-evaluators>={core_version},<1']
+        eval_cap = consistency.expected_major_cap(core_version, zero_x_only=True)
+        assert opt_deps['evaluators'] == [f'genkit-evaluators>={core_version},<{eval_cap}']
 
     # Every publishable plugin is reachable from at least one genkit[...] extra.
     referenced_plugins = {spec.split('[', 1)[0].split('>=', 1)[0] for specs in opt_deps.values() for spec in specs}
@@ -183,7 +185,7 @@ def test_real_workspace_passes_consistency_and_extras_contract() -> None:
     assert 'openai>=1.60.0,<3' in openai_project['dependencies']
 
 
-def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_preserves_lt1(tmp_path: Path) -> None:
+def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_advances_minor_cap(tmp_path: Path) -> None:
     _make_workspace_fixture(tmp_path, '0.12.0', include_evaluators=True)
     assert _workspace_errors(tmp_path) == []
 
@@ -194,7 +196,7 @@ def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_preserves_lt1(tmp_pat
     assert genkit_proj['version'] == '0.13.0'
     assert genkit_proj['optional-dependencies']['openai'] == ['genkit-openai>=0.13.0,<2']
     assert genkit_proj['optional-dependencies']['vertexai'] == ['genkit-vertexai[anthropic,openai]>=0.13.0,<2']
-    assert genkit_proj['optional-dependencies']['evaluators'] == ['genkit-evaluators>=0.13.0,<1']
+    assert genkit_proj['optional-dependencies']['evaluators'] == ['genkit-evaluators>=0.13.0,<0.14']
 
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
     assert openai_proj['dependencies'] == ['genkit>=0.13.0,<2', 'openai>=1.60.0,<3']
@@ -202,7 +204,7 @@ def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_preserves_lt1(tmp_pat
     evals_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-evaluators' / 'pyproject.toml'))[
         'project'
     ]
-    assert evals_proj['dependencies'] == ['genkit>=0.13.0,<1', 'jsonata-python>=0.6.0']
+    assert evals_proj['dependencies'] == ['genkit>=0.13.0,<0.14', 'jsonata-python>=0.6.0']
 
     vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
         'project'
@@ -350,7 +352,7 @@ def test_bump_version_dry_run_leaves_files_untouched(tmp_path: Path) -> None:
     after = (tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml').read_text(encoding='utf-8')
     assert before == after
     assert 'genkit>=0.13.0,<2' in proc.stdout
-    assert 'genkit>=0.13.0,<1' in proc.stdout
+    assert 'genkit>=0.13.0,<0.14' in proc.stdout
 
 
 def test_bump_transition_0_13_0_to_rc_moves_every_intra_repo_bound(tmp_path: Path) -> None:

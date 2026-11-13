@@ -124,10 +124,12 @@ def load_pyproject(filepath: str) -> dict[str, object]:
 
 
 def expected_major_cap(core_version: str, *, zero_x_only: bool = False) -> str:
-    """Return the expected upper major cap for a given core release version."""
+    """Return the expected upper cap for a given core release version."""
+    base = core_version.split('-rc.', 1)[0]
+    major_str, minor_str, _ = base.split('.', 2)
+    major = int(major_str)
     if zero_x_only:
-        return '1'
-    major = int(core_version.split('.', 1)[0])
+        return f'0.{int(minor_str) + 1}'
     return str(max(2, major + 1))
 
 

@@ -31,9 +31,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  # Final release line: genkit 1.0 removes evaluators. bump_version moves the
-  # floor to each release; the <1 cap stays.
-  "genkit>=0.13.0,<1",
+  # Evaluators are slated for removal before or at 1.0. Cap at the next minor
+  # so a later 0.x release can drop them without breaking existing installs.
+  "genkit>=0.13.0,<0.14",
   "jsonata-python>=0.6.0",
 ]
 description = "Regex and schema checks for genkit eval:run. No API key."

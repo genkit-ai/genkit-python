@@ -30,7 +30,7 @@ ai = Genkit(plugins=[GoogleAI()])
 async def main() -> None:
     # 1. Stream text as the model writes it
     stream = ai.generate_stream(
-        model="googleai/gemini-flash-latest",
+        model=GoogleAI.gemini("gemini-flash-latest"),
         prompt="Stream a 2-line poem about space.",
     )
     async for chunk in stream:
@@ -57,13 +57,14 @@ from genkit_google_genai import GoogleAI
 ai = Genkit(plugins=[GoogleAI()])
 
 
-# 1. Define a tool with a Pydantic input
+# 1. Define a tool with a Pydantic input (the docstring becomes the tool description)
 class WeatherInput(BaseModel):
     city: str = Field(description="Target city name")
 
 
-@ai.tool(description="Get current weather for a location")
+@ai.tool
 async def get_weather(input: WeatherInput) -> str:
+    """Get current weather for a location."""
     return f"Sunny, 72°F in {input.city}"
 
 
@@ -76,7 +77,7 @@ class ActivityPlan(BaseModel):
 async def main() -> None:
     # 3. Stream; Genkit runs the tool calls and parses the output
     stream = ai.generate_stream(
-        model="googleai/gemini-flash-latest",
+        model=GoogleAI.gemini("gemini-flash-latest"),
         prompt="Suggest activities for Seattle today.",
         tools=[get_weather],
         output_schema=ActivityPlan,
@@ -114,15 +115,16 @@ class Transfer(BaseModel):
     to_account: str
 
 
-@ai.tool(description="Transfer money to an account")
+@ai.tool
 async def transfer_money(transfer: Transfer) -> str:
+    """Transfer money to an account."""
     return f"Transferred ${transfer.amount} to {transfer.to_account}"
 
 
 # 2. Every tool call pauses for approval (allowed_tools=[])
 agent = ai.define_agent(
     name="bankingAgent",
-    model="googleai/gemini-flash-latest",
+    model=GoogleAI.gemini("gemini-flash-latest"),
     system="Banking assistant. Call transfer_money when requested.",
     tools=[transfer_money],
     use=[tool_approval],
@@ -168,7 +170,7 @@ store = FirestoreSessionStore()
 # 2. Define an agent backed by the store
 agent = ai.define_agent(
     name="supportAgent",
-    model="googleai/gemini-flash-latest",
+    model=GoogleAI.gemini("gemini-flash-latest"),
     system="You are a helpful customer support agent.",
     store=store,
 )

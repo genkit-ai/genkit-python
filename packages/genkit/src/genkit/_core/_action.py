@@ -951,7 +951,7 @@ class ActionContext(Generic[ChunkT]):
 
 
 class FlowContext(ActionContext[ChunkT]):
-    """Execution context passed to flow and custom action functions.
+    """Execution context passed to flow functions.
 
     Provides ``ctx.send_chunk(chunk)`` for streaming ``ChunkT`` chunks and
     ``ctx.context`` for caller context data.
@@ -992,8 +992,10 @@ class ModelContext(ActionContext[ModelResponseChunk]):
 class EmbedContext(ActionContext[Never]):
     """Execution context passed to embedder functions.
 
-    ``ctx.context`` holds the caller's context dict. Embedders don't stream,
-    so ``send_chunk`` accepts nothing.
+    ``ctx.context`` holds the caller's context dict. Embedders return one
+    response and never emit chunks, so ``send_chunk`` accepts nothing.
+    ``ctx.is_streaming`` still reports whether the caller asked to stream
+    (``Embedder.stream()``, a Dev UI run with ``stream=true``).
 
     A per-tenant key passed on ``embed`` reaches the embedder here:
 

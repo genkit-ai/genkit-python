@@ -454,4 +454,40 @@ if __name__ == '__main__':
     ai.run_main(main())
 ```
 
+### Vertex AI Evaluators
+
+Built-in evaluators for assessing model output quality, accessed via `ai.evaluate()`. The VertexAI plugin registers them only when a project resolves (`VertexAI(project=...)` or `GOOGLE_CLOUD_PROJECT`); `VertexAI(api_key=...)` without a project lists none. They authenticate with Application Default Credentials, not `api_key` or `credentials`:
+
+```python
+from genkit import Genkit
+from genkit.evaluator import BaseDataPoint
+from genkit_google_genai import VertexAI
+
+ai = Genkit(plugins=[VertexAI(project='my-project')])
+
+
+async def main() -> None:
+    # 1. Prepare a test dataset
+    dataset = [
+        BaseDataPoint(
+            input='Write about AI.',
+            output='AI is transforming industries through intelligent automation.',
+        ),
+    ]
+
+    # 2. Score fluency (1-5)
+    results = await ai.evaluate(
+        evaluator='vertexai/fluency',
+        dataset=dataset,
+    )
+
+    for result in results:
+        print(f'Score: {result.evaluation[0].score}')
+        # => Score: 5
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
+```
+
 Runnable snippets are in [`samples`](../../samples).

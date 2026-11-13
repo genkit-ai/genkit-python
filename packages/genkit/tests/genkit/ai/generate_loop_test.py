@@ -5,6 +5,9 @@
 
 """Turn-loop invariants: max_turns, restart input, system= with history, docs=, and resume with prompt=."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
+
 import numpy as np
 import pytest
 
@@ -15,13 +18,16 @@ from genkit import (
     Message,
     ModelResponse,
     Part,
+    Tool,
     ToolContext,
 )
 from genkit._ai._generate import CallScope, augment_with_context, generate_action, resolved_interrupt_part
 from genkit._core import _tool as tool_mod
+from genkit._core._action import ActionRunContext
 from genkit._core._error import ErrorReason, GenkitError
-from genkit._core._model import GenerateActionOptions, ModelRequest, reject_unanswered_interrupts
+from genkit._core._model import GenerateActionOptions, ModelRequest, MultipartToolResponse, reject_unanswered_interrupts
 from genkit._core._typing import FinishReason, Role, ToolRequest
+from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams, ToolHookParams
 from genkit.testing import ScriptedModel, define_scripted_model
 
 
@@ -242,6 +248,30 @@ def test_docs_context_without_extra_metadata_is_unchanged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_child_flows_get_their_own_copy_of_the_context() -> None:
+    """Concurrent child flows writing ctx.context don't clobber each other or the parent."""
+    ai = Genkit()
+    seen: dict[str, object] = {}
+
+    @ai.flow()
+    async def tag_order(table: str, ctx: ActionRunContext) -> str:
+        ctx.context['table'] = table
+        await asyncio.sleep(0.01)
+        seen[table] = ctx.context['table']
+        return table
+
+    @ai.flow()
+    async def seat_party(n: int, ctx: ActionRunContext) -> list[str]:
+        tables = await asyncio.gather(*(tag_order(f't{i}') for i in range(n)))
+        seen['parent'] = ctx.context.get('table')
+        return list(tables)
+
+    await seat_party(3, context={'auth': {'uid': 'host-1'}})
+
+    assert seen == {'t0': 't0', 't1': 't1', 't2': 't2', 'parent': None}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('bad', [True, False, float('nan'), float('inf'), 2.5])
 async def test_max_turns_rejects_non_whole_numbers(bad: object) -> None:
     """max_turns=True used to run as 1; nan leaked a raw ValidationError."""
@@ -344,6 +374,121 @@ async def test_bare_restart_still_reads_as_resumed(monkeypatch: pytest.MonkeyPat
 
     assert len(seen) == 1
     assert {'resumed': {}} in span_attrs
+
+
+@pytest.mark.asyncio
+async def test_tool_accepts_an_async_callable_instance() -> None:
+    """A class with `async def __call__` is an async tool; sync callables still fail."""
+
+    class AllergyCheck:
+        async def __call__(self, dish: str) -> str:
+            return f'{dish}: nut-free'
+
+    class SyncCheck:
+        def __call__(self, dish: str) -> str:
+            return dish
+
+    tool = Tool(AllergyCheck(), name='allergy_check')
+    assert tool.name == 'allergy_check'
+    assert tool.input_schema == {'type': 'string'}
+    assert (await tool.run('peanuts')).response == 'peanuts: nut-free'
+
+    with pytest.raises(TypeError, match='must be async'):
+        Tool(SyncCheck(), name='sync_check')  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]
+
+
+@pytest.mark.asyncio
+async def test_middleware_sees_the_context_passed_to_generate() -> None:
+    """Genkit.current_context() inside a hook is the generate call's context."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok')]
+    seen: list[object] = []
+
+    class AuditTenant(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            seen.append(Genkit.current_context())
+            return await next_fn(params, ctx)
+
+    await ai.generate(prompt='hi', context={'tenant': 'bistro-9'}, use=[AuditTenant()])
+
+    assert seen == [{'tenant': 'bistro-9'}]
+    assert Genkit.current_context() is None
+
+
+@pytest.mark.asyncio
+async def test_middleware_cleared_context_does_not_leak_to_tool() -> None:
+    """Clearing ctx.context in wrap_tool hides caller secrets from the tool."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    tool_seen: list[object] = []
+
+    @ai.tool(name='transfer')
+    async def transfer(inp: dict, ctx: ToolContext) -> str:
+        tool_seen.append(dict(ctx.context))
+        return 'ok'
+
+    class StripContext(Middleware):
+        async def wrap_tool(
+            self,
+            params: ToolHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ToolHookParams, MiddlewareContext], Awaitable[MultipartToolResponse]],
+        ) -> MultipartToolResponse:
+            ctx.context.clear()
+            return await next_fn(params, ctx)
+
+    pm.responses = [_transfer_request(1), _answers('done')]
+    await ai.generate(prompt='go', tools=['transfer'], context={'secrets': 'top-secret'}, use=[StripContext()])
+
+    assert tool_seen == [{}]
+
+
+@pytest.mark.asyncio
+async def test_middleware_context_mutations_sync_with_current_context_and_isolate_flow() -> None:
+    """Middleware mutations are visible via current_context() and do not mutate parent flow context."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok')]
+    seen_in_second: list[object] = []
+
+    class RewriteTenant(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            ctx.context['tenant'] = 'rewritten'
+            return await next_fn(params, ctx)
+
+    class ReadCurrentContext(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            current = Genkit.current_context()
+            seen_in_second.append(dict(current) if current is not None else None)
+            if current is not None:
+                current['leaked'] = True
+            return await next_fn(params, ctx)
+
+    @ai.flow()
+    async def parent_flow(ctx: ActionRunContext) -> dict[str, object]:
+        await ai.generate(prompt='hi', use=[RewriteTenant(), ReadCurrentContext()])
+        return dict(ctx.context)
+
+    flow_ctx = await parent_flow(context={'tenant': 'original'})
+
+    assert seen_in_second == [{'tenant': 'rewritten'}]
+    assert flow_ctx == {'tenant': 'original'}
 
 
 @pytest.mark.asyncio

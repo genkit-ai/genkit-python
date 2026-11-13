@@ -28,9 +28,9 @@ small. Tool errors come back as the tool's own response, with the host root
 path redacted, so the model can self-correct without a user turn landing
 between the tool response and the next model turn.
 
-Each ``generate()`` gets a fresh middleware instance with its own message
-queue; ``wrap_generate`` drains queued messages into the request before the
-next model call.
+Each ``generate()`` gets a per-call copy of the middleware with its own
+message queue; ``wrap_generate`` drains queued messages into the request
+before the next model call.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ import re
 import stat
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, overload
 
 from pydantic import AliasChoices, BaseModel as PydanticBaseModel, Field
 
@@ -109,6 +109,7 @@ class _EditFileInput(PydanticBaseModel):
 
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB — absolute ceiling for reading
 _MAX_READ_SLICE_BYTES = 256 * 1024  # 256 KB — max bytes returned per slice
+_UNSET: Any = cast(Any, object())
 
 
 def _attr_text(value: str) -> str:
@@ -148,12 +149,50 @@ class Filesystem(Middleware[FilesystemConfig]):
     name = 'filesystem'
     description = 'Sandboxed filesystem operations'
 
-    def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401
-        super().__init__(**kwargs)
+    @overload
+    def __init__(
+        self,
+        *,
+        root_dir: str,
+        allow_write_access: bool = False,
+        tool_name_prefix: str = '',
+    ) -> None: ...
+
+    @overload
+    def __init__(self, *, config: FilesystemConfig) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        root_dir: str = _UNSET,
+        allow_write_access: bool = _UNSET,
+        tool_name_prefix: str = _UNSET,
+        config: FilesystemConfig | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        fields = {
+            k: v
+            for k, v in (
+                ('root_dir', root_dir),
+                ('allow_write_access', allow_write_access),
+                ('tool_name_prefix', tool_name_prefix),
+            )
+            if v is not _UNSET
+        }
+        super().__init__(config=config, **fields, **kwargs)
         if not self.config.root_dir or not self.config.root_dir.strip():
             raise ValueError('Filesystem.root_dir must not be empty.')
         # One queue per generate() — the engine copies middleware per call.
         self._message_queue: list[Message] = []
+
+    def __copy__(self) -> Filesystem:
+        # The engine shallow-copies middleware per generate(); without a new
+        # list, concurrent calls on one instance would share queued file
+        # contents and inject one request's reads into another's turn.
+        clone = type(self).__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        clone._message_queue = []
+        return clone
 
     @property
     def _root_abs(self) -> str:

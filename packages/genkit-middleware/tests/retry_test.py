@@ -533,30 +533,56 @@ async def test_retry_generate_stream_break_during_backoff_stops_immediately() ->
     async def flaky(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
         nonlocal call_count
         call_count += 1
-        ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('partial')]))
+        # No chunk: an attempt that streamed would not be retried at all.
         first_failed.set()
         raise GenkitError(message='Service unavailable', status='UNAVAILABLE')
 
     ai.define_model(name='flaky', fn=flaky)
 
     started = time.monotonic()
-    seen: list[str] = []
     async with ai.generate_stream(
         model='flaky',
         prompt='hi',
         use=[Retry(max_retries=3, initial_delay_ms=30_000, no_jitter=True)],
     ) as stream:
-        async for chunk in stream:
-            seen.append(chunk.text)
-            await asyncio.wait_for(first_failed.wait(), timeout=2.0)
-            await asyncio.sleep(0.01)
-            break
+        await asyncio.wait_for(first_failed.wait(), timeout=2.0)
+        await asyncio.sleep(0.01)
 
     response = await asyncio.wait_for(stream.response, timeout=2.0)
     assert time.monotonic() - started < 2
-    assert seen == ['partial']
     assert call_count == 1
     assert response.finish_reason == FinishReason.ABORTED
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_retry_after_chunks_reached_the_caller() -> None:
+    """A mid-stream failure surfaces; a retry would splice a second answer onto the first."""
+    ai = Genkit()
+    call_count = 0
+
+    async def flaky(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('{"dish": "Sal')]))
+        raise GenkitError(message='RST_STREAM', status='UNAVAILABLE')
+
+    ai.define_model(name='flaky', fn=flaky)
+
+    seen: list[str] = []
+    # Boxed on main; raises once the D1 error contract lands. Either way, one call.
+    try:
+        async with ai.generate_stream(
+            model='flaky', prompt='hi', use=[Retry(max_retries=3, initial_delay_ms=1, no_jitter=True)]
+        ) as stream:
+            async for chunk in stream:
+                seen.append(chunk.text)
+        response = await stream.response
+        assert response.finish_reason == FinishReason.FAILED
+    except GenkitError as e:
+        assert 'RST_STREAM' in str(e)
+
+    assert call_count == 1
+    assert seen == ['{"dish": "Sal']
 
 
 @pytest.mark.asyncio
@@ -760,3 +786,50 @@ async def test_retry_direct_task_cancel_when_model_turns_cancel_into_error_skips
     assert time.monotonic() - started < 2
     assert call_count == 1
     assert err.value.status == 'UNAVAILABLE'
+
+
+@pytest.mark.asyncio
+async def test_retry_retries_when_provider_chunk_fails_stamping() -> None:
+    """A bad provider chunk that fails stamping stays retryable rather than becoming STREAM_CALLBACK_FAILED."""
+    ai = Genkit()
+    calls = 0
+
+    async def flaky_chunk(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Malformed chunk fails stamping inside the engine's _EngineOnChunk wrapper.
+            ctx.send_chunk(ModelResponseChunk.model_construct(content=12345))  # type: ignore[arg-type]
+        ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('ok')]))
+        return ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('ok')]),
+        )
+
+    ai.define_model(name='flaky_chunk', fn=flaky_chunk)
+
+    stream = ai.generate_stream(
+        model='flaky_chunk',
+        prompt='hi',
+        use=[Retry(max_retries=2, initial_delay_ms=0, no_jitter=True)],
+    )
+    chunks = [chunk.text async for chunk in stream]
+    response = await stream.response
+
+    assert calls == 2
+    assert chunks == ['ok']
+    assert response.text == 'ok'
+
+
+def test_watch_stream_does_not_mark_committed_when_inner_chunk_raises() -> None:
+    """watch_stream only marks a chunk committed after inner(chunk) returns."""
+    from genkit_middleware._streaming import watch_stream
+
+    def failing_inner(_chunk: ModelResponseChunk) -> None:
+        raise RuntimeError('stamp failed')
+
+    ctx = MiddlewareContext(Genkit(), on_chunk=failing_inner)
+    with watch_stream(ctx) as watch:
+        with pytest.raises(BaseException, match='stamp failed'):
+            ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('x')]))
+        assert not watch.committed

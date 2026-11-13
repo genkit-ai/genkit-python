@@ -291,16 +291,21 @@ def register_middleware(
 ) -> list[MiddlewareRef] | None:
     """Normalize ``use=`` to ``MiddlewareRef`` entries (name + config only).
 
-    Inline ``Middleware`` instances are not stored on the registry. Their
-    config is serialized onto the ref and, when the class is not registered on
-    a parent registry, a ``_MiddlewareMetadata`` is registered on this layer so
-    ``resolve_middleware_from_use`` can build a fresh instance per ``generate()``.
+    Inline ``Middleware`` instances keep their config on the ref for traces
+    and the Dev UI. When the class is not registered on a parent registry, a
+    ``_MiddlewareMetadata`` is registered on this layer under a synthetic
+    name. The instances themselves are stored on this layer so
+    ``resolve_middleware_from_use`` hands back the caller's instance instead
+    of rebuilding it from the serialized config.
     """
     if use is None:
         return None
     refs: list[MiddlewareRef] = []
     # Build the class→name index once so resolving the use list is O(M+N).
     cls_index = middleware_class_index(registry)
+    # (ref name, instance) per entry, so resolve can hand back the caller's
+    # instance instead of rebuilding it from serialized config.
+    inline: list[tuple[str, Middleware | None]] = []
     for i, entry in enumerate(use):
         if isinstance(entry, Middleware):
             # Prefer the registered name so traces show ``concise_reply_mw``
@@ -309,8 +314,8 @@ def register_middleware(
             # with any globally registered middleware.
             mw_cls = type(entry)
             registered = cls_index.get(mw_cls)
-            # Each ref carries its own config and resolves to a fresh instance,
-            # so the same registered name can appear more than once.
+            # Each entry keeps its own instance and ref, so the same
+            # registered name can appear more than once.
             reg_name = registered or f'dynamic-middleware-{i}-{secrets.token_hex(5)}'
             if registered is None:
                 registry.register_value(
@@ -319,26 +324,60 @@ def register_middleware(
                     mw_cls._middleware_metadata(reg_name),
                 )
             # Dump keys that match the schema and that the config class validates.
+            # The ref is for traces and the Dev UI; a config that is not JSON
+            # (a callable, a client) still runs because resolve uses the instance.
             config = _dump_middleware_ref_config(entry.config)
             refs.append(MiddlewareRef(name=reg_name, config=config))
+            inline.append((reg_name, entry))
         else:
             refs.append(entry)
+            inline.append((entry.name, None))
+    if any(mw is not None for _, mw in inline):
+        registry.register_value(_INLINE_MIDDLEWARE_KIND, _INLINE_MIDDLEWARE_KEY, inline)
     return refs
+
+
+# Child-registry slot for the instances behind this call's inline ``use=[...]``.
+_INLINE_MIDDLEWARE_KIND = 'genkit:inline-middleware'
+_INLINE_MIDDLEWARE_KEY = 'use'
 
 
 def resolve_middleware_from_use(
     registry: Registry,
     use: Sequence[MiddlewareRef] | None,
 ) -> list[Middleware]:
-    """Resolve ``MiddlewareRef`` entries to fresh ``Middleware`` instances.
+    """Resolve ``MiddlewareRef`` entries to ``Middleware`` instances.
 
-    Each ref is instantiated from the registered ``_MiddlewareMetadata`` and
-    ``ref.config`` (same path for Dev UI, dotprompt, and inline ``use=[Mw(...)]``).
+    Inline ``use=[Mw(...)]`` entries keep the caller's instance registered on
+    the per-call child registry; ref entries (Dev UI, dotprompt) are
+    instantiated from the registered ``_MiddlewareMetadata`` and ``ref.config``.
     """
     if not use:
         return []
+    inline = registry.lookup_value(_INLINE_MIDDLEWARE_KIND, _INLINE_MIDDLEWARE_KEY)
+    instances: list[tuple[str, Middleware | None]] | None = None
+    if isinstance(inline, list):
+        typed_inline = cast(list[tuple[str, Middleware | None]], inline)
+        if len(typed_inline) != len(use) or any(
+            inst is not None and reg_name != entry.name
+            for (reg_name, inst), entry in zip(typed_inline, use, strict=True)
+        ):
+            raise GenkitError(
+                status='INTERNAL',
+                message=(
+                    'Inline middleware instances on the per-call registry do not match use= '
+                    f'({[name for name, _ in typed_inline]} vs {[entry.name for entry in use]}).'
+                ),
+                source='genkit.generate',
+            )
+        instances = typed_inline
     out: list[Middleware] = []
-    for entry in use:
+    for i, entry in enumerate(use):
+        if instances is not None and instances[i][1] is not None:
+            # Inline use=[Mw(...)]: keep the caller's instance (custom __init__,
+            # clients, compiled regex flags, callables) rather than rebuild it.
+            out.append(cast(Middleware, instances[i][1]))
+            continue
         defn = registry.lookup_value('middleware', entry.name)
         if defn is None:
             raise GenkitError(

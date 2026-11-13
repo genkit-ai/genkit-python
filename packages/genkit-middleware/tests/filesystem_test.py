@@ -16,6 +16,7 @@
 
 """Tests for Filesystem middleware."""
 
+import copy
 import tempfile
 from pathlib import Path
 
@@ -278,3 +279,18 @@ def test_fifo_is_hidden_from_list_files_and_rejected_by_write_without_blocking(t
         fs._read_file_impl('kitchen.pipe', 0, 0)
     with pytest.raises(ValueError, match='Cannot write to non-regular file'):
         fs._write_file_impl('kitchen.pipe', 'blocked forever if opened')
+
+
+def test_per_call_copies_do_not_share_the_message_queue() -> None:
+    """Two generate() calls reusing one instance must not see each other's file reads."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fs = Filesystem(root_dir=tmpdir)
+        # The engine shallow-copies middleware once per generate() call.
+        first_call = copy.copy(fs)
+        second_call = copy.copy(fs)
+
+        first_call._enqueue_parts([Part.from_text('contents of allergens.csv')])  # noqa: SLF001
+
+        assert second_call._message_queue == []  # noqa: SLF001
+        assert fs._message_queue == []  # noqa: SLF001
+        assert second_call.config is fs.config

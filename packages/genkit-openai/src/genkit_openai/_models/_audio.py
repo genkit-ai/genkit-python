@@ -20,7 +20,7 @@ Provides text-to-speech (TTS) and speech-to-text (STT / transcription)
 capabilities via the OpenAI Audio API.
 
 Supported TTS models: tts-1, tts-1-hd, gpt-4o-mini-tts
-Supported STT models: gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1
+Supported STT models: gpt-transcribe, gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from openai.types.audio import Transcription, Translation
 from pydantic import Field
 
 from genkit import FinishReason, GenkitError, Message, ModelResponse, Part, Role
-from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelSupports
+from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelStage, ModelSupports
 from genkit.plugin_api import GenkitConfig
 
 _AUDIO_EXTRA_DESCRIPTION = (
@@ -103,72 +103,42 @@ _CONTENT_TYPE_TO_EXTENSION: dict[str, str] = {
     'audio/mp4': 'mp4',
 }
 
-# Supported TTS models with their metadata.
+_TTS_SUPPORTS = ModelSupports(
+    media=False,
+    output=['media'],
+    multiturn=False,
+    system_role=False,
+    tools=False,
+)
+
+_STT_SUPPORTS = ModelSupports(
+    media=True,
+    output=['text', 'json'],
+    multiturn=False,
+    system_role=False,
+    tools=False,
+)
+
+# Supported TTS models with their metadata. Shutdown 2027-01-06.
 SUPPORTED_TTS_MODELS: dict[str, ModelInfo] = {
-    'tts-1': ModelInfo(
-        label='OpenAI - TTS 1',
-        supports=ModelSupports(
-            media=False,
-            output=['media'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
-    ),
-    'tts-1-hd': ModelInfo(
-        label='OpenAI - TTS 1 HD',
-        supports=ModelSupports(
-            media=False,
-            output=['media'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
-    ),
-    'gpt-4o-mini-tts': ModelInfo(
-        label='OpenAI - GPT-4o Mini TTS',
-        supports=ModelSupports(
-            media=False,
-            output=['media'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
-    ),
+    'tts-1': ModelInfo(label='OpenAI - TTS 1', supports=_TTS_SUPPORTS, stage=ModelStage.DEPRECATED),
+    'tts-1-hd': ModelInfo(label='OpenAI - TTS 1 HD', supports=_TTS_SUPPORTS, stage=ModelStage.DEPRECATED),
+    'gpt-4o-mini-tts': ModelInfo(label='OpenAI - GPT-4o Mini TTS', supports=_TTS_SUPPORTS, stage=ModelStage.DEPRECATED),
 }
 
-# Supported STT / transcription models with their metadata.
+# Supported STT / transcription models with their metadata. Deprecated ids:
+# shutdown 2027-02-26.
 SUPPORTED_STT_MODELS: dict[str, ModelInfo] = {
+    'gpt-transcribe': ModelInfo(
+        label='OpenAI - GPT Transcribe', supports=_STT_SUPPORTS.model_copy(update={'output': ['text']})
+    ),
     'gpt-4o-transcribe': ModelInfo(
-        label='OpenAI - GPT-4o Transcribe',
-        supports=ModelSupports(
-            media=True,
-            output=['text', 'json'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
+        label='OpenAI - GPT-4o Transcribe', supports=_STT_SUPPORTS, stage=ModelStage.DEPRECATED
     ),
     'gpt-4o-mini-transcribe': ModelInfo(
-        label='OpenAI - GPT-4o Mini Transcribe',
-        supports=ModelSupports(
-            media=True,
-            output=['text', 'json'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
+        label='OpenAI - GPT-4o Mini Transcribe', supports=_STT_SUPPORTS, stage=ModelStage.DEPRECATED
     ),
-    'whisper-1': ModelInfo(
-        label='OpenAI - Whisper 1',
-        supports=ModelSupports(
-            media=True,
-            output=['text', 'json'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
-    ),
+    'whisper-1': ModelInfo(label='OpenAI - Whisper 1', supports=_STT_SUPPORTS, stage=ModelStage.DEPRECATED),
 }
 
 

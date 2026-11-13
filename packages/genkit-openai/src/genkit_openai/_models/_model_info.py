@@ -19,7 +19,7 @@
 
 from typing import Literal, TypeAlias
 
-from genkit.model import ConstrainedSupport, ModelInfo, ModelSupports
+from genkit.model import ConstrainedSupport, ModelInfo, ModelStage, ModelSupports
 
 # 'json' in output means the endpoint accepts schema-less JSON mode.
 # constrained=ALL means it also accepts response_format json_schema, so Genkit
@@ -33,32 +33,6 @@ MULTIMODAL_MODEL_SUPPORTS = ModelSupports(
     constrained=ConstrainedSupport.ALL,
 )
 
-# gpt-4-turbo predates structured outputs: json_object only.
-MULTIMODAL_LEGACY_MODEL_SUPPORTS = ModelSupports(
-    multiturn=True,
-    media=True,
-    tools=True,
-    system_role=True,
-    output=['json', 'text'],
-)
-
-# gpt-4's endpoint rejects schema-less JSON mode, so output lists only 'text'.
-GPT_4_MODEL_SUPPORTS = ModelSupports(
-    multiturn=True,
-    media=False,
-    tools=True,
-    system_role=True,
-    output=['text'],
-)
-
-GPT_35_MODEL_SUPPORTS = ModelSupports(
-    multiturn=True,
-    media=False,
-    tools=True,
-    system_role=True,
-    output=['json', 'text'],
-)
-
 O_SERIES_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
@@ -68,7 +42,7 @@ O_SERIES_MODEL_SUPPORTS = ModelSupports(
     constrained=ConstrainedSupport.ALL,
 )
 
-GPT_5_MODEL_SUPPORTS = ModelSupports(
+GPT_REASONING_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
@@ -77,12 +51,23 @@ GPT_5_MODEL_SUPPORTS = ModelSupports(
     constrained=ConstrainedSupport.ALL,
 )
 
-GPT_OSS_MODEL_SUPPORTS = ModelSupports(
+GPT_SEARCH_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=False,
-    tools=True,
+    tools=False,
     system_role=True,
     output=['json', 'text'],
+    constrained=ConstrainedSupport.ALL,
+)
+
+# Chat Completions has no function tools for gpt-6-astra, gpt-6.1-sol and gpt-6.1-terra; they need Responses.
+GPT_6_NO_TOOLS_MODEL_SUPPORTS = ModelSupports(
+    multiturn=True,
+    media=True,
+    tools=False,
+    system_role=True,
+    output=['json', 'text'],
+    constrained=ConstrainedSupport.ALL,
 )
 
 # Quote autocomplete needs a Literal. The catalog below is what you edit when
@@ -91,114 +76,80 @@ GPT_OSS_MODEL_SUPPORTS = ModelSupports(
 # does not type-check. Image, TTS, STT, and embedding ids live in other
 # catalogs — they do not take OpenAIConfig.
 KnownGpt: TypeAlias = Literal[
+    'chat-latest',
     'gpt-4o',
-    'gpt-4o-2024-05-13',
     'gpt-4o-mini',
     'gpt-4o-mini-2024-07-18',
-    'gpt-4.5-preview',
     'gpt-4.1',
     'gpt-4.1-mini',
-    'gpt-4-turbo',
-    'gpt-4-turbo-2024-04-09',
-    'gpt-4-turbo-preview',
-    'gpt-4-0125-preview',
-    'gpt-4-1106-preview',
-    'gpt-4',
-    'gpt-4-0613',
-    'gpt-3.5-turbo',
-    'gpt-3.5-turbo-0125',
-    'gpt-3.5-turbo-1106',
-    'o1',
     'o3',
-    'o3-mini',
-    'o4-mini',
     'gpt-5',
     'gpt-5-mini',
     'gpt-5-nano',
-    'gpt-5-chat-latest',
+    'gpt-5-search-api',
     'gpt-5.1',
     'gpt-5.2',
-    'gpt-5.2-chat',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+    'gpt-5.5',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
     'gpt-6-astra',
-    'gpt-oss-120b',
-    'gpt-oss-20b',
+    'gpt-6-sol',
+    'gpt-6-luna',
+    'gpt-6.1-sol',
+    'gpt-6.1-terra',
 ]
 
 
-# Source: https://platform.openai.com/docs/models
-# Codex and -pro ids (gpt-5.x-codex, o3-pro, gpt-5.x-pro) are served only by
-# the Responses API; this plugin speaks Chat Completions, so they are absent.
+def _info(name: str, supports: ModelSupports, *, deprecated: bool = False) -> ModelInfo:
+    return ModelInfo(
+        label=f'OpenAI - {name}',
+        supports=supports,
+        stage=ModelStage.DEPRECATED if deprecated else None,
+    )
+
+
+# Only ids that serve /v1/chat/completions are listed; Codex, -pro and gpt-oss
+# ids are Responses-only. deprecated=True marks ids OpenAI is shutting down, with
+# the date beside each group. The bare gpt-4o and gpt-4o-mini aliases have no
+# date of their own and follow their dated snapshots.
 SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
-    # --- GPT-4o series ---
-    'gpt-4o': ModelInfo(label='OpenAI - gpt-4o', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4o-2024-05-13': ModelInfo(label='OpenAI - gpt-4o-2024-05-13', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4o-mini': ModelInfo(label='OpenAI - gpt-4o-mini', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4o-mini-2024-07-18': ModelInfo(label='OpenAI - gpt-4o-mini-2024-07-18', supports=MULTIMODAL_MODEL_SUPPORTS),
-    # --- GPT-4.x series ---
-    'gpt-4.5-preview': ModelInfo(label='OpenAI - gpt-4.5-preview', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4.1': ModelInfo(label='OpenAI - gpt-4.1', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4.1-mini': ModelInfo(label='OpenAI - gpt-4.1-mini', supports=MULTIMODAL_MODEL_SUPPORTS),
-    'gpt-4-turbo': ModelInfo(label='OpenAI - gpt-4-turbo', supports=MULTIMODAL_LEGACY_MODEL_SUPPORTS),
-    'gpt-4-turbo-2024-04-09': ModelInfo(
-        label='OpenAI - gpt-4-turbo-2024-04-09', supports=MULTIMODAL_LEGACY_MODEL_SUPPORTS
-    ),
-    'gpt-4-turbo-preview': ModelInfo(label='OpenAI - gpt-4-turbo-preview', supports=MULTIMODAL_LEGACY_MODEL_SUPPORTS),
-    'gpt-4-0125-preview': ModelInfo(label='OpenAI - gpt-4-0125-preview', supports=MULTIMODAL_LEGACY_MODEL_SUPPORTS),
-    'gpt-4-1106-preview': ModelInfo(label='OpenAI - gpt-4-1106-preview', supports=MULTIMODAL_LEGACY_MODEL_SUPPORTS),
-    'gpt-4': ModelInfo(label='OpenAI - gpt-4', supports=GPT_4_MODEL_SUPPORTS),
-    'gpt-4-0613': ModelInfo(label='OpenAI - gpt-4-0613', supports=GPT_4_MODEL_SUPPORTS),
-    # --- GPT-3.5 series ---
-    'gpt-3.5-turbo': ModelInfo(label='OpenAI - gpt-3.5-turbo', supports=GPT_35_MODEL_SUPPORTS),
-    'gpt-3.5-turbo-0125': ModelInfo(label='OpenAI - gpt-3.5-turbo-0125', supports=GPT_35_MODEL_SUPPORTS),
-    'gpt-3.5-turbo-1106': ModelInfo(label='OpenAI - gpt-3.5-turbo-1106', supports=GPT_35_MODEL_SUPPORTS),
-    # --- O-series (reasoning) ---
-    'o1': ModelInfo(label='OpenAI - o1', supports=O_SERIES_MODEL_SUPPORTS),
-    'o3': ModelInfo(label='OpenAI - o3', supports=O_SERIES_MODEL_SUPPORTS),
-    'o3-mini': ModelInfo(
-        label='OpenAI - o3-mini',
-        supports=ModelSupports(
-            multiturn=True,
-            media=False,
-            tools=True,
-            system_role=False,
-            output=['json', 'text'],
-            constrained=ConstrainedSupport.ALL,
-        ),
-    ),
-    'o4-mini': ModelInfo(label='OpenAI - o4-mini', supports=O_SERIES_MODEL_SUPPORTS),
-    # --- GPT-5 series ---
-    'gpt-5': ModelInfo(label='OpenAI - gpt-5', supports=GPT_5_MODEL_SUPPORTS),
-    'gpt-5-mini': ModelInfo(label='OpenAI - gpt-5-mini', supports=GPT_5_MODEL_SUPPORTS),
-    'gpt-5-nano': ModelInfo(label='OpenAI - gpt-5-nano', supports=GPT_5_MODEL_SUPPORTS),
-    'gpt-5-chat-latest': ModelInfo(
-        label='OpenAI - gpt-5-chat-latest',
-        supports=ModelSupports(
-            multiturn=True,
-            media=True,
-            tools=False,
-            system_role=True,
-            output=['text'],
-        ),
-    ),
-    'gpt-5.1': ModelInfo(label='OpenAI - gpt-5.1', supports=GPT_5_MODEL_SUPPORTS),
-    'gpt-5.2': ModelInfo(label='OpenAI - gpt-5.2', supports=GPT_5_MODEL_SUPPORTS),
-    'gpt-5.2-chat': ModelInfo(label='OpenAI - gpt-5.2-chat', supports=GPT_5_MODEL_SUPPORTS),
-    # --- GPT-6 series ---
-    # Chat Completions rejects function tools for this model.
-    'gpt-6-astra': ModelInfo(
-        label='OpenAI - gpt-6-astra',
-        supports=ModelSupports(
-            multiturn=True,
-            media=True,
-            tools=False,
-            system_role=True,
-            output=['json', 'text'],
-            constrained=ConstrainedSupport.ALL,
-        ),
-    ),
-    # --- OSS models (hosted) ---
-    'gpt-oss-120b': ModelInfo(label='OpenAI - gpt-oss-120b', supports=GPT_OSS_MODEL_SUPPORTS),
-    'gpt-oss-20b': ModelInfo(label='OpenAI - gpt-oss-20b', supports=GPT_OSS_MODEL_SUPPORTS),
+    # --- GPT-4o / GPT-4.1 (shutdown 2027-01-14) ---
+    'gpt-4o': _info('gpt-4o', MULTIMODAL_MODEL_SUPPORTS, deprecated=True),
+    'gpt-4o-mini': _info('gpt-4o-mini', MULTIMODAL_MODEL_SUPPORTS, deprecated=True),
+    'gpt-4o-mini-2024-07-18': _info('gpt-4o-mini-2024-07-18', MULTIMODAL_MODEL_SUPPORTS, deprecated=True),
+    'gpt-4.1': _info('gpt-4.1', MULTIMODAL_MODEL_SUPPORTS, deprecated=True),
+    'gpt-4.1-mini': _info('gpt-4.1-mini', MULTIMODAL_MODEL_SUPPORTS, deprecated=True),
+    # --- O-series (o3: shutdown 2026-12-11) ---
+    'o3': _info('o3', O_SERIES_MODEL_SUPPORTS, deprecated=True),
+    # --- GPT-5 (shutdown 2026-12-11) ---
+    'gpt-5': _info('gpt-5', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
+    'gpt-5-mini': _info('gpt-5-mini', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
+    'gpt-5-nano': _info('gpt-5-nano', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
+    # --- GPT-5.1 to GPT-5.6 (gpt-5.1 and gpt-5.4-nano: shutdown 2027-04-01) ---
+    'gpt-5.1': _info('gpt-5.1', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
+    'gpt-5.2': _info('gpt-5.2', GPT_REASONING_MODEL_SUPPORTS),
+    # gpt-5.4*, gpt-5.5, gpt-5.6-* and gpt-6-sol/luna take function tools on Chat
+    # Completions only at reasoning_effort='none'.
+    'gpt-5.4': _info('gpt-5.4', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.4-mini': _info('gpt-5.4-mini', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.4-nano': _info('gpt-5.4-nano', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
+    'gpt-5.5': _info('gpt-5.5', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.6-sol': _info('gpt-5.6-sol', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.6-terra': _info('gpt-5.6-terra', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.6-luna': _info('gpt-5.6-luna', GPT_REASONING_MODEL_SUPPORTS),
+    # --- Search and ChatGPT ---
+    'gpt-5-search-api': _info('gpt-5-search-api', GPT_SEARCH_MODEL_SUPPORTS),
+    'chat-latest': _info('chat-latest', MULTIMODAL_MODEL_SUPPORTS),
+    # --- GPT-6 ---
+    'gpt-6-astra': _info('gpt-6-astra', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
+    'gpt-6-sol': _info('gpt-6-sol', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-6-luna': _info('gpt-6-luna', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-6.1-sol': _info('gpt-6.1-sol', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
+    'gpt-6.1-terra': _info('gpt-6.1-terra', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
 }
 
 SUPPORTED_EMBEDDING_MODELS: dict[str, dict] = {

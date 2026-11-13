@@ -21,7 +21,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import httpx
 from openai import (
@@ -411,6 +411,87 @@ def _extract_media(request: ModelRequest) -> tuple[str, str]:
     return url, content_type
 
 
+# Where a reasoning part keeps the signature Mistral puts on a thinking chunk,
+# under the same key the Anthropic and Google plugins use for theirs.
+THOUGHT_SIGNATURE = 'thoughtSignature'
+
+
+def split_reply_content(content: object) -> tuple[Part | None, str]:
+    """The reasoning and the text in a reply's ``content``.
+
+    OpenAI sends ``content`` as a string. Mistral sends a list of chunks
+    instead when it reasons (``reasoning_effort`` set), in full replies and in
+    streamed deltas alike: ``{'type': 'text', 'text': ...}`` for the answer and
+    ``{'type': 'thinking', 'thinking': [{'type': 'text', 'text': ...}],
+    'signature': ...}`` for the reasoning before it. Other chunk types carry
+    no text and are skipped.
+
+    Args:
+        content: A message's or delta's ``content`` as the SDK parsed it.
+
+    Returns:
+        A reasoning part, with the chunk's signature in
+        ``metadata['thoughtSignature']`` when it has one, or None when there is
+        no reasoning; and the reply text, empty when absent.
+    """
+    if isinstance(content, str):
+        return None, content
+    if not isinstance(content, list):
+        return None, ''
+    reasoning: list[str] = []
+    signature: str | None = None
+    text: list[str] = []
+    for chunk in cast(list[object], content):
+        if not isinstance(chunk, Mapping):
+            continue
+        chunk = cast(Mapping[str, object], chunk)
+        if chunk.get('type') == 'text' and isinstance(chunk.get('text'), str):
+            text.append(cast(str, chunk['text']))
+        elif chunk.get('type') == 'thinking' and isinstance(chunk.get('thinking'), list):
+            if isinstance(chunk.get('signature'), str):
+                signature = cast(str, chunk['signature'])
+            for item in cast(list[object], chunk['thinking']):
+                if isinstance(item, Mapping):
+                    item = cast(Mapping[str, object], item)
+                    if item.get('type') == 'text' and isinstance(item.get('text'), str):
+                        reasoning.append(cast(str, item['text']))
+    if not reasoning and signature is None:
+        return None, ''.join(text)
+    metadata = {THOUGHT_SIGNATURE: signature} if signature is not None else None
+    return Part.from_reasoning(''.join(reasoning), metadata=metadata), ''.join(text)
+
+
+def thinking_chunk(parts: list[Part]) -> dict[str, Any] | None:
+    """One Mistral ``thinking`` chunk replaying a model message's reasoning parts.
+
+    Mistral asks for the whole assistant message, reasoning included, on later
+    turns; stripping it degrades the answer. A streamed reply arrives as many
+    reasoning parts, so their text is joined into one chunk, carrying the last
+    signature seen.
+
+    Args:
+        parts: The message's parts.
+
+    Returns:
+        The chunk, or None when the message has no reasoning.
+    """
+    texts: list[str] = []
+    signature: str | None = None
+    for part in parts:
+        if part.reasoning is None:
+            continue
+        texts.append(part.reasoning)
+        value = (part.metadata or {}).get(THOUGHT_SIGNATURE)
+        if isinstance(value, str):
+            signature = value
+    if not texts:
+        return None
+    chunk: dict[str, Any] = {'type': 'thinking', 'thinking': [{'type': 'text', 'text': ''.join(texts)}]}
+    if signature is not None:
+        chunk['signature'] = signature
+    return chunk
+
+
 class DictMessageAdapter:
     """Adapter for dictionary-based chat message objects with OpenAI-compatible fields."""
 
@@ -549,7 +630,7 @@ class MessageConverter:
         return str(role)
 
     @classmethod
-    def to_openai(cls, message: Message) -> list[dict]:
+    def to_openai(cls, message: Message, *, replay_thinking: bool = False) -> list[dict]:
         """Converts an internal `Message` object to OpenAI-compatible chat messages.
 
         Handles text, media (images), tool requests, and tool responses.
@@ -561,6 +642,9 @@ class MessageConverter:
 
         Args:
             message: The internal `Message` instance.
+            replay_thinking: Send a model message's reasoning back as a leading
+                Mistral ``thinking`` chunk in its content. Off, reasoning is
+                dropped, which is what OpenAI and DeepSeek need.
 
         Returns:
             A list of OpenAI-compatible message dictionaries.
@@ -571,9 +655,8 @@ class MessageConverter:
         has_media = False
 
         for part in message.content:
-            # Reasoning must not be sent back in multi-turn context.
-            # DeepSeek's API rejects it, and assistant messages only
-            # replay text to the model.
+            # Reasoning is not replayed as text. DeepSeek's API rejects it;
+            # Mistral gets it back as a thinking chunk (replay_thinking).
             if part.reasoning is not None:
                 continue
 
@@ -628,7 +711,28 @@ class MessageConverter:
             })
 
         result.extend(tool_messages)
+        if replay_thinking and message.role == Role.MODEL:
+            cls._prepend_thinking(result, message)
         return result
+
+    @classmethod
+    def _prepend_thinking(cls, result: list[dict[str, Any]], message: Message) -> None:
+        """Put the message's reasoning, as a thinking chunk, at the front of its first assistant message."""
+        chunk = thinking_chunk(message.content)
+        if chunk is None:
+            return
+        role = cls._get_openai_role(message.role)
+        target = next((m for m in result if m.get('role') == role), None)
+        if target is None:
+            result.insert(0, {'role': role, 'content': [chunk]})
+            return
+        content = target.get('content')
+        if isinstance(content, str):
+            target['content'] = [chunk, {'type': 'text', 'text': content}]
+        elif isinstance(content, list):
+            target['content'] = [chunk, *content]
+        else:
+            target['content'] = [chunk]
 
     @classmethod
     def to_genkit(cls, message: ChatCompletionMessageAdapter) -> Message:
@@ -650,8 +754,11 @@ class MessageConverter:
         if reasoning:
             content.append(Part.from_reasoning(reasoning))
 
-        if message.content:
-            content.append(cls.text_part_to_genkit(message.content))
+        thinking, text = split_reply_content(message.content)
+        if thinking is not None:
+            content.append(thinking)
+        if text:
+            content.append(cls.text_part_to_genkit(text))
 
         for tool_call in message.tool_calls or []:
             content.append(cls.tool_call_to_genkit(tool_call, args_parser=json.loads))

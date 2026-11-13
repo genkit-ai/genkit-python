@@ -55,6 +55,59 @@ OpenAI(
 )
 ```
 
+## Mistral
+
+Point `base_url` at Mistral's API and pass a Mistral key. Models keep the
+`openai/` prefix:
+
+```python
+import os
+
+from genkit import Genkit
+from genkit_openai import OpenAI
+
+ai = Genkit(
+    plugins=[OpenAI(api_key=os.environ['MISTRAL_API_KEY'], base_url='https://api.mistral.ai/v1')]
+)
+
+res = await ai.generate(
+    model='openai/mistral-small-latest',
+    prompt='Suggest 2 names for a French bakery.',
+    config={'temperature': 0.3, 'seed': 42, 'max_output_tokens': 200},
+)
+
+embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant')
+```
+
+Pass `api_key=` explicitly. Without it the plugin falls back to
+`OPENAI_API_KEY` and sends that key to Mistral. The EU and US endpoints,
+`https://api.eu.mistral.ai/v1` and `https://api.us.mistral.ai/v1`, work the
+same way.
+
+Mistral rejects any request field it doesn't declare, so with a Mistral host
+the plugin sends Mistral's names for the settings that differ:
+
+- `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
+  even with `reasoning_effort` set.
+- `seed` goes out as `random_seed`.
+- `top_k` is refused before the request goes out: Mistral's models reject
+  `top_k` sampling.
+- Streaming sends no `stream_options`; Mistral reports usage on the last chunk
+  without it.
+- An embedder's `dimensions` goes out as `output_dimension`.
+
+With `reasoning_effort` set, replies carry their reasoning in `thinking`
+chunks. Those come back as reasoning parts, ahead of the text, streamed or not,
+and go back to Mistral as a `thinking` chunk on the next turn, as Mistral asks.
+
+Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
+and Mistral fails the call naming them. Mistral-only fields like `min_tokens`
+go in `extra`. A gateway in front of Mistral on any other host gets the OpenAI
+field names.
+
+The plugin doesn't know Mistral's embedders, so their info reports the default
+1536 dimensions; `mistral-embed` returns 1024.
+
 ## Config
 
 `config` takes the settings `OpenAIConfig` declares. Any other key raises

@@ -72,7 +72,9 @@ def _frame_value(obj: object) -> object:
     # sees it. Apply the same rule here: only a PublicError's text leaves.
     if isinstance(obj, (AgentOutput, SessionSnapshot)) and obj.error is not None:
         obj = obj.model_copy(update={'error': client_safe_failure(obj.error)})
-    return to_jsonable_python(obj, by_alias=True, exclude_none=True)
+    # NaN/Infinity go out as null, the same as tool outputs and model
+    # messages (mode='json'), instead of crashing allow_nan=False with a 500.
+    return to_jsonable_python(obj, by_alias=True, exclude_none=True, inf_nan_mode='null')
 
 
 def _dumps(value: object) -> str:

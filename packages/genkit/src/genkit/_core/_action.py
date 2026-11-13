@@ -624,6 +624,15 @@ def signature_of(fn: Callable[..., object]) -> inspect.Signature:
     return inspect.signature(fn)
 
 
+def _annotation_target(fn: Callable[..., object]) -> Callable[..., object]:
+    """Return ``fn.__call__`` for callable instances so Python 3.14 reads their annotations."""
+    if callable(fn) and not inspect.isroutine(fn) and not isinstance(fn, type):
+        call = fn.__call__
+        if inspect.ismethod(call) or inspect.isfunction(call):
+            return cast(Callable[..., object], call)
+    return fn
+
+
 def resolve_type_hints(fn: Callable[..., object], known: Mapping[str, object] | None = None) -> dict[str, Any]:
     """``fn``'s annotations as types. A name that can't be found stays a string.
 
@@ -634,30 +643,32 @@ def resolve_type_hints(fn: Callable[..., object], known: Mapping[str, object] | 
     ``known`` fills in names missing from ``fn``'s module (see
     known_annotation_names). The module's own names win.
     """
+    target = _annotation_target(fn)
     try:
-        return get_type_hints(fn)
+        return get_type_hints(target)
     except Exception:
-        module_globals = getattr(inspect.unwrap(fn), '__globals__', {})
+        module_globals = getattr(inspect.unwrap(target), '__globals__', {})
         namespace = {**known, **module_globals} if known else module_globals
-        return {name: _resolve_one(a, namespace) for name, a in _annotations_as_written(fn).items()}
+        return {name: _resolve_one(a, namespace) for name, a in _annotations_as_written(target).items()}
 
 
 def _annotations_as_written(fn: Callable[..., object]) -> dict[str, Any]:
     """``fn``'s annotations without evaluating them; a missing name is a string."""
+    target = _annotation_target(fn)
     if sys.version_info >= (3, 14):
         import annotationlib
 
-        annotations = annotationlib.get_annotations(fn, format=annotationlib.Format.FORWARDREF)
+        annotations = annotationlib.get_annotations(target, format=annotationlib.Format.FORWARDREF)
         if not any(isinstance(a, annotationlib.ForwardRef) for a in annotations.values()):
             return annotations
         # A ForwardRef's __forward_arg__ swaps names it did find for
         # placeholders ('ModelRequest[__annotationlib_name_1__]'), so take
         # the source text, the string `from __future__ import annotations` gives.
-        as_text = annotationlib.get_annotations(fn, format=annotationlib.Format.STRING)
+        as_text = annotationlib.get_annotations(target, format=annotationlib.Format.STRING)
         return {
             name: as_text[name] if isinstance(a, annotationlib.ForwardRef) else a for name, a in annotations.items()
         }
-    return dict(inspect.getfullargspec(fn).annotations)
+    return dict(inspect.getfullargspec(target).annotations)
 
 
 # Code object of an empty function, for _resolve_one.

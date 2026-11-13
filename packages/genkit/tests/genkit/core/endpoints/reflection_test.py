@@ -616,7 +616,8 @@ async def test_dev_ui_run_of_public_error_flow_returns_its_status_and_trace_id(h
         response = await client.post('/api/runAction', json={'key': '/flow/order', 'input': '99'})
 
     error = response.json()['error']
-    assert error['message'] == 'no order 99'
+    # Same `STATUS: message` the trace shows, and what JS sends.
+    assert error['message'] == 'NOT_FOUND: no order 99'
     assert error['code'] == 5
     assert error['details']['traceId'] == response.headers['x-genkit-trace-id']
 
@@ -630,7 +631,7 @@ async def test_run_action_flushes_dev_ui_collector_only() -> None:
     events: list[str] = []
 
     class RecordingSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -676,7 +677,7 @@ async def test_run_action_succeeds_when_dev_ui_collector_flush_raises() -> None:
     from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
 
     class BrokenSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -726,6 +727,10 @@ async def test_run_action_error_carries_python_traceback() -> None:
     assert 'Traceback (most recent call last)' in stack
     assert 'check_allergens' in stack
     assert 'ValueError: unknown allergen profile for Tartine' in stack
+    # The flow's own line comes first; the reflection server and action
+    # runtime frames that lead into it are dropped.
+    first_frame = next(line for line in stack.splitlines() if line.strip().startswith('File '))
+    assert __file__ in first_frame and 'in check_allergens' in first_frame
 
 
 @pytest.mark.asyncio

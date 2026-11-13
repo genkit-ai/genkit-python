@@ -25,7 +25,7 @@ import sys
 import time
 import types
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -44,7 +44,7 @@ from pydantic.alias_generators import to_camel
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError, PydanticUserError
 from typing_extensions import Never, Self, TypeVar
 
-from genkit._core._channel import Channel, CloseableQueue, StoppableStream
+from genkit._core._channel import Channel, CloseableQueue, StoppableStream, _stop_scope
 from genkit._core._compat import StrEnum
 from genkit._core._config_check import (
     check_config_json_schema,
@@ -237,9 +237,10 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
       ``await result.aclose()``) stops the run and awaits ``finally:`` cleanup;
       ``.response`` then raises
       ``GenkitError`` with status ``CANCELLED`` (``ModelStreamResponse``
-      resolves with ``finish_reason == ABORTED`` instead). Reading to the end
-      or leaving a bare ``async for`` without closing doesn't stop the run.
-      See ``Action.stream``.
+      resolves with ``finish_reason == ABORTED`` instead). A reader cancelled
+      mid-``async for`` (e.g. a client disconnect) also stops the run, and so
+      does dropping a stream left unfinished after ``break``. Not iterating at
+      all leaves the run going. See ``Action.stream``.
 
     Example:
         ```python
@@ -636,6 +637,15 @@ def signature_of(fn: Callable[..., object]) -> inspect.Signature:
     return inspect.signature(fn)
 
 
+def _annotation_target(fn: Callable[..., object]) -> Callable[..., object]:
+    """Return ``fn.__call__`` for callable instances so Python 3.14 reads their annotations."""
+    if callable(fn) and not inspect.isroutine(fn) and not isinstance(fn, type):
+        call = fn.__call__
+        if inspect.ismethod(call) or inspect.isfunction(call):
+            return cast(Callable[..., object], call)
+    return fn
+
+
 def resolve_type_hints(fn: Callable[..., object], known: Mapping[str, object] | None = None) -> dict[str, Any]:
     """``fn``'s annotations as types. A name that can't be found stays a string.
 
@@ -646,30 +656,32 @@ def resolve_type_hints(fn: Callable[..., object], known: Mapping[str, object] | 
     ``known`` fills in names missing from ``fn``'s module (see
     known_annotation_names). The module's own names win.
     """
+    target = _annotation_target(fn)
     try:
-        return get_type_hints(fn)
+        return get_type_hints(target)
     except Exception:
-        module_globals = getattr(inspect.unwrap(fn), '__globals__', {})
+        module_globals = getattr(inspect.unwrap(target), '__globals__', {})
         namespace = {**known, **module_globals} if known else module_globals
-        return {name: _resolve_one(a, namespace) for name, a in _annotations_as_written(fn).items()}
+        return {name: _resolve_one(a, namespace) for name, a in _annotations_as_written(target).items()}
 
 
 def _annotations_as_written(fn: Callable[..., object]) -> dict[str, Any]:
     """``fn``'s annotations without evaluating them; a missing name is a string."""
+    target = _annotation_target(fn)
     if sys.version_info >= (3, 14):
         import annotationlib
 
-        annotations = annotationlib.get_annotations(fn, format=annotationlib.Format.FORWARDREF)
+        annotations = annotationlib.get_annotations(target, format=annotationlib.Format.FORWARDREF)
         if not any(isinstance(a, annotationlib.ForwardRef) for a in annotations.values()):
             return annotations
         # A ForwardRef's __forward_arg__ swaps names it did find for
         # placeholders ('ModelRequest[__annotationlib_name_1__]'), so take
         # the source text, the string `from __future__ import annotations` gives.
-        as_text = annotationlib.get_annotations(fn, format=annotationlib.Format.STRING)
+        as_text = annotationlib.get_annotations(target, format=annotationlib.Format.STRING)
         return {
             name: as_text[name] if isinstance(a, annotationlib.ForwardRef) else a for name, a in annotations.items()
         }
-    return dict(inspect.getfullargspec(fn).annotations)
+    return dict(inspect.getfullargspec(target).annotations)
 
 
 # Code object of an empty function, for _resolve_one.
@@ -1278,6 +1290,12 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             input = self._validate_input(input)
         init = self._validate_init(init)
 
+        if context is None:
+            # Inherit the enclosing action's context as a shallow copy, so
+            # concurrent child flows setting top-level keys on ctx.context
+            # don't clobber each other or the parent (matching run_tool_request).
+            ambient = _action_context.get(None)
+            context = dict(ambient) if ambient is not None else None
         token = None
         if context is not None:
             token = _action_context.set(context)
@@ -1338,9 +1356,11 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         Iterate ``.stream`` for chunks and await ``.response`` for the output.
         Closing early via ``async with my_flow.stream(x) as res:`` (or
         ``await res.aclose()``) cancels the run and awaits ``finally:`` cleanup,
-        and ``.response`` then raises ``GenkitError`` with status ``CANCELLED``. Python does not tear down an
-        ``AsyncIterator`` on ``break`` alone, so wrap the stream in ``async with``
-        when exiting early should cancel the action.
+        and ``.response`` then raises ``GenkitError`` with status ``CANCELLED``. Cancelling
+        the reader mid-``async for`` stops the run the same way. Python does not
+        tear down an ``AsyncIterator`` on ``break`` alone: the run stops once the
+        stream is dropped, so wrap it in ``async with`` when the stop should
+        happen (and finish) right at the ``break``.
 
         Example:
             async with my_flow.stream(x) as res:
@@ -1380,19 +1400,30 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             init=init,
             input_stream=input_stream,
         )
-        run_task = asyncio.create_task(resp)
+        child_stops: set[asyncio.Task[None]] = set()
+
+        def _create_run_task() -> asyncio.Task[ActionResponse[OutputT]]:
+            _stop_scope.set(child_stops)
+            return asyncio.create_task(resp)
+
+        run_task = copy_context().run(_create_run_task)
         channel.set_close_future(run_task)
         reader_stopped = asyncio.Event()
 
         async def stop() -> None:
-            if run_task.done():
-                return
-            if not reader_stopped.is_set():
-                reader_stopped.set()
-                run_task.cancel()
-            # waiting here is what lets aclosing(...) promise the run is over
-            # once the block exits.
-            await asyncio.wait([run_task])
+            if not run_task.done():
+                if not reader_stopped.is_set():
+                    reader_stopped.set()
+                    run_task.cancel()
+                # waiting here is what lets aclosing(...) promise the run is over
+                # once the block exits.
+                await asyncio.wait([run_task])
+            # Let done-callbacks on run_task (e.g. inner StoppableStream._on_reader_done)
+            # schedule their _spawn_stop tasks, then drain any stops spawned in this scope.
+            await asyncio.sleep(0)
+            while child_stops:
+                await asyncio.wait(list(child_stops))
+                await asyncio.sleep(0)
 
         # Mirror the run's terminal state onto .response so a caller awaiting it
         # sees the same success/error/cancel the run ended with, instead of

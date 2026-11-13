@@ -568,6 +568,66 @@ async def test_django_streaming_client_disconnect_cancels_flow(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_django_non_streaming_client_disconnect_cancels_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Django ASGIHandler cancels a non-streaming flow view when the client disconnects."""
+    ai = Genkit()
+    flow_started = asyncio.Event()
+    flow_cancelled = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    @genkit_django_handler(ai)
+    @ai.flow()
+    async def slow(_: str) -> str:
+        flow_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            flow_cancelled.set()
+            raise
+        finally:
+            await asyncio.sleep(0.02)
+            cleanup_finished.set()
+        return 'never'
+
+    module = types.ModuleType('genkit_django_nonstream_disconnect_urls')
+    module.urlpatterns = [path('slow', slow)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    monkeypatch.setitem(sys.modules, 'genkit_django_nonstream_disconnect_urls', module)
+
+    request_read = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_read
+        if not request_read:
+            request_read = True
+            return {'type': 'http.request', 'body': json.dumps({'data': 'x'}).encode(), 'more_body': False}
+        await flow_started.wait()
+        return {'type': 'http.disconnect'}
+
+    async def send(_message: dict[str, Any]) -> None:
+        return
+
+    scope = {
+        'type': 'http',
+        'asgi': {'version': '3.0'},
+        'http_version': '1.1',
+        'method': 'POST',
+        'scheme': 'http',
+        'path': '/slow',
+        'raw_path': b'/slow',
+        'root_path': '',
+        'query_string': b'',
+        'headers': [(b'content-type', b'application/json')],
+        'client': ('testclient', 50000),
+        'server': ('testserver', 80),
+    }
+    with override_settings(ROOT_URLCONF='genkit_django_nonstream_disconnect_urls'):
+        await asyncio.wait_for(ASGIHandler()(scope, receive, send), timeout=5)
+
+    assert flow_cancelled.is_set()
+    await asyncio.wait_for(cleanup_finished.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
 async def test_django_failure_logs_name_the_flow(
     urlconf: None,  # noqa: ARG001
     caplog: pytest.LogCaptureFixture,

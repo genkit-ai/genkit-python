@@ -64,6 +64,7 @@ from genkit._core._action import (
     Action,
     ActionContext,
     ActionKind,
+    _action_context,  # pyright: ignore[reportPrivateUsage]
     create_action_key,
     get_current_context,
     parse_action_key,
@@ -105,6 +106,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     as_message,
+    check_max_turns,
     chunk_for_stream,
     reject_config_api_key,
     reject_unanswered_interrupts,
@@ -125,6 +127,8 @@ from genkit._core._typing import (
     ToolResponse,
 )
 
+# Tool rounds allowed when the caller sets no max_turns; matches Go default.
+# Each round is a paid model call; a run stops after this many turns.
 DEFAULT_MAX_TURNS = 50
 
 # Interrupt is a BaseException so a tool's `except Exception` can't swallow it.
@@ -287,16 +291,21 @@ def register_middleware(
 ) -> list[MiddlewareRef] | None:
     """Normalize ``use=`` to ``MiddlewareRef`` entries (name + config only).
 
-    Inline ``Middleware`` instances are not stored on the registry. Their
-    config is serialized onto the ref and, when the class is not registered on
-    a parent registry, a ``_MiddlewareMetadata`` is registered on this layer so
-    ``resolve_middleware_from_use`` can build a fresh instance per ``generate()``.
+    Inline ``Middleware`` instances keep their config on the ref for traces
+    and the Dev UI. When the class is not registered on a parent registry, a
+    ``_MiddlewareMetadata`` is registered on this layer under a synthetic
+    name. The instances themselves are stored on this layer so
+    ``resolve_middleware_from_use`` hands back the caller's instance instead
+    of rebuilding it from the serialized config.
     """
     if use is None:
         return None
     refs: list[MiddlewareRef] = []
     # Build the class→name index once so resolving the use list is O(M+N).
     cls_index = middleware_class_index(registry)
+    # (ref name, instance) per entry, so resolve can hand back the caller's
+    # instance instead of rebuilding it from serialized config.
+    inline: list[tuple[str, Middleware | None]] = []
     for i, entry in enumerate(use):
         if isinstance(entry, Middleware):
             # Prefer the registered name so traces show ``concise_reply_mw``
@@ -305,8 +314,8 @@ def register_middleware(
             # with any globally registered middleware.
             mw_cls = type(entry)
             registered = cls_index.get(mw_cls)
-            # Each ref carries its own config and resolves to a fresh instance,
-            # so the same registered name can appear more than once.
+            # Each entry keeps its own instance and ref, so the same
+            # registered name can appear more than once.
             reg_name = registered or f'dynamic-middleware-{i}-{secrets.token_hex(5)}'
             if registered is None:
                 registry.register_value(
@@ -315,26 +324,60 @@ def register_middleware(
                     mw_cls._middleware_metadata(reg_name),
                 )
             # Dump keys that match the schema and that the config class validates.
+            # The ref is for traces and the Dev UI; a config that is not JSON
+            # (a callable, a client) still runs because resolve uses the instance.
             config = _dump_middleware_ref_config(entry.config)
             refs.append(MiddlewareRef(name=reg_name, config=config))
+            inline.append((reg_name, entry))
         else:
             refs.append(entry)
+            inline.append((entry.name, None))
+    if any(mw is not None for _, mw in inline):
+        registry.register_value(_INLINE_MIDDLEWARE_KIND, _INLINE_MIDDLEWARE_KEY, inline)
     return refs
+
+
+# Child-registry slot for the instances behind this call's inline ``use=[...]``.
+_INLINE_MIDDLEWARE_KIND = 'genkit:inline-middleware'
+_INLINE_MIDDLEWARE_KEY = 'use'
 
 
 def resolve_middleware_from_use(
     registry: Registry,
     use: Sequence[MiddlewareRef] | None,
 ) -> list[Middleware]:
-    """Resolve ``MiddlewareRef`` entries to fresh ``Middleware`` instances.
+    """Resolve ``MiddlewareRef`` entries to ``Middleware`` instances.
 
-    Each ref is instantiated from the registered ``_MiddlewareMetadata`` and
-    ``ref.config`` (same path for Dev UI, dotprompt, and inline ``use=[Mw(...)]``).
+    Inline ``use=[Mw(...)]`` entries keep the caller's instance registered on
+    the per-call child registry; ref entries (Dev UI, dotprompt) are
+    instantiated from the registered ``_MiddlewareMetadata`` and ``ref.config``.
     """
     if not use:
         return []
+    inline = registry.lookup_value(_INLINE_MIDDLEWARE_KIND, _INLINE_MIDDLEWARE_KEY)
+    instances: list[tuple[str, Middleware | None]] | None = None
+    if isinstance(inline, list):
+        typed_inline = cast(list[tuple[str, Middleware | None]], inline)
+        if len(typed_inline) != len(use) or any(
+            inst is not None and reg_name != entry.name
+            for (reg_name, inst), entry in zip(typed_inline, use, strict=True)
+        ):
+            raise GenkitError(
+                status='INTERNAL',
+                message=(
+                    'Inline middleware instances on the per-call registry do not match use= '
+                    f'({[name for name, _ in typed_inline]} vs {[entry.name for entry in use]}).'
+                ),
+                source='genkit.generate',
+            )
+        instances = typed_inline
     out: list[Middleware] = []
-    for entry in use:
+    for i, entry in enumerate(use):
+        if instances is not None and instances[i][1] is not None:
+            # Inline use=[Mw(...)]: keep the caller's instance (custom __init__,
+            # clients, compiled regex flags, callables) rather than rebuild it.
+            out.append(cast(Middleware, instances[i][1]))
+            continue
         defn = registry.lookup_value('middleware', entry.name)
         if defn is None:
             raise GenkitError(
@@ -675,7 +718,12 @@ def last_user_message(*, messages: list[Message]) -> Message | None:
 
 
 def context_item_template(d: Document, index: int) -> str:
-    """Render a document as a citation line for context injection."""
+    """Render a document as a citation line for context injection.
+
+    Only ``ref``/``id`` goes on the line, same as JS. Other metadata (ACLs,
+    embeddings, tenant ids) stays out of the prompt. Only the document's text
+    is rendered; media parts in a document are not sent.
+    """
     out = '- '
     ref = (d.metadata and (d.metadata.get('ref') or d.metadata.get('id'))) or index
     out += f'[{ref}]: '
@@ -714,6 +762,10 @@ def augment_with_context(
     if context_idx >= 0:
         meta = user_message.content[context_idx].metadata or {}
         if not meta.get('pending'):
+            logger.warning(
+                'docs= not injected: the last user message already has a context part',
+                docs=len(request.docs),
+            )
             return request
 
     # Render all documents as a single formatted text string
@@ -890,12 +942,7 @@ async def run_generate(
     )
     if caller_stopped is not None and caller_stopped.is_set():
         return box_aborted_turn(messages=list(options.messages or []))
-    if options.max_turns is not None and options.max_turns < 0:
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'max turns cannot be negative, got {options.max_turns}',
-            reason=ErrorReason.INVALID_INPUT,
-        )
+    check_max_turns(options.max_turns)
     # The veneer already checked ahead of its span. /util/generate (Dev UI,
     # reflection) starts here, so it fails before middleware or the model runs.
     reject_config_api_key(options.config)
@@ -924,69 +971,76 @@ async def run_generate(
         on_chunk=on_chunk,
     )
 
-    mw_pipeline: MiddlewarePipeline | None = None
-    if middleware:
-        mw_pipeline = prepare_middleware(middleware, ctx=ctx, caller_stopped=caller_stopped)
-        mw_tools: list[Tool] = []
-        for mw in mw_pipeline.middleware:
-            mw_tools.extend(mw.tools(mw_pipeline.ctx))
-
-        if mw_tools:
-            existing = list(options.tools) if options.tools else []
-            declared = set(existing)
-            contributed_names: list[str] = []
-            for t in mw_tools:
-                name = t.name
-                if name in declared or name in contributed_names:
-                    raise GenkitError(
-                        status='INVALID_ARGUMENT',
-                        message=(f"tool '{name}' is contributed by middleware but already declared elsewhere"),
-                        reason=ErrorReason.INVALID_INPUT,
-                    )
-                registry.register_action_from_instance(t)
-                contributed_names.append(name)
-            options = options.model_copy()
-            options.tools = existing + contributed_names
-    else:
-        mw_pipeline = MiddlewarePipeline(middleware=[], ctx=ctx, caller_stopped=caller_stopped)
-
-    call = GenerateRun(messages=list(options.messages or []), caller_stopped=caller_stopped)
-
-    if is_debug_enabled(logger):
-        resolved: dict[str, object] = {
-            'model': options.model,
-            'messages': len(options.messages),
-            'tools': len(options.tools or []),
-            'max_turns': options.max_turns,
-            'streaming': on_chunk is not None,
-        }
-        resolved['format'] = options.output.format if options.output else None
-        resolved['constrained'] = options.output.constrained if options.output else None
-        if middleware:
-            resolved['middleware'] = [middleware_name(m) for m in middleware]
-        logger.debug('generate request resolved', **resolved)
-
+    # Bind the generate-scoped copy so middleware and hooks calling
+    # Genkit.current_context() see ctx.context (including earlier mutations)
+    # without mutating an enclosing flow's context.
+    context_token = _action_context.set(ctx.context)
     try:
-        return await run_wrap_generate(
-            registry=registry,
-            options=options,
-            mw_pipeline=mw_pipeline,
-            message_index=message_index,
-            current_turn=current_turn,
-            call=call,
-        )
-    except asyncio.CancelledError as exc:
-        stamp_cancelled_error(exc=exc, messages=call.messages)
-        raise
-    except (Exception, _StreamingCallbackError) as exc:
-        if streaming_callback_cause(exc=exc) is None:
+        mw_pipeline: MiddlewarePipeline | None = None
+        if middleware:
+            mw_pipeline = prepare_middleware(middleware, ctx=ctx, caller_stopped=caller_stopped)
+            mw_tools: list[Tool] = []
+            for mw in mw_pipeline.middleware:
+                mw_tools.extend(mw.tools(mw_pipeline.ctx))
+
+            if mw_tools:
+                existing = list(options.tools) if options.tools else []
+                declared = set(existing)
+                contributed_names: list[str] = []
+                for t in mw_tools:
+                    name = t.name
+                    if name in declared or name in contributed_names:
+                        raise GenkitError(
+                            status='INVALID_ARGUMENT',
+                            message=(f"tool '{name}' is contributed by middleware but already declared elsewhere"),
+                            reason=ErrorReason.INVALID_INPUT,
+                        )
+                    registry.register_action_from_instance(t)
+                    contributed_names.append(name)
+                options = options.model_copy()
+                options.tools = existing + contributed_names
+        else:
+            mw_pipeline = MiddlewarePipeline(middleware=[], ctx=ctx, caller_stopped=caller_stopped)
+
+        call = GenerateRun(messages=list(options.messages or []), caller_stopped=caller_stopped)
+
+        if is_debug_enabled(logger):
+            resolved: dict[str, object] = {
+                'model': options.model,
+                'messages': len(options.messages),
+                'tools': len(options.tools or []),
+                'max_turns': options.max_turns,
+                'streaming': on_chunk is not None,
+            }
+            resolved['format'] = options.output.format if options.output else None
+            resolved['constrained'] = options.output.constrained if options.output else None
+            if middleware:
+                resolved['middleware'] = [middleware_name(m) for m in middleware]
+            logger.debug('generate request resolved', **resolved)
+
+        try:
+            return await run_wrap_generate(
+                registry=registry,
+                options=options,
+                mw_pipeline=mw_pipeline,
+                message_index=message_index,
+                current_turn=current_turn,
+                call=call,
+            )
+        except asyncio.CancelledError as exc:
+            stamp_cancelled_error(exc=exc, messages=call.messages)
             raise
-        return box_from_exc(
-            response=ModelResponse(),
-            messages=call.messages,
-            exc=exc,
-            caller_stopped=False,
-        )
+        except (Exception, _StreamingCallbackError) as exc:
+            if streaming_callback_cause(exc=exc) is None:
+                raise
+            return box_from_exc(
+                response=ModelResponse(),
+                messages=call.messages,
+                exc=exc,
+                caller_stopped=False,
+            )
+    finally:
+        _action_context.reset(context_token)
 
 
 class ChunkAccumulator:
@@ -2908,20 +2962,8 @@ async def resolve_resumed_tool(
         tool_request=tool_req_root,
     )
     if provided_response:
-        # remove the 'interrupt' but leave a 'resolvedInterrupt'
-        metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.get('interrupt')
-        if interrupt:
-            del metadata['interrupt']
         return (
-            Part(
-                tool_request=ToolRequest(
-                    name=tool_req.name,
-                    ref=tool_req.ref,
-                    input=tool_req.input,
-                ),
-                metadata={**metadata, 'resolvedInterrupt': interrupt},
-            ),
+            resolved_interrupt_part(original=tool_req_root, tool_input=tool_req.input),
             provided_response,
         )
 
@@ -2937,6 +2979,8 @@ async def resolve_resumed_tool(
                 message=f'Tool {tool_req.name} not found',
                 reason=ErrorReason.TOOL_NOT_FOUND,
             )
+        restart_req = restart_trp.tool_request
+        assert restart_req is not None
         try:
             executed = await run_restart(
                 tool=tool,
@@ -2947,22 +2991,15 @@ async def resolve_resumed_tool(
         except TOOL_RAISES as e:
             intr = interrupt_from_exc(e)
             if intr is not None:
-                return (interrupt_request_part(tool_req_root, intr), None)
+                # Paused again on the input it actually ran with, so the next
+                # answer (and the history) sees the approved input.
+                metadata, _ = strip_interrupt_metadata(tool_req_root)
+                paused_req = ToolRequest(name=tool_req.name, ref=tool_req.ref, input=restart_req.input)
+                return (interrupt_request_part(Part(tool_request=paused_req, metadata=metadata), intr), None)
             log_dropped_failure(e, tool=tool_req.name)
             raise
-        metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.get('interrupt')
-        if interrupt:
-            del metadata['interrupt']
         return (
-            Part(
-                tool_request=ToolRequest(
-                    name=tool_req.name,
-                    ref=tool_req.ref,
-                    input=tool_req.input,
-                ),
-                metadata={**metadata, 'resolvedInterrupt': interrupt},
-            ),
+            resolved_interrupt_part(original=tool_req_root, tool_input=restart_req.input),
             executed,
         )
 
@@ -3055,6 +3092,30 @@ async def run_restart(
             content=parts_to_wire(multipart.content, tool_name=tool_req.name),
         ),
         metadata=multipart.metadata,
+    )
+
+
+def strip_interrupt_metadata(part: Part) -> tuple[dict[str, Any], object]:
+    """Return metadata without ``interrupt`` or ``replacedInput``, plus the interrupt payload.
+
+    On a tool request in history, ``replacedInput`` would read as a pending
+    restart, so both ``interrupt`` and ``replacedInput`` are cleared when an
+    interrupt is resolved or re-paused.
+    """
+    metadata = dict(part.metadata) if part.metadata else {}
+    interrupt = metadata.pop('interrupt', None)
+    metadata.pop('replacedInput', None)
+    return metadata, interrupt
+
+
+def resolved_interrupt_part(*, original: Part, tool_input: object) -> Part:
+    """Return the resolved history ToolRequest part with ``resolvedInterrupt``."""
+    orig_req = original.tool_request
+    assert orig_req is not None
+    metadata, interrupt = strip_interrupt_metadata(original)
+    return Part(
+        tool_request=ToolRequest(name=orig_req.name, ref=orig_req.ref, input=tool_input),
+        metadata={**metadata, 'resolvedInterrupt': interrupt},
     )
 
 

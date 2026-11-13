@@ -26,7 +26,7 @@ class MemoryCollectorSink:
     def __init__(self) -> None:
         self._spans: list[ActiveSpan] = []
 
-    def export_spans(self, spans: list[ActiveSpan], *, resource_attributes: dict[str, object]) -> None:
+    def export_spans(self, spans: list[ActiveSpan]) -> None:
         self._spans.extend(spans)
 
     def flush(self) -> None:

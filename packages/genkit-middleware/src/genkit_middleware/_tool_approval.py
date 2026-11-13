@@ -18,7 +18,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, cast, overload
 
 from pydantic import Field
 
@@ -26,6 +27,8 @@ from genkit import Interrupt, MultipartToolResponse
 from genkit.middleware import Middleware, MiddlewareContext, ToolHookParams
 from genkit.plugin_api import ActionKind, GenkitConfig
 from genkit.telemetry import SpanContext, run_in_new_span
+
+_UNSET: Any = cast(Any, object())
 
 
 class ToolApprovalConfig(GenkitConfig):
@@ -39,6 +42,26 @@ class ToolApproval(Middleware[ToolApprovalConfig]):
 
     name = 'tool_approval'
     description = 'Requires approval before executing tools'
+
+    @overload
+    def __init__(
+        self,
+        *,
+        allowed_tools: Sequence[str] = ...,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, *, config: ToolApprovalConfig) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        allowed_tools: Sequence[str] = _UNSET,
+        config: ToolApprovalConfig | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        fields = {'allowed_tools': allowed_tools} if allowed_tools is not _UNSET else {}
+        super().__init__(config=config, **fields, **kwargs)
 
     async def wrap_tool(
         self,

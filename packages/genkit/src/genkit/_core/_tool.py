@@ -322,7 +322,8 @@ async def call_tool_fn(
     function through here, so resume metadata reaches it either way.
     """
     resumed_meta = _tool_resumed_metadata.get()
-    if resumed_meta:
+    # A bare restart() resumes with {}; it is still a resume.
+    if resumed_meta is not None:
         # Record resumed metadata on the current span for observability.
         set_custom_metadata_attributes({'resumed': resumed_meta})
     # The ctx parameter always receives this ToolContext, whatever context
@@ -453,13 +454,14 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
             ephemeral = Tool(lookup_price, name='lookup_price')
             res = await ai.generate(prompt='Price of SKU-1?', tools=[ephemeral])
         """
-        if not inspect.iscoroutinefunction(func):
+        # A callable instance with `async def __call__` is async too.
+        if not (inspect.iscoroutinefunction(func) or inspect.iscoroutinefunction(type(func).__call__)):
             raise TypeError(f'Tool function must be async. Got sync function: {getattr(func, "__name__", repr(func))}')
         tool_name = name if name is not None else getattr(func, '__name__', None)
         if tool_name is None:
             raise ValueError(f'Cannot infer a tool name from {func!r}; pass name= explicitly.')
         tool_description = get_func_description(func, description)
-        typed_func = cast(Callable[..., Awaitable[OutputT]], func)
+        typed_func: Callable[..., Awaitable[OutputT]] = func
         self._wire_action = None
 
         async def tool_fn(raw_input: object, ctx: ActionContext[Any]) -> OutputT:

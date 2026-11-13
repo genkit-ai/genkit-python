@@ -687,3 +687,169 @@ async def test_generate_cancel_before_hop_body_enters_emits_no_runtime_warning()
     runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
     assert runtime_warnings == []
     assert model.calls <= 1
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_reader_cancelled_mid_async_for_stops_the_model() -> None:
+    """Cancelling a task blocked in a bare `async for` cancels the model once the task ends.
+
+    This is the web-adapter path: serve_flow cancels the flow on client
+    disconnect while it waits for the next chunk.
+    """
+    ai, model = setup()
+    reading = asyncio.Event()
+
+    async def bare_reader() -> None:
+        stream = ai.generate_stream(model='slow', prompt='hi')
+        async for _ in stream:
+            reading.set()
+
+    task = asyncio.create_task(bare_reader())
+    await settle(reading.wait())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await settle(model.cancelled.wait())
+
+
+@pytest.mark.asyncio
+async def test_flow_reader_cancelled_mid_async_for_stops_inner_generate() -> None:
+    """A flow cancelled while reading a bare `ai.generate_stream` loop stops that model call too."""
+    ai, model = setup()
+    reading = asyncio.Event()
+
+    @ai.flow()
+    async def chef(order: str, ctx: FlowContext) -> str:
+        stream = ai.generate_stream(model='slow', prompt=order)
+        async for chunk in stream:
+            reading.set()
+            ctx.send_chunk(chunk.text)
+        return (await stream.response).text
+
+    served = chef.stream('ramen')
+
+    async def serve() -> None:
+        async for _ in served.stream:
+            pass
+
+    task = asyncio.create_task(serve())
+    await settle(reading.wait())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await settle(model.cancelled.wait())
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_break_then_drop_stops_the_model() -> None:
+    """A bare `async for` that breaks stops the model once the stream goes out of scope."""
+    ai, model = setup()
+
+    async def peek() -> Awaitable[ModelResponse]:
+        stream = ai.generate_stream(model='slow', prompt='hi')
+        async for _ in stream:
+            break
+        return stream.response
+
+    response_future = await peek()
+    response = await settle(response_future)
+
+    assert model.cancelled.is_set()
+    assert response.finish_reason == FinishReason.ABORTED
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_break_while_held_keeps_the_model_running() -> None:
+    """Breaking out but keeping the stream lets the run finish; `.response` still resolves."""
+    ai, model = setup()
+    stream = ai.generate_stream(model='slow', prompt='hi')
+    async for _ in stream:
+        break
+    model.release.set()
+
+    response = await settle(stream.response)
+
+    assert not model.cancelled.is_set()
+    assert response.text == 'one two'
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_response_only_is_not_stopped_when_stream_is_dropped() -> None:
+    """`await ai.generate_stream(...).response` without iterating runs to completion."""
+    ai, model = setup(release=True)
+
+    response = await settle(ai.generate_stream(model='slow', prompt='hi').response)
+
+    assert not model.cancelled.is_set()
+    assert response.text == 'one two'
+
+
+@pytest.mark.asyncio
+async def test_nested_stream_cleanup_finishes_before_outer_aclose_returns() -> None:
+    """Outer aclose() waits for nested generate_stream cancellation/finally before returning."""
+    ai = Genkit()
+    reading = asyncio.Event()
+    model_finally_ran = asyncio.Event()
+
+    async def slow_model(_request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        try:
+            ctx.send_chunk(ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('one')]))
+            await asyncio.sleep(10)
+            return ModelResponse(
+                finish_reason=FinishReason.STOP,
+                message=Message(role=Role.MODEL, content=[Part.from_text('done')]),
+            )
+        finally:
+            await asyncio.sleep(0)
+            model_finally_ran.set()
+
+    ai.define_model(name='slow_finally', fn=slow_model)
+
+    @ai.flow()
+    async def chef(order: str, ctx: FlowContext) -> str:
+        stream = ai.generate_stream(model='slow_finally', prompt=order)
+        async for chunk in stream:
+            reading.set()
+            ctx.send_chunk(chunk.text)
+        return (await stream.response).text
+
+    served = chef.stream('ramen')
+
+    async def read_first() -> None:
+        async for _ in served.stream:
+            await reading.wait()
+            break
+
+    await read_first()
+    await served.stream.aclose()
+    # Must already be set without yielding to the loop again (Flask _iter_over_async shape).
+    assert model_finally_ran.is_set()
+
+
+@pytest.mark.asyncio
+async def test_to_sse_disconnect_cancels_flow_and_model() -> None:
+    """Closing to_sse() early (web handler disconnect path) cancels the flow and inner model."""
+    import contextlib
+
+    from genkit.web._sse import to_sse
+
+    ai, model = setup()
+
+    @ai.flow()
+    async def chef(order: str, ctx: FlowContext) -> str:
+        stream = ai.generate_stream(model='slow', prompt=order)
+        async for chunk in stream:
+            ctx.send_chunk(chunk.text)
+        return (await stream.response).text
+
+    served = chef.stream('ramen')
+    frames: list[str] = []
+    async with contextlib.aclosing(to_sse(served)) as lines:
+        async for line in lines:
+            frames.append(line)
+            break
+
+    assert len(frames) == 1
+    assert model.cancelled.is_set()

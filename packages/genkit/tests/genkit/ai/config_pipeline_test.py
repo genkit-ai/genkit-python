@@ -1029,5 +1029,25 @@ async def test_bad_config_names_each_problem_once_on_every_kind() -> None:
             await call()
         assert str(err.value) == f'INVALID_ARGUMENT: {name}: {problem}'
         assert isinstance(err.value.__cause__, ValidationError)
-        assert get_reflection_json(err.value).message == err.value.message
+        assert get_reflection_json(err.value).message == str(err.value)
         assert err.value.details['errors'][0]['loc'] == ['temperature']
+
+
+class _KitchenConfig(ModelConfig):
+    common_field_bounds = {'temperature': (0.0, 2.0)}
+
+
+@pytest.mark.asyncio
+async def test_config_out_of_bounds_says_got_once() -> None:
+    """The bounds message already names the value; the config check doesn't append it again."""
+    ai = Genkit()
+
+    async def chef(request: ModelRequest[_KitchenConfig], ctx: ActionContext) -> ModelResponse:
+        return _ok()
+
+    ai.define_model(name='chef', fn=chef, config_schema=_KitchenConfig)
+
+    with pytest.raises(GenkitError) as err:
+        await ai.generate(model='chef', prompt='plan the tasting menu', config={'temperature': 99})
+
+    assert err.value.message == "chef: config 'temperature': temperature must be between 0.0 and 2.0, got 99.0"

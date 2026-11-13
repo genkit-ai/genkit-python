@@ -584,7 +584,7 @@ async def test_reflection_server_v2_run_tool_that_interrupts_replies_with_error(
         assert isinstance(err, dict)
         assert err.get('data', {}).get('code') == StatusCodes.INTERNAL.value
         # Same wording as every other boundary, not Interrupt's empty str().
-        assert str(err.get('message')).startswith('Interrupt raised outside a tool')
+        assert str(err.get('message')).startswith('INTERNAL: Interrupt raised outside a tool')
     finally:
         await _stop_client(client, task)
 
@@ -1012,7 +1012,7 @@ async def test_reflection_v1_run_tool_that_interrupts_writes_error_payload() -> 
     assert body is not None
     error = json.loads(body)['error']
     assert error['code'] == StatusCodes.INTERNAL.value
-    assert error['message'].startswith('Interrupt raised outside a tool')
+    assert error['message'].startswith('INTERNAL: Interrupt raised outside a tool')
     assert runner.queue.get_nowait() is None
 
 

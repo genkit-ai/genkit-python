@@ -427,12 +427,13 @@ async def test_mistral_generate_drops_stream_options_from_config(mistral: Genkit
 
 
 @pytest.mark.asyncio
-async def test_mistral_top_k_goes_out(mistral: Genkit, server: _Server) -> None:
-    """`config={'top_k': 5}` reaches Mistral, which declares `top_k`; OpenAI never gets it."""
-    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'top_k': 5})
+async def test_mistral_refuses_top_k(mistral: Genkit, server: _Server) -> None:
+    """`config={'top_k': 5}` fails the turn before the request goes out: Mistral's models reject `top_k`."""
+    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'top_k': 5})
 
-    [body] = server.bodies()
-    assert body['top_k'] == 5
+    assert response.finish_reason == FinishReason.FAILED
+    assert 'top_k' in str(response.error)
+    assert server.bodies() == []
 
 
 _REASONING_CONFIG = {'reasoning_effort': 'high'}
@@ -615,11 +616,11 @@ def test_mistral_chat_body_leaves_its_input_alone() -> None:
     }
     before = json.loads(json.dumps(body))
 
-    out = mistral_chat_body(body, top_k=5)
+    out = mistral_chat_body(body)
 
     assert body == before
     assert out == {
         'model': 'mistral-small-latest',
         'max_tokens': 50,
-        'extra_body': {'random_seed': 7, 'top_k': 5, 'min_tokens': 5},
+        'extra_body': {'random_seed': 7, 'min_tokens': 5},
     }

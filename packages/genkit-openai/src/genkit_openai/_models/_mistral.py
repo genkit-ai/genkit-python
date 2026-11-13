@@ -37,6 +37,8 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from genkit import GenkitError
+
 # Mistral's API hosts: global, EU and US, the servers in the mistralai SDK's
 # sdkconfiguration.py. codestral.mistral.ai, for Codestral-only keys, is not in
 # that list or the OpenAPI servers; it is kept since nothing else lives there.
@@ -51,16 +53,16 @@ def is_mistral(client: AsyncOpenAI) -> bool:
 def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict[str, Any]:
     """Rewrite ``chat.completions.create()`` kwargs into a body Mistral accepts.
 
-    - ``stream_options`` is dropped. Mistral has no such field; it reports
-      usage on the last streamed chunk without being asked.
+    - ``stream_options`` is dropped. Mistral reports usage on the last
+      streamed chunk without being asked, so it isn't needed.
     - ``max_completion_tokens`` goes out as ``max_tokens``, Mistral's only
       reply cap, including when ``reasoning_effort`` is set.
     - ``seed`` goes out as ``random_seed``.
-    - ``top_k``, which OpenAI has no field for, goes out as is.
+    - ``top_k`` is refused. Mistral's schema declares it, but its models
+      answer "top_k sampling is not enabled for this model".
 
-    The SDK has no ``random_seed`` or ``top_k`` kwarg, so both ride in
-    ``extra_body``; the same key in the caller's ``extra`` wins, as every
-    ``extra`` key does.
+    The SDK has no ``random_seed`` kwarg, so it rides in ``extra_body``; the
+    same key in the caller's ``extra`` wins, as every ``extra`` key does.
 
     Args:
         body: The kwargs the plugin built for OpenAI. Not modified.
@@ -68,7 +70,15 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
 
     Returns:
         A copy with Mistral's field names.
+
+    Raises:
+        GenkitError: ``INVALID_ARGUMENT`` when ``top_k`` is set.
     """
+    if top_k is not None:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message="Mistral doesn't support top_k: its models reject top_k sampling. Remove top_k from the config.",
+        )
     out = dict(body)
     out.pop('stream_options', None)
     if 'max_completion_tokens' in out:
@@ -76,8 +86,6 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
     renamed: dict[str, Any] = {}
     if 'seed' in out:
         renamed['random_seed'] = out.pop('seed')
-    if top_k is not None:
-        renamed['top_k'] = top_k
     if renamed:
         out['extra_body'] = {**renamed, **(out.get('extra_body') or {})}
     return out

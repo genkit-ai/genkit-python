@@ -90,8 +90,10 @@ the plugin sends Mistral's names for the settings that differ:
 - `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
   even with `reasoning_effort` set.
 - `seed` goes out as `random_seed`.
-- `top_k` goes out as is. Mistral takes it; OpenAI never gets it.
-- Streaming sends no `stream_options`; Mistral reports usage on the last chunk.
+- `top_k` is refused before the request goes out: Mistral's models reject
+  `top_k` sampling.
+- Streaming sends no `stream_options`; Mistral reports usage on the last chunk
+  without it.
 - An embedder's `dimensions` goes out as `output_dimension`.
 
 With `reasoning_effort` set, replies carry their reasoning in `thinking`

@@ -143,6 +143,7 @@ from genkit_google_genai._models._routing import (
     strip_ref_prefixes,
 )
 from genkit_google_genai._models._sdk_config import (
+    GEMINI_API_MIN_SERVER_TIMEOUT_SECONDS,
     check_timeout_seconds,
     request_client_kwargs,
     timeout_seconds_to_ms,
@@ -742,6 +743,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         if not api_key and credentials is None:
             _setup_logger.warning(MISSING_API_KEY_MESSAGE)
 
+        self._caller_server_timeout = any(k.lower() == 'x-server-timeout' for k in (headers or ()))
         self._client_kwargs: dict[str, Any] = {
             'vertexai': self._vertexai,
             'api_key': api_key,
@@ -752,6 +754,7 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
                 headers=headers,
                 timeout=timeout,
                 max_retries=max_retries,
+                min_server_timeout=GEMINI_API_MIN_SERVER_TIMEOUT_SECONDS,
             ),
         }
         self._http_client_factory = _loop_local_http_client(http_client_factory)
@@ -776,13 +779,24 @@ class GoogleAI(GoogleFamilyRefs, Plugin):
         """Plugin-level transport knobs for Interactions models.
 
         Per-request config can still override timeout/headers/api_version.
-        A ticket never supplies the host.
+        A ticket never supplies the host. A synthetic ``X-Server-Timeout`` floor
+        added for short ``generate_content`` calls is omitted here so long
+        Interactions runs (Deep Research, Antigravity) are not cut off at 10s.
         """
         http_options: HttpOptions = self._client_kwargs['http_options']
+        custom_headers = (
+            {
+                k: v
+                for k, v in http_options.headers.items()
+                if self._caller_server_timeout or k.lower() != 'x-server-timeout'
+            }
+            if http_options.headers
+            else None
+        )
         return ClientOptions(
             api_version=http_options.api_version,
             base_url=http_options.base_url,
-            custom_headers=dict(http_options.headers) if http_options.headers else None,
+            custom_headers=custom_headers or None,
             timeout=float(http_options.timeout) if http_options.timeout is not None else None,
             # The getter, not a client: Interactions calls it per request so
             # each event loop gets its own client.
@@ -1560,6 +1574,7 @@ def _plugin_http_options(
     headers: Mapping[str, str] | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    min_server_timeout: int | None = None,
 ) -> HttpOptions:
     """Build the SDK's HttpOptions from the plugin's network arguments.
 
@@ -1575,6 +1590,11 @@ def _plugin_http_options(
     ``max_retries`` follows the OpenAI and Anthropic SDKs (retries after the
     first attempt) and maps onto ``HttpRetryOptions.attempts``, which counts
     the first attempt. google-genai's backoff and status codes are kept.
+
+    ``min_server_timeout`` is the smallest ``X-Server-Timeout`` the backend
+    accepts. google-genai derives that header from ``timeout``; below the
+    floor the header is pinned to the floor and the local deadline stays
+    ``timeout``.
     """
     checked_timeout = check_timeout_seconds(timeout)
     if max_retries is not None and (
@@ -1593,6 +1613,17 @@ def _plugin_http_options(
             merged[name] = f'{caller} {GENKIT_USER_AGENT}'
         else:
             merged[name] = caller
+
+    caller_server_timeout: str | None = None
+    for k in list(merged):
+        if k.lower() == 'x-server-timeout':
+            caller_server_timeout = merged.pop(k)
+    if caller_server_timeout is not None:
+        # google-genai checks exact case 'X-Server-Timeout' before adding its
+        # own derived header, so normalize any caller spelling here.
+        merged['X-Server-Timeout'] = caller_server_timeout
+    elif checked_timeout is not None and min_server_timeout is not None and checked_timeout < min_server_timeout:
+        merged['X-Server-Timeout'] = str(min_server_timeout)
 
     return HttpOptions(
         base_url=base_url or None,

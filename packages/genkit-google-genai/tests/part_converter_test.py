@@ -415,7 +415,46 @@ class TestDownloadMediaErrors:
 
 
 class TestPartValidationEdges:
-    """A malformed thought signature raises INVALID_ARGUMENT."""
+    """Malformed base64, custom tool payloads, and tool-response media raise INVALID_ARGUMENT."""
+
+    @pytest.mark.asyncio
+    async def test_multipart_tool_response_reraises_genkit_error(self) -> None:
+        part = Part(
+            tool_response=ToolResponse(
+                name='shot',
+                output={'ok': True},
+                content=[{'media': {'contentType': 'image/png', 'url': '/etc/passwd'}}],
+            )
+        )
+        with pytest.raises(GenkitError) as raised:
+            await PartConverter.to_gemini(part)
+        assert raised.value.status == 'INVALID_ARGUMENT'
+        assert '/etc/passwd' not in raised.value.message
+
+    @pytest.mark.asyncio
+    async def test_legacy_tool_response_data_uri_validates_and_strips_whitespace(self) -> None:
+        valid = Part(
+            tool_response=ToolResponse(
+                name='shot',
+                output={'ok': True, 'content': [{'media': {'url': 'data:image/png;base64,YWJj\n ZGVm'}}]},
+            )
+        )
+        got = await PartConverter.to_gemini(valid)
+        assert isinstance(got, genai.types.Part)
+        assert got.function_response is not None and got.function_response.parts is not None
+        assert got.function_response.parts[0].inline_data is not None
+        assert got.function_response.parts[0].inline_data.data == b'abcdef'
+        assert got.function_response.parts[0].inline_data.mime_type == 'image/png'
+
+        corrupt = Part(
+            tool_response=ToolResponse(
+                name='shot',
+                output={'ok': True, 'content': [{'media': {'url': 'data:image/png;base64,YWJj%%%!'}}]},
+            )
+        )
+        with pytest.raises(GenkitError) as raised:
+            await PartConverter.to_gemini(corrupt)
+        assert raised.value.status == 'INVALID_ARGUMENT'
 
     @pytest.mark.asyncio
     async def test_malformed_thought_signature_is_invalid_argument(self) -> None:
@@ -424,3 +463,19 @@ class TestPartValidationEdges:
             await PartConverter.to_gemini(part)
         assert raised.value.status == 'INVALID_ARGUMENT'
         assert '%%%not-valid-base64!' not in raised.value.message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'custom',
+        [
+            {'geminiToolCall': 'not-an-object'},
+            {'geminiToolResponse': 'not-an-object'},
+        ],
+        ids=['bad-tool-call', 'bad-tool-response'],
+    )
+    async def test_malformed_server_side_tool_custom_payload_is_invalid_argument(
+        self, custom: dict[str, object]
+    ) -> None:
+        with pytest.raises(GenkitError) as raised:
+            await PartConverter.to_gemini(Part(custom=custom))
+        assert raised.value.status == 'INVALID_ARGUMENT'

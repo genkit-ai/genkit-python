@@ -203,8 +203,9 @@ Setting any `google_search_*` option turns Google Search on;
 
 `timeout` sets the HTTP timeout for one request, in seconds:
 `GeminiConfig(timeout=30)`. 0, negative, inf, NaN and bool raise. On `GoogleAI`,
-the Gemini API rejects server deadlines under 10 seconds with HTTP 400
-(`VertexAI` accepts shorter values).
+the Gemini API rejects server deadlines under 10 seconds, so a shorter timeout
+sends `X-Server-Timeout: 10` and the shorter deadline is enforced locally
+(`VertexAI` sends the value as-is).
 
 Function calling mode is controlled by `ai.generate(tool_choice=...)`, not config:
 `'auto'`, `'required'`, or `'none'`. In `'required'` mode, Gemini binds the request's

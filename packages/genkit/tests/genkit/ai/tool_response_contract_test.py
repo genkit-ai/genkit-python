@@ -715,9 +715,9 @@ async def test_tool_input_type_inference_across_shapes() -> None:
     # ty types `(ctx, x: Any)` as Unknown: it matches overloads with different
     # returns, and the typing spec's overload rule for Any makes that
     # ambiguous. No arrangement fixes it without breaking `(ctx: ToolContext)`.
-    assert_type(ai.tool(echo_any), Tool[Any, str])
+    assert_type(ai.tool(echo_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool(echo_object), Tool[Any, str])
-    assert_type(ai.tool(whoami), Tool[Any, str])
+    assert_type(ai.tool(whoami), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool(ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool()(ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool()(echo_object), Tool[Any, str])
@@ -729,7 +729,7 @@ async def test_tool_input_type_inference_across_shapes() -> None:
     # 2. define_tool.
     assert_type(define_tool(Registry(), ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(define_tool(Registry(), echo_object), Tool[Any, str])
-    assert_type(define_tool(Registry(), echo_any), Tool[Any, str])
+    assert_type(define_tool(Registry(), echo_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
 
     # 3. Tool(fn). ty doesn't solve overloaded generic constructors yet (see
     # test_tool_constructor_infers_types_from_function).

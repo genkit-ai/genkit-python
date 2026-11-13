@@ -312,9 +312,12 @@ def reject_config_api_key(config: object) -> None:
 # TypeVars for generic types
 OutputT = TypeVar('OutputT', default=object)
 ConfigT = TypeVar('ConfigT', bound=ModelConfig, default=ModelConfig)
-# Bound to BaseModel so ModelRef is always parameterized with a concrete Pydantic config schema.
-# Covariant so ModelRef[GeminiConfig] is assignable to ModelRef[BaseModel] or ModelRef[Any].
-ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, covariant=True)
+# Bound to BaseModel so ModelRef only accepts Pydantic config schemas.
+# Invariant so generate(model=ModelRef[T], config=T) pins T to the ref's config
+# class rather than widening to BaseModel. Defaults to Any (not BaseModel)
+# because invariant generics forbid subtyping on the type parameter: bare
+# ModelRef must mean ModelRef[Any] to accept any typed ref.
+ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, default=Any)
 # ModelRequest[X], EmbedRequest[X] and the evaluator requests take a pydantic
 # model class; __class_getitem__ rejects the rest. Not bound to BaseModel: type
 # checkers would then reject the common bare ModelRequest(config={...}), where
@@ -1844,6 +1847,11 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
     _previous_chunks: list[Any] = PrivateAttr(default_factory=list)
     _chunk_parser: Callable[..., object] | None = PrivateAttr(default=None)
     _schema_type: type[BaseModel] | None = PrivateAttr(default=None)
+    # .output is parsed once per chunk. A plain @property over a private cache
+    # rather than @cached_property: ty loses OutputT through cached_property on
+    # a generic model and types every chunk.output as None.
+    _output_parsed: bool = PrivateAttr(default=False)
+    _output_cache: Any = PrivateAttr(default=None)
 
     @field_validator('content', mode='before')
     @classmethod
@@ -1888,7 +1896,7 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
         """All tool response parts in this chunk."""
         return [p for p in self.content if p.tool_response is not None]
 
-    @cached_property
+    @property
     def output(self) -> OutputT | None:
         """The reply so far, parsed as far as it goes. Never raises.
 
@@ -1916,6 +1924,12 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
         or scalar). It's ``None`` before an object starts or while the text
         can't be parsed.
         """
+        if not self._output_parsed:
+            self._output_cache = self._parse_output()
+            self._output_parsed = True
+        return cast('OutputT | None', self._output_cache)
+
+    def _parse_output(self) -> object:
         if self.role is not None and self.role != Role.MODEL:
             return None
         try:
@@ -1926,15 +1940,12 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
                 and isinstance(parsed, dict)
                 and not issubclass(self._schema_type, RootModel)
             ):
-                return cast(
-                    'OutputT | None',
-                    construct_partial(
-                        schema_type=self._schema_type,
-                        data=parsed,
-                        closed=is_complete_json(text),
-                    ),
+                return construct_partial(
+                    schema_type=self._schema_type,
+                    data=parsed,
+                    closed=is_complete_json(text),
                 )
-            return cast('OutputT | None', parsed)
+            return parsed
         except Exception:
             # one odd chunk shouldn't end a stream whose final reply may still parse.
             logger.debug('chunk.output could not be parsed; returning None', exc_info=True)

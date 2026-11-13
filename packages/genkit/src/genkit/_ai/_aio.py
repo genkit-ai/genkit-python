@@ -105,7 +105,6 @@ from genkit._core._model import (
     EmbedRequest,
     ModelConfigDict,
     ModelRef,
-    ModelRefConfigT,
     ModelRequest,
     Part,
     ToolChoice,
@@ -141,6 +140,7 @@ logger = get_logger(__name__)
 InputT = TypeVar('InputT')
 OutputT = TypeVar('OutputT')
 ChunkT = TypeVar('ChunkT')
+ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel)
 
 R = TypeVar('R')
 T = TypeVar('T')
@@ -360,13 +360,6 @@ class Genkit:
         /,
     ) -> Flow[None, OutputT]: ...
 
-    @overload
-    def flow(
-        self,
-        func: Callable[..., Awaitable[OutputT]],
-        /,
-    ) -> Flow[Any, OutputT, Any]: ...
-
     def flow(
         self,
         name: str | Callable[..., Awaitable[Any]] | None = None,
@@ -518,7 +511,7 @@ class Genkit:
         self,
         func: Callable[[ToolContext[ChunkT]], Awaitable[OutputT]],
         /,
-    ) -> Tool[Any, OutputT, ChunkT]: ...
+    ) -> Tool[None, OutputT, ChunkT]: ...
 
     @overload
     def tool(
@@ -990,7 +983,7 @@ class Genkit:
         name: str | None = None,
         *,
         variant: str | None = None,
-        model: str | ModelRef[BaseModel] | Action | None = None,
+        model: str | ModelRef[Any] | Action | None = None,
         config: Mapping[str, Any] | BaseModel | ModelConfigDict | None = None,
         description: str | None = None,
         system: str | list[Part] | None = None,
@@ -1442,7 +1435,7 @@ class Genkit:
     async def _embedder_and_options(
         self,
         *,
-        embedder: str | EmbedderRef[BaseModel] | None,
+        embedder: str | EmbedderRef[Any] | None,
         config: object,
     ) -> tuple[Action[EmbedRequest, EmbedResponse, Never], dict[str, Any]]:
         """Resolve the embedder, check the call config, and layer the options.
@@ -1461,10 +1454,11 @@ class Genkit:
                 reason=ErrorReason.ACTION_NOT_FOUND,
             )
         ref = embedder if isinstance(embedder, EmbedderRef) else None
+        ref_schema = cast('type[BaseModel] | None', ref.config_schema) if ref else None
         schema = call_config_class(
             name=name,
             kind='embedder',
-            ref_schema=ref.config_schema if ref else None,
+            ref_schema=ref_schema,
             action_schema=python_config_schema(action.config_schema),
         )
         check_call_config(config=config, schema=schema, model=name)
@@ -1548,7 +1542,7 @@ class Genkit:
         config: ModelConfigDict,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1575,7 +1569,7 @@ class Genkit:
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1587,7 +1581,7 @@ class Genkit:
     async def generate(
         self,
         *,
-        model: str | ModelRef[BaseModel] | Action | None = None,
+        model: str | ModelRef[Any] | Action | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -1600,7 +1594,7 @@ class Genkit:
         config: BaseModel | ModelConfigDict | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1749,7 +1743,7 @@ class Genkit:
         config: ModelConfigDict,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1776,7 +1770,7 @@ class Genkit:
         config: ModelRefConfigT | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1788,7 +1782,7 @@ class Genkit:
     def generate_stream(
         self,
         *,
-        model: str | ModelRef[BaseModel] | Action | None = None,
+        model: str | ModelRef[Any] | Action | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -1801,7 +1795,7 @@ class Genkit:
         config: BaseModel | ModelConfigDict | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -1885,7 +1879,7 @@ class Genkit:
     async def _generate(
         self,
         *,
-        model: str | ModelRef[BaseModel] | Action | None = None,
+        model: str | ModelRef[Any] | Action | None = None,
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
@@ -1898,7 +1892,7 @@ class Genkit:
         config: BaseModel | ModelConfigDict | Mapping[str, Any] | None = None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
-        output_schema: type | dict | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
         output_format: str | None = None,
         output_content_type: str | None = None,
         output_instructions: bool | str | None = None,
@@ -2031,15 +2025,20 @@ class Genkit:
         self,
         *,
         embedder: str | EmbedderRef[EmbedderRefConfigT],
-        content: list[str] | list[Document],
+        content: Sequence[str | Document],
         metadata: dict[str, object] | None = None,
         config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
         context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for multiple documents in a single batch call.
 
+        ``content`` is any sequence (list, tuple, ...) of strings or
+        ``Document``s; one embedding comes back per item, in order. A bare
+        ``str`` raises ``TypeError``; use ``embed`` for one item.
         ``config``, ``metadata`` and ``context`` work the same as on ``embed``.
         """
+        if isinstance(content, str):
+            raise TypeError('embed_many() takes a sequence of strings or Documents, not a str; use embed() for one.')
         if metadata is not None and any(isinstance(item, Document) for item in content):
             raise TypeError(_DOCUMENT_METADATA_CONFLICT)
 

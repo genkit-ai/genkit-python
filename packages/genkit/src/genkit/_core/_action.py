@@ -16,6 +16,8 @@
 
 """Action module for defining and managing remotely callable functions."""
 
+from __future__ import annotations
+
 import asyncio
 import functools
 import inspect
@@ -37,6 +39,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    overload,
 )
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -372,7 +375,7 @@ class ActionParams:
         self,
         fn: Callable[..., _CallT],
         input: object,  # noqa: A002
-        ctx: 'ActionRunContext',
+        ctx: ActionRunContext,
     ) -> _CallT:
         """Call ``fn`` with ``input`` and ``ctx`` passed by parameter name.
 
@@ -1162,12 +1165,55 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         else:
             self._input_type = cast(TypeAdapter[InputT], TypeAdapter(input_schema))
 
-    async def __call__(self, input: InputT | None = NO_INPUT, *, context: dict[str, Any] | None = None) -> OutputT:
-        """Call the action directly, returning just the response value."""
-        return (await self.run(input, context=context)).response
+    @overload
+    async def __call__(
+        self: Action[None, OutputT, ChunkT, InitT],
+        input: None = None,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT: ...
 
+    @overload
+    async def __call__(
+        self,
+        input: InputT,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT: ...
+
+    async def __call__(
+        self: Action[Any, OutputT, ChunkT, InitT],
+        input: InputT | None = NO_INPUT,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT:
+        """Call the action directly, returning just the response value."""
+        return (await self._run(input, context=context)).response
+
+    @overload
+    async def run(
+        self: Action[None, OutputT, ChunkT, InitT],
+        input: None = None,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]: ...
+
+    @overload
     async def run(
         self,
+        input: InputT,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]: ...
+
+    async def run(
+        self: Action[Any, OutputT, ChunkT, InitT],
         input: InputT | None = NO_INPUT,
         *,
         on_chunk: Callable[[ChunkT], None] | None = None,
@@ -1263,8 +1309,28 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             if token is not None:
                 _action_context.reset(token)
 
+    @overload
+    def stream(
+        self: Action[None, OutputT, ChunkT, InitT],
+        input: None = None,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]: ...
+
+    @overload
     def stream(
         self,
+        input: InputT,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]: ...
+
+    def stream(
+        self: Action[Any, OutputT, ChunkT, InitT],
         input: InputT | None = NO_INPUT,
         *,
         context: dict[str, Any] | None = None,

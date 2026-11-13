@@ -71,13 +71,18 @@ from genkit._core._typing import GenerationCommonConfig, ModelInfo
 # Type alias for model functions (must be async)
 # Use ctx.send_chunk() for streaming
 ModelFn = Callable[[ModelRequest, ModelContext], Awaitable[ModelResponse[Any]]]
+"""Signature of the function passed to ``define_model``.
+
+An async function taking the ``ModelRequest`` and a ``ModelContext``; stream
+with ``ctx.send_chunk(...)`` and return the final ``ModelResponse``.
+"""
 
 logger = get_logger(__name__)
 
 # Veneer-facing argument shapes. Internals resolve these into ResolvedModel.
 # ModelArg is also the constructor default, stored as a registry value the
 # Dev UI lists as JSON, so it stays a name or ModelRef.
-ModelArg: TypeAlias = str | ModelRef[BaseModel]
+ModelArg: TypeAlias = str | ModelRef[Any]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -101,10 +106,10 @@ def annotated_config_class(action: object | None) -> type[BaseModel] | None:
     return declared_config_type(input_class) if isinstance(input_class, type) else None
 
 
-def _name_or_ref(model: object) -> str | ModelRef[BaseModel] | None:
+def _name_or_ref(model: object) -> str | ModelRef[Any] | None:
     """Unwrap a name or ModelRef. Other values stay None."""
     if isinstance(model, ModelRef):
-        return cast(ModelRef[BaseModel], model)
+        return model
     if isinstance(model, str) and model:
         return model
     return None
@@ -157,7 +162,7 @@ def resolve_model_arg(
     model: object | None,
     registry: Registry,
     message: str = 'No model configured.',
-) -> str | ModelRef[BaseModel]:
+) -> str | ModelRef[Any]:
     """Return the explicit model or the registry default (name or ModelRef).
 
     An empty string is treated as omitted so ``model=os.getenv('MODEL')``

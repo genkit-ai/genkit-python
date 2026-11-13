@@ -315,19 +315,20 @@ ConfigT = TypeVar('ConfigT', bound=ModelConfig, default=ModelConfig)
 # Bound to BaseModel so ModelRef is always parameterized with a concrete Pydantic config schema.
 # Covariant so ModelRef[GeminiConfig] is assignable to ModelRef[BaseModel] or ModelRef[Any].
 ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, covariant=True)
-# ModelRequest[X], EmbedRequest[X] and the evaluator requests take a pydantic
-# model class; __class_getitem__ rejects the rest. Not bound to BaseModel: type
-# checkers would then reject the common bare ModelRequest(config={...}), where
-# the config is solved as a dict. Invariant: config is writable, so
+# ModelRequest[X] and EmbedRequest[X] take a pydantic model class;
+# __class_getitem__ rejects the rest. Not bound to BaseModel: type checkers
+# would then reject the common bare ModelRequest(config={...}), where the
+# config is solved as a dict. Invariant: config is writable, so
 # ModelRequest[GeminiConfig] is not a ModelRequest[ModelConfig] you can assign
-# a ModelConfig into. Defaults to Any so bare ModelRequest means
-# ModelRequest[Any], and Callable[[ModelRequest], ...] accepts a fn typed
-# ModelRequest[GeminiConfig].
+# a ModelConfig into.
+#
+# Both default to Any, the way a bare generic does in Python (list is
+# list[Any]). A helper annotated with bare ModelRequest or EmbedRequest then
+# accepts a typed request, and Callable[[ModelRequest], ...] accepts a fn
+# typed ModelRequest[GeminiConfig]. At runtime an untyped request still gets
+# its config / options as a dict (see check_options_value).
 ModelRequestConfigT = TypeVar('ModelRequestConfigT', default=Any)
-# Bare EmbedRequest / evaluator request options are always a dict at runtime, so the
-# default says so. Fn aliases take EmbedRequest[Any] / EvaluatorRequest[Any] so a fn
-# typed EmbedRequest[CrmEmbedConfig] still fits them.
-RequestOptionsT = TypeVar('RequestOptionsT', default=dict[str, Any])
+RequestOptionsT = TypeVar('RequestOptionsT', default=Any)
 
 
 def declared_config_type(cls: type) -> type[BaseModel] | None:
@@ -1164,8 +1165,17 @@ def _untyped_options_schema(schema: JsonDict, cls: type) -> None:
 class EmbedRequest(GenkitModel, Generic[RequestOptionsT]):
     """Embed request whose documents are the public Document type.
 
-    Bare ``EmbedRequest`` gives the fn ``options`` as a dict.
-    ``EmbedRequest[CrmEmbedConfig]`` gives it a validated ``CrmEmbedConfig``.
+    What ``options`` holds depends on how the embedder annotates ``request``:
+
+    * **No annotation**: Genkit infers ``EmbedRequest[Cfg]`` from the
+      embedder's Pydantic ``config_schema``, so ``options`` is a ``Cfg``.
+    * ``EmbedRequest[CrmEmbedConfig]``: ``options`` is a validated
+      ``CrmEmbedConfig``.
+    * Bare ``EmbedRequest``: ``options`` is a ``dict``. An explicit annotation
+      is honored as written, the same as ``ModelRequest``.
+
+    Bare ``EmbedRequest`` means ``EmbedRequest[Any]`` to type checkers, so a
+    helper annotated with it accepts any typed request.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(json_schema_extra=_untyped_options_schema)

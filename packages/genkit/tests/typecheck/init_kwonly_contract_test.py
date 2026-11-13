@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator, Callable
 import pytest
 
 from genkit import ErrorReason, FlowContext, Genkit, Prompt, PublicError, ToolContext
-from genkit._core._action import ActionRunContext, BidiAction
+from genkit._core._action import ActionContext, BidiAction
 from genkit.exp.agent import AgentContext
 from genkit.middleware import MiddlewareContext
 from genkit.model import ModelContext
@@ -79,7 +79,7 @@ def test_keyword_only_constructors_accept_documented_shapes() -> None:
     )
     assert prompt.ref['name'] == 'menu_summary.dinner'
 
-    run_ctx = ActionRunContext(context={'table': 4})
+    run_ctx = ActionContext(context={'table': 4})
     flow_ctx = FlowContext(context={'table': 4})
     model_ctx: ModelContext = ModelContext(context={'table': 4})
     agent_ctx: AgentContext = AgentContext(context={'table': 4})
@@ -122,7 +122,7 @@ def test_positional_arguments_past_star_fail_type_checkers_and_runtime() -> None
         Prompt(ai, 'dinner')  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
 
     with pytest.raises(TypeError, match='positional argument'):
-        ActionRunContext({'table': 4})  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
+        ActionContext({'table': 4})  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
 
     with pytest.raises(TypeError, match='positional argument'):
         FlowContext({'table': 4})  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[bad-argument-count]  # ty: ignore[too-many-positional-arguments]
@@ -149,7 +149,7 @@ def test_positional_arguments_past_star_fail_type_checkers_and_runtime() -> None
         (Action, ['self', 'kind', 'name', 'fn']),
         (BidiAction, ['self', 'kind', 'name', 'bidi_fn']),
         (Prompt, ['self', 'ai']),
-        (ActionRunContext, ['self']),
+        (ActionContext, ['self']),
         (ToolContext, ['self', 'ctx']),
         (MiddlewareContext, ['self', 'ai']),
         (PublicError, ['self', 'status', 'message', 'details']),

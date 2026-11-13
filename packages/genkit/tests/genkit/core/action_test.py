@@ -17,8 +17,8 @@ from pydantic import BaseModel, ConfigDict
 from genkit import FlowContext, Genkit, Message, Part, PublicError
 from genkit._core._action import (
     Action,
+    ActionContext,
     ActionKind,
-    ActionRunContext,
     BidiAction,
     DapQualifiedName,
     create_action_key,
@@ -165,14 +165,14 @@ async def test_define_async_action_with_input() -> None:
 async def test_define_async_action_with_input_and_context() -> None:
     """Define and run async action with input and context."""
 
-    async def async_foo(input: str, ctx: ActionRunContext) -> str:
+    async def async_foo(input: str, ctx: ActionContext) -> str:
         """An async action that returns 'syncFoo' with an input and context."""
         return f'syncFoo {input} {ctx.context["foo"]}'
 
     action = Action(name='syncFoo', kind=ActionKind.CUSTOM, fn=async_foo)
 
     assert (await action.run('foo', context={'foo': 'bar'})).response == 'syncFoo foo bar'
-    assert (await async_foo('foo', ActionRunContext(context={'foo': 'bar'}))) == 'syncFoo foo bar'
+    assert (await async_foo('foo', ActionContext(context={'foo': 'bar'}))) == 'syncFoo foo bar'
 
 
 @pytest.mark.asyncio
@@ -181,7 +181,7 @@ async def test_streaming_action_with_callback() -> None:
 
     async def foo(
         input: str,
-        ctx: ActionRunContext,
+        ctx: ActionContext,
     ) -> int:
         ctx.send_chunk('1')
         ctx.send_chunk('2')
@@ -202,7 +202,7 @@ async def test_streaming_action_with_stream_method() -> None:
 
     async def foo(
         input: str,
-        ctx: ActionRunContext,
+        ctx: ActionContext,
     ) -> int:
         ctx.send_chunk('1')
         ctx.send_chunk('2')
@@ -222,7 +222,7 @@ async def test_streaming_action_with_stream_method() -> None:
 def test_action_stream_does_not_accept_timeout() -> None:
     """action.stream has no timeout=; the async for waits until the run finishes."""
 
-    async def foo(input: str, ctx: ActionRunContext) -> int:
+    async def foo(input: str, ctx: ActionContext) -> int:
         return 1
 
     action = Action(name='foo', kind=ActionKind.CUSTOM, fn=foo)
@@ -241,7 +241,7 @@ def test_parse_plugin_name_from_action_name() -> None:
 async def test_propagates_context_via_contextvar() -> None:
     """Context is properly propagated via contextvar."""
 
-    async def foo(_: str | None, ctx: ActionRunContext) -> str:
+    async def foo(_: str | None, ctx: ActionContext) -> str:
         return json.dumps(ctx.context)
 
     foo_action = cast(Action[str | None, str], Action(name='foo', kind=ActionKind.CUSTOM, fn=foo))
@@ -267,7 +267,7 @@ async def test_propagates_context_via_contextvar() -> None:
 async def test_action_raises_errors() -> None:
     """Action.run raises the exception the body raised."""
 
-    async def foo(_: str | None, ctx: ActionRunContext) -> None:
+    async def foo(_: str | None, ctx: ActionContext) -> None:
         raise Exception('oops')
 
     action = Action(name='fooAction', kind=ActionKind.CUSTOM, fn=foo)
@@ -284,7 +284,7 @@ async def test_action_raises_errors() -> None:
 async def test_action_error_has_no_trace_id_when_instrumented(hex_ids) -> None:
     """Tracing on doesn't change the raised exception; the trace id stays on the span."""
 
-    async def foo(_: str | None, ctx: ActionRunContext) -> None:
+    async def foo(_: str | None, ctx: ActionContext) -> None:
         raise Exception('oops')
 
     action = Action(name='fooAction', kind=ActionKind.CUSTOM, fn=foo)
@@ -360,7 +360,7 @@ async def test_action_context_isolation_sequential_and_nested() -> None:
     """Action context is isolated and does not bleed sequentially or permanently override in nested runs."""
 
     # 1. Sequential isolation test
-    async def get_context(_: None, ctx: ActionRunContext) -> dict[str, object] | None:
+    async def get_context(_: None, ctx: ActionContext) -> dict[str, object] | None:
         return ctx.context
 
     tool_action = Action(name='getContext', kind=ActionKind.TOOL, fn=get_context)
@@ -374,12 +374,12 @@ async def test_action_context_isolation_sequential_and_nested() -> None:
     assert res2.response == {}  # Bleeding check
 
     # 2. Nested isolation test (parent calls child with overrides)
-    async def child_fn(_: None, ctx: ActionRunContext) -> dict[str, object] | None:
+    async def child_fn(_: None, ctx: ActionContext) -> dict[str, object] | None:
         return ctx.context
 
     child_action = Action(name='childAction', kind=ActionKind.CUSTOM, fn=child_fn)
 
-    async def parent_fn(_: None, ctx: ActionRunContext) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    async def parent_fn(_: None, ctx: ActionContext) -> tuple[dict[str, object] | None, dict[str, object] | None]:
         # Run child action with different context
         child_res = await child_action.run(context={'auth': 'child_secret'})
         # Return parent context (which should still be parent's original context!)
@@ -420,7 +420,7 @@ async def test_run_defaulted_input_arg_allows_none() -> None:
 async def test_run_defaulted_input_arg_allows_none_with_ctx() -> None:
     """Same as above but for 2-arg (input + ctx) actions."""
 
-    async def greet(name: str = 'world', ctx: ActionRunContext | None = None) -> str:
+    async def greet(name: str = 'world', ctx: ActionContext | None = None) -> str:
         return f'hi {name}'
 
     action = Action(name='greet_ctx', kind=ActionKind.CUSTOM, fn=greet)

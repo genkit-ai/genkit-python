@@ -62,8 +62,8 @@ from genkit._ai._tools import (
 from genkit._core._action import (
     GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR,
     Action,
+    ActionContext,
     ActionKind,
-    ActionRunContext,
     _action_context,  # pyright: ignore[reportPrivateUsage]
     create_action_key,
     get_current_context,
@@ -859,7 +859,7 @@ def define_generate_action(ai: _aio.Genkit) -> None:
 
     async def generate_action_fn(
         input: GenerateActionOptions,
-        ctx: ActionRunContext,
+        ctx: ActionContext,
     ) -> ModelResponse:
         on_chunk = cast(Callable[[ModelResponseChunk], None], ctx.streaming_callback) if ctx.is_streaming else None
         response = await run_generate(

@@ -43,7 +43,7 @@ from genkit import (
 )
 from genkit._ai._agents._client import StreamedMessageAccumulator
 from genkit._ai._tools import define_tool
-from genkit._core._action import Action, ActionKind, ActionRunContext
+from genkit._core._action import Action, ActionContext, ActionKind
 from genkit._core._registry import Registry
 from genkit.exp import Genkit as ExpGenkit
 from genkit.exp.agent import AgentStreamChunk
@@ -1332,11 +1332,11 @@ async def test_generate_stream_raw_action_and_tool_from_action_emit_partial_chun
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
 
-    async def scan_fridge(_req: dict[str, Any], ctx: ActionRunContext[Step]) -> str:
+    async def scan_fridge(_req: dict[str, Any], ctx: ActionContext[Step]) -> str:
         ctx.send_chunk(Step(stage='top_shelf', percent=50))
         return 'stocked'
 
-    async def check_grill(_req: dict[str, Any], ctx: ActionRunContext[str]) -> str:
+    async def check_grill(_req: dict[str, Any], ctx: ActionContext[str]) -> str:
         ctx.send_chunk('heating')
         return 'hot'
 
@@ -1390,7 +1390,7 @@ async def test_generate_stream_wrap_tool_middleware_preserves_send_chunk() -> No
         ctx.send_chunk(Step(stage=f'searing:{req["dish"]}', percent=60))
         return f'seared:{req["dish"]}'
 
-    async def plate_station(req: dict[str, Any], ctx: ActionRunContext[Step]) -> str:
+    async def plate_station(req: dict[str, Any], ctx: ActionContext[Step]) -> str:
         ctx.send_chunk(Step(stage=f'plating:{req["dish"]}', percent=95))
         return f'plated:{req["dish"]}'
 

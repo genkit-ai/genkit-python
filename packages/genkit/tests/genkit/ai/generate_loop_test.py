@@ -23,7 +23,7 @@ from genkit import (
 )
 from genkit._ai._generate import CallScope, augment_with_context, generate_action, resolved_interrupt_part
 from genkit._core import _tool as tool_mod
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._model import GenerateActionOptions, ModelRequest, MultipartToolResponse, reject_unanswered_interrupts
 from genkit._core._typing import FinishReason, Role, ToolRequest
@@ -254,14 +254,14 @@ async def test_child_flows_get_their_own_copy_of_the_context() -> None:
     seen: dict[str, object] = {}
 
     @ai.flow()
-    async def tag_order(table: str, ctx: ActionRunContext) -> str:
+    async def tag_order(table: str, ctx: ActionContext) -> str:
         ctx.context['table'] = table
         await asyncio.sleep(0.01)
         seen[table] = ctx.context['table']
         return table
 
     @ai.flow()
-    async def seat_party(n: int, ctx: ActionRunContext) -> list[str]:
+    async def seat_party(n: int, ctx: ActionContext) -> list[str]:
         tables = await asyncio.gather(*(tag_order(f't{i}') for i in range(n)))
         seen['parent'] = ctx.context.get('table')
         return list(tables)
@@ -481,7 +481,7 @@ async def test_middleware_context_mutations_sync_with_current_context_and_isolat
             return await next_fn(params, ctx)
 
     @ai.flow()
-    async def parent_flow(ctx: ActionRunContext) -> dict[str, object]:
+    async def parent_flow(ctx: ActionContext) -> dict[str, object]:
         await ai.generate(prompt='hi', use=[RewriteTenant(), ReadCurrentContext()])
         return dict(ctx.context)
 

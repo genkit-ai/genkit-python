@@ -8,7 +8,7 @@ from typing import Any, cast, get_args, get_origin
 import pytest
 
 from genkit import Message, ModelResponseChunk, Part, Role
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit.exp import Genkit
 from genkit.exp.agent import (
     AgentContext,
@@ -24,15 +24,15 @@ from genkit.exp.agent import (
 
 
 def test_agent_context_is_subclass_of_action_run_context() -> None:
-    """`AgentContext` subclasses `ActionRunContext[AgentStreamChunk]` so `isinstance(ctx, AgentContext)` works."""
-    assert issubclass(AgentContext, ActionRunContext)
+    """`AgentContext` subclasses `ActionContext[AgentStreamChunk]` so `isinstance(ctx, AgentContext)` works."""
+    assert issubclass(AgentContext, ActionContext)
     orig_bases = cast(tuple[Any, ...], getattr(AgentContext, '__orig_bases__', ()))
     assert len(orig_bases) == 1
-    assert get_origin(orig_bases[0]) is ActionRunContext
+    assert get_origin(orig_bases[0]) is ActionContext
     assert get_args(orig_bases[0]) == (AgentStreamChunk,)
     ctx = AgentContext()
     assert isinstance(ctx, AgentContext)
-    assert isinstance(ctx, ActionRunContext)
+    assert isinstance(ctx, ActionContext)
 
 
 def _send_status(ctx: AgentContext) -> None:

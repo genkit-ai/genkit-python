@@ -27,8 +27,9 @@ from openai import APIError, AsyncOpenAI
 from openai.types import Model as OpenAIModelEntry
 from pydantic import BaseModel
 
-from genkit import Embedding, FlowContext, GenkitError, ModelResponse
+from genkit import Embedding, GenkitError, ModelResponse
 from genkit.embedder import (
+    EmbedContext,
     Embedder,
     EmbedderInfo,
     EmbedderSupports,
@@ -566,7 +567,7 @@ class OpenAI(Plugin):
             },
         )
 
-        async def embed_fn(request: EmbedRequest, ctx: FlowContext[Any]) -> EmbedResponse:
+        async def embed_fn(request: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
             """Embedder function that calls OpenAI embeddings API."""
             # Extract text from document content
             texts = []

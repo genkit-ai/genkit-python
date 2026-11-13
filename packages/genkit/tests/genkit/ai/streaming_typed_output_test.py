@@ -9,7 +9,7 @@ Covers:
 - ModelResponseChunk.output constructing the output schema from extracted JSON
   with optional defaults filled, closed subtrees validated, and missing required
   fields set to None
-- ActionRunContext genericity over the chunk type
+- ActionContext genericity over the chunk type
 - End-to-end generate_stream with output_schema producing typed chunks
 """
 
@@ -24,7 +24,7 @@ from pydantic.alias_generators import to_camel
 
 from genkit import Genkit, Message, ModelResponse, ModelResponseChunk, Part
 from genkit._core import _partial
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit._core._model import chunk_for_stream
 from genkit._core._typing import Role
 from genkit.formats import FormatHandler, Formatter, FormatterConfig
@@ -401,23 +401,23 @@ class TestNestedAndConstrainedOutput:
         assert out.items[0] == {'name': 'x'}
 
 
-class TestActionRunContextGenerics:
-    """ActionRunContext is generic over the chunk type, with a default."""
+class TestActionContextGenerics:
+    """ActionContext is generic over the chunk type, with a default."""
 
     def test_unparameterized_usage_still_works(self) -> None:
         received: list[object] = []
-        ctx = ActionRunContext(streaming_callback=received.append)
+        ctx = ActionContext(streaming_callback=received.append)
         ctx.send_chunk({'anything': 1})
         assert received == [{'anything': 1}]
 
     def test_parameterized_usage_works_at_runtime(self) -> None:
         received: list[Recipe] = []
-        ctx: ActionRunContext[Recipe] = ActionRunContext(streaming_callback=received.append)
+        ctx: ActionContext[Recipe] = ActionContext(streaming_callback=received.append)
         ctx.send_chunk(Recipe(title='t', steps=[]))
         assert received[0].title == 't'
 
     def test_class_is_subscriptable(self) -> None:
-        assert ActionRunContext[Recipe] is not None
+        assert ActionContext[Recipe] is not None
 
 
 @pytest.mark.asyncio

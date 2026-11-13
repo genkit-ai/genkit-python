@@ -182,14 +182,40 @@ async def _handle_action_request(
 
         return StreamingResponse(event_stream(), media_type='text/event-stream')
 
+    run_task = asyncio.create_task(action_obj.run(input=action_input, context=context, init=resolved_init))
+
+    async def _watch_disconnect() -> None:
+        while not run_task.done():
+            try:
+                if await request.is_disconnected() is True:
+                    run_task.cancel()
+                    return
+            except Exception:
+                # Test stubs or custom Request objects without a receive() channel
+                # shouldn't fail the request.
+                return
+            await asyncio.sleep(0.05)
+
+    watch_task = asyncio.create_task(_watch_disconnect())
     try:
-        response = await action_obj.run(input=action_input, context=context, init=resolved_init)
+        response = await run_task
         if response.response is None and empty_status is not None:
             return Response(status_code=empty_status)
         return Response(content=result_json(response.response), media_type='application/json')
+    except asyncio.CancelledError:
+        if run_task.cancelled():
+            return Response(status_code=499)
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+        raise
     except Exception as e:
         _log_failure(error=e, flow=action_obj.name, where='run')
         return json_error_response(e)
+    finally:
+        watch_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch_task
 
 
 def genkit_fastapi_handler(

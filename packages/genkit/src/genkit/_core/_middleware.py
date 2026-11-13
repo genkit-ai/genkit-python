@@ -450,9 +450,30 @@ class Middleware(Generic[TConfig]):
     ``self.config`` is set once at construction. The attribute is read-only;
     treat the config object as read-only too (Pydantic models are not frozen).
 
-    Each ``generate()`` call runs a shallow copy of the instance, so mutable
-    state created in ``__init__`` is shared across calls. Per-call state
-    belongs in the hook (or a ``__copy__``), not ``__init__``.
+    Choose where to store state based on its lifetime:
+
+        * **Shared across all requests** (e.g., an audit client, rate limiter,
+          or compiled regex): set on ``self`` in ``__init__``.
+        * **Scoped to one ``generate()`` call** (e.g., retry counters or loop
+          budgets): use local variables inside ``wrap_generate``.
+        * **Scoped to one turn or tool call** (e.g., per-call timing or header
+          injection): use local variables inside ``wrap_model`` or ``wrap_tool``.
+        * **Shared between hooks in one ``generate()`` call** (e.g., recording
+          a tool call in ``wrap_tool`` and reading it in the next ``wrap_model``
+          turn): pass it through ``ctx.context``, or store a fresh container on
+          ``self`` in ``__copy__``.
+
+    Per-request containers via ``__copy__``:
+        Genkit calls ``copy.copy(mw)`` once at the start of each ``generate()``
+        call. Because a shallow copy shares any ``list`` or ``dict`` created in
+        ``__init__`` across concurrent requests, override ``__copy__`` when you
+        need a fresh per-request container without re-running ``__init__``::
+
+            def __copy__(self) -> Self:
+                clone = type(self).__new__(type(self))
+                clone.__dict__.update(self.__dict__)
+                clone._seen_tools = []  # isolated per generate() call
+                return clone
     """
 
     name: ClassVar[str] = ''

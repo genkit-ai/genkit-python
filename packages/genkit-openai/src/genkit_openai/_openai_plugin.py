@@ -20,6 +20,7 @@
 import enum
 import inspect
 import os
+import re
 from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias, cast
 
@@ -36,6 +37,7 @@ from genkit.embedder import (
     EmbedResponse,
 )
 from genkit.model import (
+    ConstrainedSupport,
     Model,
     ModelContext,
     ModelInfo,
@@ -66,6 +68,9 @@ from genkit_openai._models._image import (
 )
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
+    GPT_REASONING_MODEL_SUPPORTS,
+    MULTIMODAL_MODEL_SUPPORTS,
+    O_SERIES_MODEL_SUPPORTS,
     SUPPORTED_EMBEDDING_MODELS,
     SUPPORTED_OPENAI_MODELS,
     KnownGpt,
@@ -157,6 +162,10 @@ class _ModelType(enum.Enum):
     CHAT = 'chat'
 
 
+def _is_gpt_image(name: str) -> bool:
+    return 'gpt-image' in name or 'chatgpt-image' in name
+
+
 def _classify_model(name: str) -> _ModelType:
     """Classify a model name into its type based on name patterns.
 
@@ -171,7 +180,7 @@ def _classify_model(name: str) -> _ModelType:
     """
     if 'embed' in name:
         return _ModelType.EMBEDDER
-    if 'gpt-image' in name or 'dall-e' in name:
+    if _is_gpt_image(name) or 'dall-e' in name:
         return _ModelType.IMAGE
     if 'tts' in name:
         return _ModelType.TTS
@@ -180,12 +189,35 @@ def _classify_model(name: str) -> _ModelType:
     return _ModelType.CHAT
 
 
-_UNSUPPORTED_MODEL_MATCHERS = ('babbage', 'davinci', 'codex', '-pro')
+_DATED_SUFFIX = re.compile(r'-\d{4}-\d{2}-\d{2}$')
+
+
+def _undated(name: str) -> str:
+    """The alias of a dated snapshot id such as ``gpt-5-2025-08-07``, or the id unchanged."""
+    return _DATED_SUFFIX.sub('', name)
+
+
+_UNSUPPORTED_MODEL_PATTERN = re.compile(
+    r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind|diarize'
+    r'|^gpt-live-|^gpt-audio'
+    r'|^(ft:)?(ada|babbage|curie|davinci)\b'
+)
+_LISTED_EXCEPTIONS = frozenset({'gpt-6-cyber'})
 
 
 def _is_known_unsupported(name: str) -> bool:
-    """Report whether a model id is in a family Chat Completions does not serve."""
-    return any(matcher in name for matcher in _UNSUPPORTED_MODEL_MATCHERS)
+    """Report whether discovery hides a model id because no action in this plugin can serve it."""
+    if _undated(name) in _LISTED_EXCEPTIONS:
+        return False
+    return _UNSUPPORTED_MODEL_PATTERN.search(name) is not None
+
+
+def _is_listed(name: str, model_type: _ModelType) -> bool:
+    """Report whether discovery lists a model id."""
+    if _is_known_unsupported(name):
+        return False
+    # DALL-E ids are shut down.
+    return model_type != _ModelType.IMAGE or _is_gpt_image(name)
 
 
 # Default ModelSupports for each multimodal model type, used as fallback when
@@ -245,9 +277,10 @@ def _get_multimodal_info(
         endpoint checks against.
     """
     schema = multimodal_config_class(name=name, model_type=model_type)
-    model_info = supported_models.get(name)
-    if model_info:
+    if model_info := supported_models.get(name):
         return model_info, schema
+    if model_info := supported_models.get(_undated(name)):
+        return model_info.model_copy(update={'label': f'OpenAI - {name}'}), schema
 
     return ModelInfo(label=f'OpenAI - {name}', supports=_DEFAULT_SUPPORTS.get(model_type)), schema
 
@@ -258,9 +291,68 @@ def multimodal_config_class(*, name: str, model_type: _ModelType) -> type[BaseMo
         return OpenAITtsConfig
     if model_type == _ModelType.STT:
         return OpenAISttConfig
-    if 'gpt-image' in name:
+    if _is_gpt_image(name):
         return OpenAIGptImageConfig
     return OpenAIDalleConfig
+
+
+_GPT_4_TURBO_SUPPORTS = ModelSupports(multiturn=True, media=True, tools=True, system_role=True, output=['json', 'text'])
+_GPT_4_SUPPORTS = ModelSupports(multiturn=True, media=False, tools=True, system_role=True, output=['text'])
+_GPT_TEXT_JSON_SUPPORTS = ModelSupports(
+    multiturn=True, media=False, tools=True, system_role=True, output=['json', 'text']
+)
+
+# Shut-down chat ids keep their last supports for compatible hosts that still
+# serve them, but init() does not list them.
+_RETIRED_CHAT_MODEL_SUPPORTS: dict[str, ModelSupports] = {
+    'gpt-4o-2024-05-13': MULTIMODAL_MODEL_SUPPORTS,
+    'gpt-4.5-preview': MULTIMODAL_MODEL_SUPPORTS,
+    'gpt-4-turbo': _GPT_4_TURBO_SUPPORTS,
+    'gpt-4-turbo-2024-04-09': _GPT_4_TURBO_SUPPORTS,
+    'gpt-4-turbo-preview': _GPT_4_TURBO_SUPPORTS,
+    'gpt-4-0125-preview': _GPT_4_TURBO_SUPPORTS,
+    'gpt-4-1106-preview': _GPT_4_TURBO_SUPPORTS,
+    'gpt-4': _GPT_4_SUPPORTS,
+    'gpt-4-0613': _GPT_4_SUPPORTS,
+    'gpt-3.5-turbo': _GPT_TEXT_JSON_SUPPORTS,
+    'gpt-3.5-turbo-0125': _GPT_TEXT_JSON_SUPPORTS,
+    'gpt-3.5-turbo-1106': _GPT_TEXT_JSON_SUPPORTS,
+    'o1': O_SERIES_MODEL_SUPPORTS,
+    'o3-mini': ModelSupports(
+        multiturn=True,
+        media=False,
+        tools=True,
+        system_role=False,
+        output=['json', 'text'],
+        constrained=ConstrainedSupport.ALL,
+    ),
+    'o4-mini': O_SERIES_MODEL_SUPPORTS,
+    'gpt-5-chat-latest': ModelSupports(multiturn=True, media=True, tools=False, system_role=True, output=['text']),
+    'gpt-5.2-chat': GPT_REASONING_MODEL_SUPPORTS,
+    'gpt-oss-120b': _GPT_TEXT_JSON_SUPPORTS,
+    'gpt-oss-20b': _GPT_TEXT_JSON_SUPPORTS,
+}
+
+
+def _known_chat_model_info(name: str) -> ModelInfo | None:
+    if info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
+        return info
+    if supports := _RETIRED_CHAT_MODEL_SUPPORTS.get(name):
+        return ModelInfo(label=f'OpenAI - {name}', supports=supports)
+    base = name.split(':')[1] if name.startswith('ft:') else _undated(name)
+    if base in (name, '') or (info := _known_chat_model_info(base)) is None:
+        return None
+    return info.model_copy(update={'label': f'OpenAI - {name}'})
+
+
+def _chat_model_info(name: str) -> ModelInfo:
+    """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
+
+    A dated snapshot takes its alias's info and a fine-tune ``ft:<base>:...``
+    takes its base model's, stage included. Shut-down snapshots keep their
+    retired supports instead.
+    """
+    return _known_chat_model_info(name) or get_default_openai_model_info(name)
 
 
 def default_openai_metadata(name: str) -> dict[str, Any]:
@@ -280,7 +372,7 @@ class OpenAI(Plugin):
 
     @classmethod
     def gpt(cls, name: KnownGpt | str, *, config: OpenAIConfig | None = None) -> ModelRef[OpenAIConfig]:
-        """Typed ref for an OpenAI chat model, e.g. ``OpenAI.gpt('gpt-4o')``.
+        """Typed ref for an OpenAI chat model, e.g. ``OpenAI.gpt('gpt-5.5')``.
 
         Chat only: image, TTS, STT, and embedding ids validate different
         request shapes, so binding OpenAIConfig to them would let chat-only
@@ -392,26 +484,15 @@ class OpenAI(Plugin):
         of supported OpenAI-compatible models or provides default information.
 
         Returns:
-            A dictionary containing the model's 'name' and 'supports' features,
-            or None if no information can be found (though typically, a default
-            is provided). The 'supports' key contains a dictionary representing
+            A dictionary containing the model's 'label' and 'supports'
+            features, or None if no information can be found (though typically,
+            a default is provided). The 'supports' key contains a dictionary representing
             the model's capabilities (e.g., tools, streaming).
         """
-        if model_supported := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
-            supports = (
-                model_supported.supports.model_dump(by_alias=True, exclude_none=True)
-                if model_supported.supports
-                else {}
-            )
-            return {
-                'label': model_supported.label,
-                'supports': supports,
-            }
-
-        model_info = get_default_openai_model_info(name)
-        supports = model_info.supports.model_dump(by_alias=True, exclude_none=True) if model_info.supports else {}
+        info = _chat_model_info(name)
+        supports = info.supports.model_dump(by_alias=True, exclude_none=True) if info.supports else {}
         return {
-            'label': model_info.label,
+            'label': info.label,
             'supports': supports,
         }
 
@@ -502,19 +583,19 @@ class OpenAI(Plugin):
         Returns:
             Action object for the model.
         """
-        model_info = self.get_model_info(name) or {}
+        info = _chat_model_info(name)
 
         async def _generate(request: ModelRequest[OpenAIConfig], ctx: ModelContext) -> ModelResponse:
-            catalog = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name))
-            supports = catalog.supports if catalog is not None else get_default_openai_model_info(name).supports
-            openai_model = OpenAIModelHandler(OpenAIModel(name, self._client_for_call(request, ctx), supports=supports))
+            openai_model = OpenAIModelHandler(
+                OpenAIModel(name, self._client_for_call(request, ctx), supports=info.supports)
+            )
             return await openai_model.generate(request, ctx)
 
         return Model(
             open_ai_name(name),
             _generate,
             config_schema=OpenAIConfig,
-            metadata={'model': model_info},
+            info=info,
         )
 
     def _create_multimodal_action(
@@ -661,9 +742,9 @@ class OpenAI(Plugin):
         models: list[OpenAIModelEntry] = models_.data
         for model in models:
             name = model.id
-            if _is_known_unsupported(name):
-                continue
             model_type = _classify_model(name)
+            if not _is_listed(name, model_type):
+                continue
             if model_type == _ModelType.EMBEDDER:
                 actions.append(self._create_embedder_action(name))
             elif model_type in _DEFAULT_SUPPORTS:

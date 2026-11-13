@@ -36,7 +36,7 @@ from genkit_openai._openai_plugin import _ModelType
 from pydantic import BaseModel, ValidationError
 
 from genkit import Genkit, GenkitError, Message, Part, Role
-from genkit.model import ModelRequest
+from genkit.model import ModelRequest, ModelStage
 
 
 class TestExtractPromptText:
@@ -219,13 +219,21 @@ class TestToModelResponse:
 class TestSupportedImageModels:
     """Tests that the model info registry is correct."""
 
-    def test_dall_e_3_in_registry(self) -> None:
-        """Verify DALL-E 3 is registered."""
-        assert 'dall-e-3' in SUPPORTED_IMAGE_MODELS
+    def test_registry_lists_current_gpt_image_models(self) -> None:
+        """The registry holds the served GPT Image models, not the retired dall-e-3 or gpt-image-1."""
+        assert set(SUPPORTED_IMAGE_MODELS) == {
+            'gpt-image-2',
+            'gpt-image-2.5-sunburst',
+            'gpt-image-2.5-flare',
+            'gpt-image-2.6-sunburst',
+            'gpt-image-2.6-flare',
+        }
 
-    def test_gpt_image_1_in_registry(self) -> None:
-        """Verify GPT-Image-1 is registered."""
-        assert 'gpt-image-1' in SUPPORTED_IMAGE_MODELS
+    def test_gpt_image_2_is_deprecated(self) -> None:
+        """gpt-image-2 has an announced shutdown date, so it carries stage=deprecated."""
+        assert SUPPORTED_IMAGE_MODELS['gpt-image-2'].stage == ModelStage.DEPRECATED
+        for name in ('gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'):
+            assert SUPPORTED_IMAGE_MODELS[name].stage is None
 
     def test_image_models_support_media_output(self) -> None:
         """Verify all image models declare 'media' output support."""
@@ -233,11 +241,11 @@ class TestSupportedImageModels:
             assert info.supports is not None, f'{name} has no supports metadata'
             assert 'media' in (info.supports.output or []), f"{name} should support 'media' output"
 
-    def test_gpt_image_1_exposes_config_schema(self) -> None:
-        """Verify GPT Image 1 advertises the constraints of its registered config class."""
+    def test_gpt_image_exposes_config_schema(self) -> None:
+        """A current GPT Image model advertises the constraints of its config class."""
         plugin = OpenAI(api_key='test-key')
         action = plugin._create_multimodal_action(
-            'gpt-image-1', OpenAIImageModel, SUPPORTED_IMAGE_MODELS, _ModelType.IMAGE
+            'gpt-image-2.5-flare', OpenAIImageModel, SUPPORTED_IMAGE_MODELS, _ModelType.IMAGE
         )
         model_meta = cast(dict[str, Any], action.metadata['model'])
         schema = model_meta['customOptions']
@@ -250,7 +258,7 @@ class TestSupportedImageModels:
             return properties[name]['anyOf'][0]
 
         assert _enum('size') == ['1024x1024', '1536x1024', '1024x1536', 'auto']
-        assert _enum('quality') == ['low', 'medium', 'high']
+        assert _enum('quality') == ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
         assert _enum('background') == ['transparent', 'opaque', 'auto']
         assert _enum('moderation') == ['low', 'auto']
         assert _int_bounds('n') == {'type': 'integer', 'minimum': 1, 'maximum': 10}
@@ -260,14 +268,14 @@ class TestSupportedImageModels:
         assert 'response_format' not in properties
 
     @pytest.mark.asyncio
-    async def test_gpt_image_1_response_format_raises_before_model_call(self) -> None:
-        """`response_format` on gpt-image-1 raises INVALID_ARGUMENT before the endpoint runs."""
+    async def test_gpt_image_response_format_raises_before_model_call(self) -> None:
+        """`response_format` on a GPT Image model raises INVALID_ARGUMENT before the endpoint runs."""
         ai = Genkit(plugins=[OpenAI(api_key='test-key')])
 
         with patch.object(OpenAIImageModel, 'generate', new_callable=AsyncMock) as generate:
             with pytest.raises(GenkitError) as err:
                 await ai.generate(
-                    model='openai/gpt-image-1',
+                    model='openai/gpt-image-2.5-flare',
                     prompt='a lighthouse at dusk',
                     config={'response_format': 'b64_json'},
                 )

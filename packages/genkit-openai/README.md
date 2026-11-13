@@ -55,6 +55,26 @@ OpenAI(
 )
 ```
 
+On Chat Completions, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-sol` and `gpt-6-luna`
+accept function tools only with `reasoning_effort='none'`. The `gpt-5.4`
+models and `gpt-5.5` default to `none`. The others do not, so set
+`reasoning_effort='none'` in `config` when you pass them tools. `gpt-6-astra`, `gpt-6.1-sol` and `gpt-6.1-terra` do not advertise
+tool support, because they take function tools only through the Responses API.
+`gpt-5-search-api` does not take function tools either.
+
+The Dev UI lists the models your key can see on `/v1/models`, but only the ones
+this plugin can call: realtime, live, audio, moderation, Responses-only and
+legacy completion models are left out. A dated snapshot such as
+`gpt-5-2025-08-07` takes the capabilities and stage of its alias, and a
+fine-tune `ft:<base>:...` takes those of its base model.
+
+`KnownGpt` lists only the chat models that OpenAI serves today. Ids that OpenAI
+has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and `o4-mini`)
+are no longer in it, so `OpenAI.gpt('o4-mini')` fails a type check. These ids
+still resolve by name with their old capabilities, for hosts on an
+OpenAI-compatible `base_url` that still serve them.
+
 ## Config
 
 `config` takes the settings `OpenAIConfig` declares. Any other key raises
@@ -62,10 +82,10 @@ before the request is sent, so a typo fails by name:
 
 ```python
 res = await ai.generate(
-    model=OpenAI.gpt('gpt-4o'),
+    model=OpenAI.gpt('gpt-5.5'),
     prompt='Write a haiku about the sea.',
     config={
-        'temperature': 0.2,
+        'reasoning_effort': 'low',
         'max_output_tokens': 200,  # caps reply length
         'extra': {'user': 'diner-42'},  # a field OpenAIConfig doesn't declare
     },
@@ -92,7 +112,7 @@ the plugin serves:
 
 ```python
 res = await ai.generate(
-    model=OpenAI.gpt('gpt-4o'),
+    model=OpenAI.gpt('gpt-5.5'),
     prompt='hi',
     context={'secrets': {'api_key': tenant_key}},
 )

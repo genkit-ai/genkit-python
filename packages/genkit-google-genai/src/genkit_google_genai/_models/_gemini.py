@@ -226,6 +226,31 @@ def _no_candidates_response(
     )
 
 
+_NO_IMAGE_MESSAGE = 'No image was returned. Try a clearer image prompt (for example, "draw a red circle on white").'
+
+
+def _finish_message(fr: Any, message: str | None, content: list[Part], model_name: str) -> str | None:  # noqa: ANN401
+    """The candidate's finish message, or why an image model returned no image.
+
+    An image model that answers with no media would otherwise read as a plain
+    success, since ambiguous prompts often come back STOP with empty parts.
+    """
+    if message:
+        return message
+    if not is_image_model(model_name) or any(part.media is not None for part in content):
+        return None
+    fr_name = getattr(fr, 'name', fr) if fr is not None else None
+    finish_reason = _to_finish_reason(fr)
+    if finish_reason == FinishReason.BLOCKED:
+        return f'Image blocked by safety filters ({fr_name}).'
+    # A truncated reply already says so in finish_reason; a prompt hint would mislead.
+    if finish_reason == FinishReason.LENGTH:
+        return None
+    if fr_name == 'IMAGE_OTHER':
+        return 'Image generation stopped (IMAGE_OTHER). Try revising the prompt.'
+    return _NO_IMAGE_MESSAGE
+
+
 from genkit_google_genai._models._utils import (  # noqa: E402
     TOOL_INPUT_FIELD,
     PartConverter,
@@ -2120,16 +2145,15 @@ class GeminiModel:
             content = [Part.from_text('')]
 
         # The reply is candidate 0, the same one _contents_from_response reads.
-        finish_reason = FinishReason.OTHER
-        if response.candidates:
-            finish_reason = _to_finish_reason(response.candidates[0].finish_reason)
+        candidate = response.candidates[0]
 
         return ModelResponse(
             message=Message(
                 content=content,
                 role=Role.MODEL,
             ),
-            finish_reason=finish_reason,
+            finish_reason=_to_finish_reason(candidate.finish_reason),
+            finish_message=_finish_message(candidate.finish_reason, candidate.finish_message, content, model_name),
             usage=_usage_from_metadata(response.usage_metadata),
             custom=_custom_from_feedback(response.prompt_feedback),
         )
@@ -2161,6 +2185,8 @@ class GeminiModel:
             raise missing_api_key_error()
         accumulated_content: list[Part] = []
         finish_reason = FinishReason.UNKNOWN
+        last_fr: Any = None
+        finish_message: str | None = None
         usage_metadata: Any = None
         prompt_feedback: genai_types.GenerateContentResponsePromptFeedback | None = None
         saw_chunk = False
@@ -2190,9 +2216,12 @@ class GeminiModel:
                 # otherwise a streamed turn reports no finish reason and no usage at all.
                 if response_chunk.candidates and response_chunk.candidates[0] is not None:
                     saw_candidates = True
-                    fr = response_chunk.candidates[0].finish_reason
-                    if fr:
-                        finish_reason = _to_finish_reason(fr)
+                    candidate = response_chunk.candidates[0]
+                    if candidate.finish_reason:
+                        last_fr = candidate.finish_reason
+                        finish_reason = _to_finish_reason(last_fr)
+                    if candidate.finish_message:
+                        finish_message = candidate.finish_message
                 if response_chunk.usage_metadata is not None:
                     usage_metadata = response_chunk.usage_metadata
                 if response_chunk.prompt_feedback is not None:
@@ -2216,6 +2245,7 @@ class GeminiModel:
                 content=accumulated_content,
             ),
             finish_reason=finish_reason,
+            finish_message=_finish_message(last_fr, finish_message, accumulated_content, model_name),
             usage=_usage_from_metadata(usage_metadata),
             custom=_custom_from_feedback(prompt_feedback),
         )

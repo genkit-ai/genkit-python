@@ -381,8 +381,8 @@ class ActionParams:
         """Call ``fn`` with ``input`` and ``ctx`` passed by parameter name.
 
         A missing input (``NO_INPUT``) is left out when the parameter has a
-        default, so the default applies. An explicit None on a flow is passed
-        through as a value.
+        default, so the default applies. An explicit None on a flow or tool
+        is passed through as a value.
         """
         kwargs: dict[str, object] = {}
         if self.input is not None:
@@ -1092,8 +1092,8 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         context_kind = _context_kind if _context_kind is not None else kind
         self._context_cls: type[ActionContext[Any]] = _context_cls_for_kind(context_kind)
         # Flows treat None as a real value and check the return against the
-        # annotation. Other actions still treat a missing/None input as omitted
-        # and leave the return unchecked.
+        # annotation. Tools take None as a value too (see _run) but check
+        # their own return. Other actions treat None as omitted.
         self._strict_io: bool = _strict_io
         self._metadata: dict[str, object] = metadata if metadata is not None else {}
         self._description: str | None = description
@@ -1333,8 +1333,9 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         Args:
             input: The input, validated against the input schema. Required
                 unless the action takes no input or its function gives the
-                input a default; omit it to use that default. On a flow, an
-                explicit None is a value and is validated like any other.
+                input a default; omit it to use that default. On a flow or
+                tool, an explicit None is a value and is validated like any
+                other.
             on_chunk: Called with each chunk the action streams.
             context: Request context (auth, headers, ...), read as ``ctx.context``.
             telemetry_labels: Custom labels set as span attributes.
@@ -1375,9 +1376,13 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
             omitted, a one-shot run is exactly the single ``input``. Stored on
             ``ctx._input_stream``; only bidi actions read it.
         """
-        # Only a flow treats an explicit None as a value; for every other action
-        # None still means "no input".
-        if input is None and not self._strict_io:
+        # From Python, None is a value for flows and tools; omit the input to
+        # use the function's default. JSON can't tell null from omitted, so the
+        # wire boundaries (reflection, web adapters, a model's tool request)
+        # turn null into NO_INPUT with input_from_json before calling here.
+        # Models, embedders and the rest take a request object, where None
+        # still means no input.
+        if input is None and not (self._strict_io or self._kind in (ActionKind.TOOL, ActionKind.TOOL_V2)):
             input = NO_INPUT
         # With a live input_stream, `input` isn't the payload — the stream
         # carries the per-turn inputs — so there's nothing to validate up front.
@@ -1931,7 +1936,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         """Call ``self._fn`` with the input and context.
 
         A missing input stays ``NO_INPUT`` so a defaulted parameter gets its
-        default. An explicit None on a flow is passed through as a value.
+        default. An explicit None on a flow or tool is passed through as a value.
         """
         if self._fn_is_wrapper:
             # The wrapper takes (input, ctx) and forwards to the user's

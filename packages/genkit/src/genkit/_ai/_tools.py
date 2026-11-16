@@ -21,7 +21,7 @@ from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
 
-from genkit._core._action import Action, CtxDefaultInputFn, DefaultInputFn
+from genkit._core._action import Action, CtxDefaultInputFn, DefaultInputFn, input_from_json
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
@@ -167,7 +167,9 @@ async def run_tool_request(
     try:
         return (
             await tool._run(
-                tool_req.input,
+                # The model's JSON can't tell null from omitted; both mean no
+                # input, so a no-arg call still gets the function's default.
+                input_from_json(tool_req.input),
                 on_chunk=sink,
                 context=run_context,
                 telemetry_labels=telemetry_labels,

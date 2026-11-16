@@ -69,11 +69,12 @@ legacy completion models are left out. A dated snapshot such as
 `gpt-5-2025-08-07` takes the capabilities and stage of its alias, and a
 fine-tune `ft:<base>:...` takes those of its base model.
 
-`KnownGpt` lists only the chat models that OpenAI serves today. Ids that OpenAI
-has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and `o4-mini`)
-are no longer in it, so `OpenAI.gpt('o4-mini')` fails a type check. These ids
-still resolve by name with their old capabilities, for hosts on an
-OpenAI-compatible `base_url` that still serve them.
+The built-in catalog holds only the chat models that OpenAI serves today. Ids
+that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and
+`o4-mini`) are no longer in it, so the plugin does not register them at
+startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with
+generic capabilities, for hosts on an OpenAI-compatible `base_url` that still
+serve them.
 
 ## Config
 

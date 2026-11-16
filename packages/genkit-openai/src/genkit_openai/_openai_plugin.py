@@ -197,7 +197,7 @@ def _undated(name: str) -> str:
 
 _UNSUPPORTED_MODEL_PATTERN = re.compile(
     r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind'
-    r'|^gpt-live-|^gpt-audio'
+    r'|^gpt-live-|(^|-)audio(-|$)|^computer-use|deep-research|^sora'
     r'|^((text|code)-)?(ada|babbage|curie|davinci)(-\d{3}$|:)'
 )
 _LISTED_EXCEPTIONS = frozenset({'gpt-6-cyber'})

@@ -65,9 +65,10 @@ tools only through the Responses API.
 `gpt-5-search-api` does not take function tools either.
 
 The Dev UI lists the models your key can see on `/v1/models`, but only the ones
-this plugin can call: realtime, live, audio, moderation, Responses-only and
-legacy completion models are left out. A dated snapshot such as
-`gpt-5-2025-08-07` takes the capabilities and stage of its alias.
+this plugin can call: realtime, live, audio, moderation, Sora, Responses-only
+(such as computer-use and deep-research) and legacy completion models are left
+out. A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and
+stage of its alias.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and

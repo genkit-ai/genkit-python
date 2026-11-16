@@ -500,7 +500,8 @@ async def test_openai_plugin_list_actions() -> None:
     assert 'openai/babbage-002' not in listed
     assert 'openai/davinci-002' not in listed
     assert 'openai/o3-pro' not in listed
-    assert len(actions) == len(entries) - 4
+    assert 'openai/o4-mini-deep-research-2025-06-26' not in listed
+    assert len(actions) == len(entries) - 5
     assert actions[0].name == 'openai/gpt-4-0613'
     assert actions[-1].name == 'openai/text-embedding-ada-002'
 

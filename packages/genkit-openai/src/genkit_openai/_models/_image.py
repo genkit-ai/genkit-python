@@ -131,7 +131,7 @@ def _to_image_generate_params(
     }
 
     # GPT Image models reject response_format and always return base64 data.
-    if 'gpt-image' not in model_name.lower() and 'chatgpt-image' not in model_name.lower():
+    if 'gpt-image' not in model_name.lower():
         params['response_format'] = config.pop('response_format', 'b64_json')
     else:
         config.pop('response_format', None)

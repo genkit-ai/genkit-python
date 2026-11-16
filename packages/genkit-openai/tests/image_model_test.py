@@ -97,7 +97,7 @@ class TestToImageGenerateParams:
 
         assert 'response_format' not in got
 
-    @pytest.mark.parametrize('model_name', ['GPT-IMAGE-1', 'gpt-image-1-mini', 'gpt-image-1.5'])
+    @pytest.mark.parametrize('model_name', ['GPT-IMAGE-1', 'gpt-image-1-mini', 'gpt-image-1.5', 'chatgpt-image-latest'])
     def test_gpt_image_variants_omit_response_format(self, model_name: str) -> None:
         """Verify GPT Image variants use the API's base64-only response shape."""
         request = ModelRequest(

@@ -163,7 +163,7 @@ class _ModelType(enum.Enum):
 
 
 def _is_gpt_image(name: str) -> bool:
-    return 'gpt-image' in name or 'chatgpt-image' in name
+    return 'gpt-image' in name
 
 
 def _classify_model(name: str) -> _ModelType:

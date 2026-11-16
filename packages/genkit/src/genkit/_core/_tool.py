@@ -33,6 +33,7 @@ from genkit._core._action import (
     ActionContext,
     ActionKind,
     CtxDefaultInputFn,
+    DefaultedAction,
     DefaultInputFn,
     get_func_description,
     resolve_type_hints,
@@ -372,9 +373,12 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         input_schema: type[BaseModel] | dict[str, object] | None = None,
     ) -> None: ...
 
+    # The defaulted-input shapes are self-typed to DefaultedTool, so they
+    # apply when define_tool builds one. Tool(fn) itself stays a Tool and
+    # skips them.
     @overload
     def __init__(
-        self: Tool[_I | None, _O, _C],
+        self: DefaultedTool[_I, _O, _C],
         func: CtxDefaultInputFn[ToolContext[_C], _I, _O],
         *,
         name: str | None = None,
@@ -414,7 +418,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
 
     @overload
     def __init__(
-        self: Tool[_I | None, _O, Any],
+        self: DefaultedTool[_I, _O, Any],
         func: DefaultInputFn[_I, _O],
         *,
         name: str | None = None,
@@ -575,6 +579,16 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         output = await super()._invoke(input, ctx)
         as_multipart_tool_response(output, tool_name=self.name)
         return output
+
+
+class DefaultedTool(DefaultedAction[InputT, OutputT, ChunkT, None], Tool[InputT, OutputT, ChunkT]):
+    """A ``Tool`` whose function gives the input a default.
+
+    ``@ai.tool`` and ``define_tool`` return one for ``async def
+    check_allergens(dish: str = 'pad thai')``. ``await check_allergens()``
+    runs with the default; ``await check_allergens(None)`` is a type error.
+    It's still a ``Tool``, so a ``Tool[str, str]`` annotation accepts it.
+    """
 
 
 class _ActionTool(Tool[InputT, OutputT, ChunkT]):

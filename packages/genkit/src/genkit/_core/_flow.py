@@ -29,11 +29,13 @@ from genkit._core._action import (
     ActionKind,
     ChunkT,
     CtxDefaultInputFn,
+    DefaultedAction,
     DefaultInputFn,
     FlowContext,
     InputT,
     OutputT,
     get_func_description,
+    input_has_default,
 )
 from genkit._core._registry import Registry
 
@@ -69,12 +71,12 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
-    # A defaulted input types the flow Flow[T | None, ...] so a no-input call
-    # type-checks. These two are self-typed: the class TypeVars can't say
-    # `InputT | None`.
+    # The defaulted-input shapes are self-typed to DefaultedFlow, so they
+    # apply when define_flow builds one. Flow(fn) itself stays a Flow and
+    # skips them.
     @overload
     def __init__(
-        self: Flow[_FlowInputT | None, _FlowOutputT, _FlowChunkT],
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT],
         func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
         *,
         name: str | None = None,
@@ -101,7 +103,7 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
 
     @overload
     def __init__(
-        self: Flow[_FlowInputT | None, _FlowOutputT, Any],
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, Any],
         func: DefaultInputFn[_FlowInputT, _FlowOutputT],
         *,
         name: str | None = None,
@@ -155,6 +157,16 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         )
 
 
+class DefaultedFlow(DefaultedAction[InputT, OutputT, ChunkT, None], Flow[InputT, OutputT, ChunkT]):
+    """A ``Flow`` whose function gives the input a default.
+
+    ``@ai.flow`` and ``define_flow`` return one for ``async def
+    todays_special(cuisine: str = 'italian')``. ``await todays_special()``
+    runs with the default; ``await todays_special(None)`` is a type error.
+    It's still a ``Flow``, so a ``Flow[str, str]`` annotation accepts it.
+    """
+
+
 # Same order as _FlowDecorator.__call__; the `object` shapes catch
 # `(x: Any)` / `(x: object)` before the ctx-only shape can.
 @overload
@@ -181,7 +193,7 @@ def define_flow(
     func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
     name: str | None = None,
     description: str | None = None,
-) -> Flow[_FlowInputT | None, _FlowOutputT, _FlowChunkT]: ...
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT]: ...
 
 
 @overload
@@ -217,7 +229,7 @@ def define_flow(
     func: DefaultInputFn[_FlowInputT, _FlowOutputT],
     name: str | None = None,
     description: str | None = None,
-) -> Flow[_FlowInputT | None, _FlowOutputT]: ...
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT]: ...
 
 
 @overload
@@ -244,7 +256,11 @@ def define_flow(
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[Any, Any, Any]:
-    """Register an async function as a flow action."""
-    flow = Flow(func, name=name, description=description)
+    """Register an async function as a flow action.
+
+    A function whose input has a default becomes a ``DefaultedFlow``.
+    """
+    cls = DefaultedFlow if input_has_default(func, ActionKind.FLOW) else Flow
+    flow = cls(func, name=name, description=description)
     registry.register_action_from_instance(flow)
     return flow

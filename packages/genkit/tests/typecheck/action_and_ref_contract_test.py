@@ -44,6 +44,8 @@ from genkit import (
     ToolContext,
 )
 from genkit._core._action import ActionResponse
+from genkit._core._flow import DefaultedFlow
+from genkit._core._tool import DefaultedTool
 from genkit.embedder import EmbedderRef, EmbedRequest, EmbedResponse
 from genkit.model import ModelConfig, ModelContext, ModelRef, ModelRequest
 from genkit.plugin_api import Action, ActionKind
@@ -132,18 +134,18 @@ async def test_typed_actions_require_input_while_unit_actions_omit_it() -> None:
     assert_type(await list_specials(), list[str])
 
     with pytest.raises(GenkitError):
-        await create_invoice()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+        await create_invoice()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(GenkitError):
-        await create_invoice.run()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+        await create_invoice.run()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(GenkitError):
-        await lookup_allergens()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+        await lookup_allergens()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 
 
 @pytest.mark.asyncio
 async def test_defaulted_inputs_can_be_omitted() -> None:
-    """A flow or tool whose input has a default types as ``[T | None, ...]`` and runs with no input."""
+    """A flow or tool whose input has a default is a ``DefaultedFlow`` / ``DefaultedTool`` and runs with no input."""
     ai = Genkit()
 
     @ai.flow
@@ -158,9 +160,9 @@ async def test_defaulted_inputs_can_be_omitted() -> None:
     async def todays_soup(day: str = 'monday') -> str:
         return f'{day}: bouillabaisse'
 
-    assert_type(suggest_dish, Flow[str | None, str])
-    assert_type(reprint_receipt, Flow[OrderReq | None, str])
-    assert_type(todays_soup, Tool[str | None, str])
+    assert_type(suggest_dish, DefaultedFlow[str, str])
+    assert_type(reprint_receipt, DefaultedFlow[OrderReq | None, str])
+    assert_type(todays_soup, DefaultedTool[str, str])
 
     assert await suggest_dish() == 'french: tartine'
     assert await suggest_dish('thai') == 'thai: tartine'
@@ -170,11 +172,11 @@ async def test_defaulted_inputs_can_be_omitted() -> None:
     assert await todays_soup() == 'monday: bouillabaisse'
 
     with pytest.raises(GenkitError):
-        await suggest_dish(3)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+        await suggest_dish(3)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 
 
 def test_input_is_contravariant() -> None:
-    """A flow or tool with a defaulted input fits a required-input or no-input annotation."""
+    """A flow or tool with a defaulted input fits a required-input annotation, not a no-input one."""
     ai = Genkit()
 
     @ai.flow
@@ -189,15 +191,17 @@ def test_input_is_contravariant() -> None:
     async def kitchen_status() -> str:
         return 'open'
 
-    # 1. Flow[str | None, str] accepts everything Flow[str, str] and Flow[None, str] do
+    # 1. DefaultedFlow[str, str] is a Flow[str, str]
     by_cuisine: Flow[str, str] = suggest_dish
-    house_pick: Flow[None, str] = suggest_dish
 
-    # 2. Same for tools
+    # 2. It isn't a Flow[None, str]: that would accept an explicit None, which a str input rejects
+    house_pick: Flow[None, str] = suggest_dish  # pyright: ignore[reportAssignmentType]  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
+
+    # 3. Same for tools
     soup_for_day: Tool[str, str] = todays_soup
-    soup_today: Tool[None, str] = todays_soup
+    soup_today: Tool[None, str] = todays_soup  # pyright: ignore[reportAssignmentType]  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
 
-    # 3. A no-input flow can't stand in for one that needs an order
+    # 4. A no-input flow can't stand in for one that needs an order
     needs_order: Flow[OrderReq, str] = kitchen_status  # pyright: ignore[reportAssignmentType]  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
 
     assert by_cuisine is house_pick

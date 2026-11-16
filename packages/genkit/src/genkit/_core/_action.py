@@ -500,6 +500,20 @@ def find_input_and_context(
     return ActionParams(input=input_param, context=context_param)
 
 
+def input_has_default(fn: Callable[..., object], kind: ActionKind) -> bool:
+    """True if ``fn``'s input parameter has a default, so the action can run with no input.
+
+    The flow and tool factories read this to build a ``DefaultedFlow`` /
+    ``DefaultedTool``. A signature ``find_input_and_context`` rejects returns
+    False here; the action's constructor raises the real error.
+    """
+    try:
+        hints = resolve_type_hints(fn, known_annotation_names(kind))
+        return find_input_and_context(fn, hints, kind=kind, name='').input_optional
+    except (TypeError, ValueError):
+        return False
+
+
 def known_annotation_names(kind: ActionKind, *, context_kind: ActionKind | None = None) -> dict[str, object]:
     """Genkit types a handler of this kind always takes or returns, by name.
 
@@ -838,14 +852,12 @@ def create_action_key(kind: ActionKind | str, name: str) -> str:
 # =============================================================================
 
 # Contravariant: an action that accepts more inputs can stand in where fewer
-# are expected, so Flow[str | None, str] (a defaulted input) still fits a
-# Flow[str, str] or Flow[None, str] annotation.
+# are expected, so DefaultedFlow[str, str] still fits a Flow[str, str]
+# annotation, and Flow[str | None, str] fits one too.
 InputT = TypeVar('InputT', default=Any, contravariant=True)
 OutputT = TypeVar('OutputT', default=Any)
 ChunkT = TypeVar('ChunkT', default=Any)
 InitT = TypeVar('InitT', default=Any)
-# Solves the T in Action[T | None, ...]: an action whose input has a default.
-_OptInputT = TypeVar('_OptInputT')
 _FnInputT_contra = TypeVar('_FnInputT_contra', contravariant=True)
 _FnCtxT_contra = TypeVar('_FnCtxT_contra', contravariant=True)
 _FnOutputT_co = TypeVar('_FnOutputT_co', covariant=True)
@@ -855,9 +867,9 @@ class DefaultInputFn(Protocol[_FnInputT_contra, _FnOutputT_co]):
     """An action function whose one input has a default: ``async def greet(name: str = 'world')``.
 
     ``Callable`` can't say a parameter is optional, so the flow and tool
-    overloads match this first and type the action ``Flow[str | None, ...]``.
-    That's what lets ``await greet()`` type-check while ``await
-    create_invoice()`` on a required input doesn't.
+    overloads match this first and type the action ``DefaultedFlow[str, ...]``
+    / ``DefaultedTool[str, ...]``. That's what lets ``await greet()``
+    type-check while ``await create_invoice()`` on a required input doesn't.
     """
 
     def __call__(self, input: _FnInputT_contra = ..., /) -> Awaitable[_FnOutputT_co]: ...  # noqa: A002
@@ -1263,14 +1275,6 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
 
     @overload
     async def __call__(
-        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
-        input: _OptInputT | None = None,
-        *,
-        context: dict[str, Any] | None = None,
-    ) -> OutputT: ...
-
-    @overload
-    async def __call__(
         self,
         input: InputT,
         *,
@@ -1290,17 +1294,6 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     async def run(
         self: Action[None, OutputT, ChunkT, InitT],
         input: None = None,
-        *,
-        on_chunk: Callable[[ChunkT], None] | None = None,
-        context: dict[str, Any] | None = None,
-        telemetry_labels: dict[str, object] | None = None,
-        init: InitT | None = None,
-    ) -> ActionResponse[OutputT]: ...
-
-    @overload
-    async def run(
-        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
-        input: _OptInputT | None = None,
         *,
         on_chunk: Callable[[ChunkT], None] | None = None,
         context: dict[str, Any] | None = None,
@@ -1432,16 +1425,6 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     def stream(
         self: Action[None, OutputT, ChunkT, InitT],
         input: None = None,
-        *,
-        context: dict[str, Any] | None = None,
-        telemetry_labels: dict[str, object] | None = None,
-        init: InitT | None = None,
-    ) -> StreamResponse[ChunkT, OutputT]: ...
-
-    @overload
-    def stream(
-        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
-        input: _OptInputT | None = None,
         *,
         context: dict[str, Any] | None = None,
         telemetry_labels: dict[str, object] | None = None,
@@ -1946,6 +1929,119 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         else:
             coro = self._params.call(self._fn, input, ctx)
         return await coro
+
+
+class DefaultedAction(Action[InputT, OutputT, ChunkT, InitT]):
+    """Call overloads for an action whose function gives the input a default.
+
+    ``DefaultedFlow`` and ``DefaultedTool`` mix this in. The input may be
+    omitted, so the function's default applies. A passed input must be
+    ``InputT``: for ``async def todays_special(cuisine: str = 'italian')``,
+    ``await todays_special(None)`` is a type error, like the runtime
+    INVALID_ARGUMENT it would raise.
+    """
+
+    # ty (all three) and pyrefly (run, stream) flag these as bad overrides of
+    # Action's overloads. They aren't: Action's `self: Action[None, ...]`
+    # overload only applies when InputT accepts None, and then
+    # `input: InputT` here takes the same call.
+    @overload
+    async def __call__(
+        self,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT: ...
+
+    @overload
+    async def __call__(
+        self,
+        input: InputT,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT: ...
+
+    async def __call__(  # ty: ignore[invalid-method-override]
+        self,
+        input: Any = NO_INPUT,  # noqa: ANN401 - NO_INPUT or InputT
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT:
+        """Call the action directly, returning just the response value."""
+        return (await self._run(input, context=context)).response
+
+    @overload
+    async def run(  # pyrefly: ignore[bad-override]
+        self,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]: ...
+
+    @overload
+    async def run(
+        self,
+        input: InputT,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]: ...
+
+    async def run(  # ty: ignore[invalid-method-override]
+        self,
+        input: Any = NO_INPUT,  # noqa: ANN401 - NO_INPUT or InputT
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]:
+        """Run the action and return its result with trace ids. See ``Action.run``."""
+        return await self._run(
+            input,
+            on_chunk=on_chunk,
+            context=context,
+            telemetry_labels=telemetry_labels,
+            init=init,
+        )
+
+    @overload
+    def stream(  # pyrefly: ignore[bad-override]
+        self,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]: ...
+
+    @overload
+    def stream(
+        self,
+        input: InputT,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]: ...
+
+    def stream(  # ty: ignore[invalid-method-override]
+        self,
+        input: Any = NO_INPUT,  # noqa: ANN401 - NO_INPUT or InputT
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]:
+        """Return a ``StreamResponse`` for chunks and the result. See ``Action.stream``."""
+        return self._stream(
+            input,
+            context=context,
+            telemetry_labels=telemetry_labels,
+            init=init,
+        )
 
 
 async def single_item_stream(item: InputT) -> AsyncIterator[InputT]:

@@ -21,7 +21,14 @@ from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
 
-from genkit._core._action import Action, CtxDefaultInputFn, DefaultInputFn, input_from_json
+from genkit._core._action import (
+    Action,
+    ActionKind,
+    CtxDefaultInputFn,
+    DefaultInputFn,
+    input_from_json,
+    input_has_default,
+)
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
@@ -29,6 +36,7 @@ from genkit._core._model import MultipartToolResponse as MultipartToolResponse, 
 from genkit._core._registry import Registry
 from genkit._core._tool import (
     ORIGINAL_OUTPUT_SCHEMA_KEY as ORIGINAL_OUTPUT_SCHEMA_KEY,
+    DefaultedTool,
     Tool as _Tool,
     ToolContext as ToolContext,
     _tool_original_input as _tool_original_input,
@@ -275,7 +283,10 @@ def _define_tool(
     cases like define_interrupt where the handler signature cannot express
     the input shape.
     """
-    built: _Tool[Any, Any, Any] = _Tool(func, name=name, description=description, input_schema=input_schema)
+    # A defaulted input builds a DefaultedTool, so isinstance agrees with
+    # what define_tool's overloads promise.
+    cls = DefaultedTool if input_has_default(func, ActionKind.TOOL) else _Tool
+    built: _Tool[Any, Any, Any] = cls(func, name=name, description=description, input_schema=input_schema)
     registry.register_action_from_instance(built)
     return built
 
@@ -290,6 +301,7 @@ def _define_tool(
 #   flow: the function takes no input, so a direct call passes none.
 # - ty types ``(ctx, x: Any)`` as Unknown: the typing spec's overload rule for
 #   Any arguments makes it ambiguous, and no order fixes that.
+# - A defaulted input returns ``DefaultedTool``.
 @overload
 def define_tool(
     registry: Registry,
@@ -320,7 +332,7 @@ def define_tool(
     description: str | None = None,
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
-) -> _Tool[ToolInputT | None, ToolOutputT, ToolChunkT]: ...
+) -> DefaultedTool[ToolInputT, ToolOutputT, ToolChunkT]: ...
 
 
 @overload
@@ -364,7 +376,7 @@ def define_tool(
     description: str | None = None,
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
-) -> _Tool[ToolInputT | None, ToolOutputT]: ...
+) -> DefaultedTool[ToolInputT, ToolOutputT]: ...
 
 
 @overload

@@ -97,7 +97,7 @@ from genkit._core._config_check import layer_call_config
 from genkit._core._dap import DapFn, DynamicActionProvider
 from genkit._core._environment import is_dev_environment
 from genkit._core._error import ErrorReason, GenkitError, PublicError
-from genkit._core._flow import Flow
+from genkit._core._flow import DefaultedFlow, Flow
 from genkit._core._logger import (
     REFLECTION_THREAD_NAME,
     configure_logging,
@@ -130,7 +130,7 @@ from genkit._core._registry import Registry, define_dynamic_action_provider as d
 from genkit._core._telemetry._attrs import metadata_key
 from genkit._core._telemetry._http import mark_already_sourced, maybe_inject_dev_instrumentation
 from genkit._core._telemetry._instrumentation import run_in_new_span
-from genkit._core._tool import Tool, ToolContext
+from genkit._core._tool import DefaultedTool, Tool, ToolContext
 from genkit._core._typing import (
     Embedding,
     EmbedResponse,
@@ -337,7 +337,7 @@ class Genkit:
         self,
         func: CtxDefaultInputFn[FlowContext[ChunkT], InputT, OutputT],
         /,
-    ) -> Flow[InputT | None, OutputT, ChunkT]: ...
+    ) -> DefaultedFlow[InputT, OutputT, ChunkT]: ...
 
     @overload
     def flow(
@@ -365,7 +365,7 @@ class Genkit:
         self,
         func: DefaultInputFn[InputT, OutputT],
         /,
-    ) -> Flow[InputT | None, OutputT]: ...
+    ) -> DefaultedFlow[InputT, OutputT]: ...
 
     @overload
     def flow(
@@ -518,7 +518,7 @@ class Genkit:
         self,
         func: CtxDefaultInputFn[ToolContext[ChunkT], InputT, OutputT],
         /,
-    ) -> Tool[InputT | None, OutputT, ChunkT]: ...
+    ) -> DefaultedTool[InputT, OutputT, ChunkT]: ...
 
     @overload
     def tool(
@@ -546,7 +546,7 @@ class Genkit:
         self,
         func: DefaultInputFn[InputT, OutputT],
         /,
-    ) -> Tool[InputT | None, OutputT]: ...
+    ) -> DefaultedTool[InputT, OutputT]: ...
 
     @overload
     def tool(

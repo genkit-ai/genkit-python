@@ -84,10 +84,21 @@ from genkit.plugin_api import (
     loop_local_client,
 )
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._evaluators._evaluation import (
-    VertexAIEvaluationMetricType,
-    create_vertex_evaluators,
-)
+
+# This package allows genkit<2, and a later genkit release removes
+# genkit.evaluator. Models and embedders must still load without it, so the
+# Vertex AI evaluators are skipped. Only that missing module is tolerated: any
+# other import error, including a renamed name inside genkit.evaluator, is a
+# real bug and propagates.
+try:
+    from genkit_google_genai._evaluators._evaluation import VertexAIEvaluationMetricType, create_vertex_evaluators
+except ModuleNotFoundError as e:
+    if e.name != 'genkit.evaluator':
+        raise
+    _HAS_VERTEX_EVALUATORS = False
+else:
+    _HAS_VERTEX_EVALUATORS = True
+
 from genkit_google_genai._interactions._options import ClientOptions
 from genkit_google_genai._models._antigravity import AntigravityConfig, create_antigravity_action
 from genkit_google_genai._models._deep_research import (
@@ -1315,7 +1326,9 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         # Vertex evaluators talk to a project-scoped Evaluation API. Express
         # mode (api_key, no project) can still start the app; those evaluators
         # simply are not registered.
-        if not self._project:
+        if not _HAS_VERTEX_EVALUATORS:
+            logger.debug('genkit.evaluator is not available; skipping Vertex evaluator registration')
+        elif not self._project:
             logger.debug('VertexAI has no project; skipping Vertex evaluator registration')
         else:
             actions.extend(
@@ -1386,6 +1399,8 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         # Iterate instead of calling VertexAIEvaluationMetricType(value): on
         # Python 3.10 StrEnum comes from `strenum`, whose stub types __new__
         # as returning the base StrEnum, so the constructor loses the subtype.
+        if not _HAS_VERTEX_EVALUATORS:
+            return None
         value = name.upper()
         metric_type = next((m for m in VertexAIEvaluationMetricType if m.value == value), None)
         if metric_type is None:

@@ -809,6 +809,34 @@ class Genkit:
         self._registry.register_value(kind, name, value, allow_overwrite=True)
 
     # Overload 1: Both input_schema and output_schema typed -> Prompt[InputT, OutputT]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def define_prompt(
+        self,
+        name: str | None = None,
+        *,
+        variant: str | None = None,
+        model: ModelRef[Any] | Action | str | None = None,
+        config: None = None,
+        description: str | None = None,
+        system: str | list[Part] | None = None,
+        prompt: str | list[Part] | None = None,
+        messages: str | list[Message] | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        max_turns: int | None = None,
+        return_tool_requests: bool | None = None,
+        metadata: dict[str, object] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        tool_choice: ToolChoice | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+        input_schema: type[InputT],
+        output_schema: type[OutputT],
+    ) -> Prompt[InputT, OutputT]: ...
+
     @overload
     def define_prompt(
         self,
@@ -843,7 +871,7 @@ class Genkit:
         *,
         variant: str | None = None,
         model: ModelRef[ModelRefConfigT] | Action | str | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         description: str | None = None,
         system: str | list[Part] | None = None,
         prompt: str | list[Part] | None = None,
@@ -864,6 +892,34 @@ class Genkit:
     ) -> Prompt[InputT, OutputT]: ...
 
     # Overload 2: Only input_schema typed -> Prompt[InputT, Any]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def define_prompt(
+        self,
+        name: str | None = None,
+        *,
+        variant: str | None = None,
+        model: ModelRef[Any] | Action | str | None = None,
+        config: None = None,
+        description: str | None = None,
+        system: str | list[Part] | None = None,
+        prompt: str | list[Part] | None = None,
+        messages: str | list[Message] | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        max_turns: int | None = None,
+        return_tool_requests: bool | None = None,
+        metadata: dict[str, object] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        tool_choice: ToolChoice | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+        input_schema: type[InputT],
+        output_schema: dict[str, object] | str | None = None,
+    ) -> Prompt[InputT, Any]: ...
+
     @overload
     def define_prompt(
         self,
@@ -898,7 +954,7 @@ class Genkit:
         *,
         variant: str | None = None,
         model: ModelRef[ModelRefConfigT] | Action | str | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         description: str | None = None,
         system: str | list[Part] | None = None,
         prompt: str | list[Part] | None = None,
@@ -919,6 +975,34 @@ class Genkit:
     ) -> Prompt[InputT, Any]: ...
 
     # Overload 3: Only output_schema typed -> Prompt[Any, OutputT]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def define_prompt(
+        self,
+        name: str | None = None,
+        *,
+        variant: str | None = None,
+        model: ModelRef[Any] | Action | str | None = None,
+        config: None = None,
+        description: str | None = None,
+        system: str | list[Part] | None = None,
+        prompt: str | list[Part] | None = None,
+        messages: str | list[Message] | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        max_turns: int | None = None,
+        return_tool_requests: bool | None = None,
+        metadata: dict[str, object] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        tool_choice: ToolChoice | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+        input_schema: dict[str, object] | str | None = None,
+        output_schema: type[OutputT],
+    ) -> Prompt[Any, OutputT]: ...
+
     @overload
     def define_prompt(
         self,
@@ -953,7 +1037,7 @@ class Genkit:
         *,
         variant: str | None = None,
         model: ModelRef[ModelRefConfigT] | Action | str | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         description: str | None = None,
         system: str | list[Part] | None = None,
         prompt: str | list[Part] | None = None,
@@ -974,6 +1058,34 @@ class Genkit:
     ) -> Prompt[Any, OutputT]: ...
 
     # Overload 4: Neither typed -> Prompt[Any, Any]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def define_prompt(
+        self,
+        name: str | None = None,
+        *,
+        variant: str | None = None,
+        model: ModelRef[Any] | Action | str | None = None,
+        config: None = None,
+        description: str | None = None,
+        system: str | list[Part] | None = None,
+        prompt: str | list[Part] | None = None,
+        messages: str | list[Message] | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        max_turns: int | None = None,
+        return_tool_requests: bool | None = None,
+        metadata: dict[str, object] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        tool_choice: ToolChoice | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+        input_schema: type | dict[str, object] | str | None = None,
+        output_schema: type | dict[str, object] | str | None = None,
+    ) -> Prompt[Any, Any]: ...
+
     @overload
     def define_prompt(
         self,
@@ -1008,7 +1120,7 @@ class Genkit:
         *,
         variant: str | None = None,
         model: ModelRef[ModelRefConfigT] | Action | str | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         description: str | None = None,
         system: str | list[Part] | None = None,
         prompt: str | list[Part] | None = None,
@@ -1525,6 +1637,33 @@ class Genkit:
         return action, options
 
     # Overload: config=ModelConfigDict, output_schema=type[T] -> ModelResponse[T]
+    # No config: any ref, including one picked between providers.
+    @overload
+    async def generate(
+        self,
+        *,
+        model: ModelRef[Any] | Action | str | None = None,
+        prompt: str | list[Part] | None = None,
+        system: str | list[Part] | None = None,
+        messages: list[Message] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        return_tool_requests: bool | None = None,
+        tool_choice: ToolChoice | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
+        resume_metadata: dict[str, Any] | None = None,
+        config: None = None,
+        max_turns: int | None = None,
+        context: dict[str, object] | None = None,
+        output_schema: type[OutputT],
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+    ) -> ModelResponse[OutputT]: ...
+
     @overload
     async def generate(
         self,
@@ -1566,7 +1705,7 @@ class Genkit:
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
         output_schema: type[OutputT],
@@ -1579,6 +1718,33 @@ class Genkit:
     ) -> ModelResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelResponse[Any]
+    # No config: any ref, including one picked between providers.
+    @overload
+    async def generate(
+        self,
+        *,
+        model: ModelRef[Any] | Action | str | None = None,
+        prompt: str | list[Part] | None = None,
+        system: str | list[Part] | None = None,
+        messages: list[Message] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        return_tool_requests: bool | None = None,
+        tool_choice: ToolChoice | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
+        resume_metadata: dict[str, Any] | None = None,
+        config: None = None,
+        max_turns: int | None = None,
+        context: dict[str, object] | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+    ) -> ModelResponse[Any]: ...
+
     @overload
     async def generate(
         self,
@@ -1620,7 +1786,7 @@ class Genkit:
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
         output_schema: type[Any] | dict[str, Any] | str | None = None,
@@ -1726,6 +1892,33 @@ class Genkit:
         )
 
     # Overload: config=ModelConfigDict, output_schema=type[T] -> ModelStreamResponse[T]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def generate_stream(
+        self,
+        *,
+        model: ModelRef[Any] | Action | str | None = None,
+        prompt: str | list[Part] | None = None,
+        system: str | list[Part] | None = None,
+        messages: list[Message] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        return_tool_requests: bool | None = None,
+        tool_choice: ToolChoice | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
+        resume_metadata: dict[str, Any] | None = None,
+        config: None = None,
+        max_turns: int | None = None,
+        context: dict[str, object] | None = None,
+        output_schema: type[OutputT],
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+    ) -> ModelStreamResponse[OutputT]: ...
+
     @overload
     def generate_stream(
         self,
@@ -1767,7 +1960,7 @@ class Genkit:
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
         output_schema: type[OutputT],
@@ -1780,6 +1973,33 @@ class Genkit:
     ) -> ModelStreamResponse[OutputT]: ...
 
     # Overload: config=ModelConfigDict, no output_schema -> ModelStreamResponse[Any]
+    # No config: any ref, including one picked between providers.
+    @overload
+    def generate_stream(
+        self,
+        *,
+        model: ModelRef[Any] | Action | str | None = None,
+        prompt: str | list[Part] | None = None,
+        system: str | list[Part] | None = None,
+        messages: list[Message] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        return_tool_requests: bool | None = None,
+        tool_choice: ToolChoice | None = None,
+        resume_respond: Part | list[Part] | None = None,
+        resume_restart: Part | list[Part] | None = None,
+        resume_metadata: dict[str, Any] | None = None,
+        config: None = None,
+        max_turns: int | None = None,
+        context: dict[str, object] | None = None,
+        output_schema: type[Any] | dict[str, Any] | str | None = None,
+        output_format: str | None = None,
+        output_content_type: str | None = None,
+        output_instructions: bool | str | None = None,
+        output_constrained: bool | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+    ) -> ModelStreamResponse[Any]: ...
+
     @overload
     def generate_stream(
         self,
@@ -1821,7 +2041,7 @@ class Genkit:
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         max_turns: int | None = None,
         context: dict[str, object] | None = None,
         output_schema: type[Any] | dict[str, Any] | str | None = None,
@@ -2021,13 +2241,37 @@ class Genkit:
             caller_stopped=caller_stopped,
         )
 
+    # No config: any ref, including one picked between providers.
+    @overload
+    async def embed(
+        self,
+        *,
+        embedder: str | EmbedderRef[Any],
+        content: str | Document,
+        metadata: dict[str, object] | None = None,
+        config: None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Embedding]: ...
+
+    # A config is pinned to the ref's config class.
+    @overload
     async def embed(
         self,
         *,
         embedder: str | EmbedderRef[EmbedderRefConfigT],
         content: str | Document,
         metadata: dict[str, object] | None = None,
-        config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        config: EmbedderRefConfigT | Mapping[str, Any] | None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Embedding]: ...
+
+    async def embed(
+        self,
+        *,
+        embedder: str | EmbedderRef[Any],
+        content: str | Document,
+        metadata: dict[str, object] | None = None,
+        config: BaseModel | Mapping[str, Any] | None = None,
         context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for a single document or string.
@@ -2075,13 +2319,37 @@ class Genkit:
         ).response
         return response.embeddings
 
+    # No config: any ref, including one picked between providers.
+    @overload
+    async def embed_many(
+        self,
+        *,
+        embedder: str | EmbedderRef[Any],
+        content: Sequence[str | Document],
+        metadata: dict[str, object] | None = None,
+        config: None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Embedding]: ...
+
+    # A config is pinned to the ref's config class.
+    @overload
     async def embed_many(
         self,
         *,
         embedder: str | EmbedderRef[EmbedderRefConfigT],
         content: Sequence[str | Document],
         metadata: dict[str, object] | None = None,
-        config: EmbedderRefConfigT | Mapping[str, Any] | None = None,
+        config: EmbedderRefConfigT | Mapping[str, Any] | None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Embedding]: ...
+
+    async def embed_many(
+        self,
+        *,
+        embedder: str | EmbedderRef[Any],
+        content: Sequence[str | Document],
+        metadata: dict[str, object] | None = None,
+        config: BaseModel | Mapping[str, Any] | None = None,
         context: dict[str, Any] | None = None,
     ) -> list[Embedding]:
         """Generate vector embeddings for multiple documents in a single batch call.
@@ -2258,6 +2526,21 @@ class Genkit:
         """
         return await cancel_operation(self._registry, operation, context=context, config=config)
 
+    # No config: any ref, including one picked between providers.
+    @overload
+    async def generate_operation(
+        self,
+        *,
+        model: ModelRef[Any] | BackgroundModel | str | None = None,
+        prompt: str | list[Part] | None = None,
+        system: str | list[Part] | None = None,
+        messages: list[Message] | None = None,
+        config: None = None,
+        context: dict[str, object] | None = None,
+        use: Sequence[Middleware] | None = None,
+        docs: list[Document] | None = None,
+    ) -> Operation[ModelResponse]: ...
+
     @overload
     async def generate_operation(
         self,
@@ -2280,7 +2563,7 @@ class Genkit:
         prompt: str | list[Part] | None = None,
         system: str | list[Part] | None = None,
         messages: list[Message] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         context: dict[str, object] | None = None,
         use: Sequence[Middleware] | None = None,
         docs: list[Document] | None = None,

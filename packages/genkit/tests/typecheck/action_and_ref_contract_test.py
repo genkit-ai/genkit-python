@@ -248,4 +248,4 @@ async def test_model_and_embedder_refs_are_invariant_and_default_to_any() -> Non
         await ai.generate(model=bistro_ref, prompt='dish', config=OtherModelConfig())  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
     with pytest.raises(GenkitError):
-        await ai.embed(embedder=embed_ref, content='tartine', config=OtherEmbedConfig())  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[bad-argument-type]  # ty: ignore[invalid-argument-type]
+        await ai.embed(embedder=embed_ref, content='tartine', config=OtherEmbedConfig())  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]

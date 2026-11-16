@@ -61,7 +61,7 @@ async def todays_special(cuisine: str = 'italian') -> str:
     return f'{cuisine}: risotto'
 
 
-async def lookup_reservation(res_id: str | None = None) -> str:
+async def lookup_reservation(res_id: str | None = 'R-100') -> str:
     return res_id or 'walk-in'
 
 
@@ -132,7 +132,7 @@ async def check_allergens(dish: str = 'pad thai') -> str:
     return f'{dish}: peanuts'
 
 
-async def find_table(res_id: str | None = None) -> str:
+async def find_table(res_id: str | None = 'R-100') -> str:
     return res_id or 'bar seat'
 
 
@@ -347,7 +347,7 @@ async def test_defaulted_flow_calls() -> None:
         return f'{cuisine}: risotto'
 
     @ai.flow
-    async def lookup_reservation(res_id: str | None = None) -> str:
+    async def lookup_reservation(res_id: str | None = 'R-100') -> str:
         return res_id or 'walk-in'
 
     @ai.flow
@@ -371,9 +371,9 @@ async def test_defaulted_flow_calls() -> None:
     assert await todays_special.stream().response == 'italian: risotto'
     assert await todays_special.stream('thai').response == 'thai: risotto'
 
-    # 2. None is a value when the input type includes it
+    # 2. Omitting the input uses the default; an explicit None is a value, not "use the default"
+    assert await lookup_reservation() == 'R-100'
     assert await lookup_reservation(None) == 'walk-in'
-    assert await lookup_reservation() == 'walk-in'
 
     # 3. No-input flows, and a defaulted input before a context
     assert await kitchen_status() == 'open'
@@ -405,9 +405,19 @@ async def test_defaulted_tool_calls() -> None:
     async def check_allergens(dish: str = 'pad thai') -> str:
         return f'{dish}: peanuts'
 
+    @ai.tool()
+    async def find_table(res_id: str | None = 'R-100') -> str:
+        return res_id or 'bar seat'
+
+    # 1. Omit the input to use the default, or pass a str
     assert await check_allergens() == 'pad thai: peanuts'
     assert await check_allergens('larb') == 'larb: peanuts'
 
+    # 2. Omitting the input uses the default; an explicit None is a value, same as flows
+    assert await find_table() == 'R-100'
+    assert await find_table(None) == 'bar seat'
+
+    # 3. None isn't a str
     with pytest.raises(GenkitError):
         await check_allergens(None)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 

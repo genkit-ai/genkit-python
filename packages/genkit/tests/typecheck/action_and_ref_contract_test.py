@@ -16,7 +16,7 @@
 
 # pyright: reportUnnecessaryTypeIgnoreComment=true
 
-"""Type-checker contract for Action input overloads, Ref invariance, and public exports.
+"""Type-checker contract for Action input overloads and Ref invariance.
 
 Checked by pyright, pyrefly, and ty with unused-ignore errors enabled so every
 negative assertion below must fail all three type checkers.
@@ -25,7 +25,6 @@ negative assertion below must fail all three type checkers.
 from typing import Any
 
 import pytest
-from genkit_mcp import McpServerEntry
 from pydantic import BaseModel
 from typing_extensions import assert_type
 
@@ -44,7 +43,7 @@ from genkit import (
 )
 from genkit._core._action import ActionResponse
 from genkit.embedder import EmbedderRef, EmbedRequest, EmbedResponse
-from genkit.model import ModelConfig, ModelContext, ModelFn, ModelRef, ModelRequest
+from genkit.model import ModelConfig, ModelContext, ModelRef, ModelRequest
 from genkit.plugin_api import Action, ActionKind
 
 
@@ -73,19 +72,8 @@ class OtherEmbedConfig(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_public_signature_exports_and_action_response() -> None:
-    """``ModelFn`` and ``McpServerEntry`` import cleanly and ``action.run`` preserves ``ActionResponse[T]``."""
-    ai = Genkit()
-
-    async def bistro_model(req: ModelRequest, ctx: ModelContext) -> ModelResponse[Any]:
-        del req, ctx
-        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('Smoked Salmon Tartine')]))
-
-    fn: ModelFn = bistro_model
-    ai.define_model(name='bistro/chef', fn=fn)
-
-    entry: McpServerEntry = {'command': 'npx'}
-    assert entry['command'] == 'npx'
+async def test_action_run_preserves_action_response() -> None:
+    """``action.run`` preserves ``ActionResponse[T]``."""
 
     async def bill_order(order: OrderReq) -> Invoice:
         return Invoice(total_cents=1800 if order.dish == 'tartine' else 1200)

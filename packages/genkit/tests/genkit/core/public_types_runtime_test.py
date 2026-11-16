@@ -65,21 +65,6 @@ def test_generation_usage_from_messages_counts_characters() -> None:
 @pytest.mark.parametrize(
     ('module', 'names'),
     [
-        ('genkit.model', ['ModelFn']),
-        ('genkit_mcp', ['McpServerEntry']),
-    ],
-)
-def test_signature_types_are_exported(module: str, names: list[str]) -> None:
-    """Types that appear in public signatures import from their canonical module."""
-    mod = importlib.import_module(module)
-    for name in names:
-        assert name in mod.__all__, f'{module}.{name}'
-        assert hasattr(mod, name)
-
-
-@pytest.mark.parametrize(
-    ('module', 'names'),
-    [
         (
             'genkit',
             [

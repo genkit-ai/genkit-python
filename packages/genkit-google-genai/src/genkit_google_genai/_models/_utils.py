@@ -63,7 +63,10 @@ from genkit.plugin_api import loop_local_client
 
 logger = get_logger(__name__)
 
-_ASCII_WHITESPACE = str.maketrans('', '', ' \t\r\n\f\v')
+# URL-safe alphabet to standard, ASCII whitespace removed. google-genai's own
+# JSON dump writes URL-safe base64, and so does Gemini's documented
+# `skip_thought_signature_validator` placeholder.
+_SIGNATURE_TO_STD_B64 = str.maketrans('-_', '+/', ' \t\r\n\f\v')
 
 
 # TODO(#4360): Replace with downloadRequestMedia middleware.
@@ -487,17 +490,22 @@ class PartConverter:
 
     @classmethod
     def _extract_thought_signature(cls, metadata: dict[str, Any] | None) -> bytes | None:
-        """Extracts and decodes the thought signature from metadata."""
+        """Decode ``metadata.thoughtSignature``: standard or URL-safe base64, padded or not.
+
+        An undecodable signature is dropped with a warning rather than failing
+        the request: text and media parts don't need one, and Gemini reports a
+        missing signature itself where it does.
+        """
         thought_sig = metadata.get('thoughtSignature') if metadata else None
-        if isinstance(thought_sig, str):
-            try:
-                return base64.b64decode(thought_sig.translate(_ASCII_WHITESPACE), validate=True)
-            except (binascii.Error, ValueError) as e:
-                raise GenkitError(
-                    status='INVALID_ARGUMENT',
-                    message='part metadata.thoughtSignature is not valid base64',
-                ) from e
-        return None
+        if not isinstance(thought_sig, str):
+            return None
+        normalized = thought_sig.translate(_SIGNATURE_TO_STD_B64)
+        normalized += '=' * (-len(normalized) % 4)
+        try:
+            return base64.b64decode(normalized, validate=True)
+        except (binascii.Error, ValueError):
+            logger.warning('Dropping part metadata.thoughtSignature: not valid base64')
+            return None
 
     @classmethod
     def _encode_thought_signature(cls, thought_signature: bytes | None) -> dict[str, Any] | None:

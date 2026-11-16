@@ -27,6 +27,7 @@ from genkit_google_genai._constants import (
     multi_regional_base_url,
     vertex_api_host,
 )
+from genkit_google_genai._google import _plugin_client as _google_plugin_client
 from genkit_google_genai._models import _gemini as gemini_module
 from genkit_google_genai._models._gemini import GeminiConfig, GeminiModel
 from google import genai
@@ -219,6 +220,29 @@ class TestVertexAIPluginProject:
                     plugin = VertexAI(location='us')
         assert plugin._project == 'adc-p'
         assert plugin._client_kwargs['project'] == 'adc-p'
+
+    def test_api_key_multi_region_resolves_project_from_adc(self) -> None:
+        """Express mode on a multi-region still picks up the ADC project, since the rep endpoint needs one."""
+        with patch.dict(os.environ, {}, clear=True):
+            with patch('genkit_google_genai._google.google_auth_default', return_value=(None, 'adc-p')) as adc:
+                plugin = VertexAI(api_key='k', location='eu')
+                client = _google_plugin_client(plugin._client_kwargs)
+        adc.assert_called_once()
+        assert plugin._client_kwargs['project'] == 'adc-p'
+        assert client._api_client.project == 'adc-p'
+        assert client._api_client.api_key == 'k'
+
+    @pytest.mark.asyncio
+    async def test_api_key_multi_region_without_project_is_express_mode_error(self) -> None:
+        """Express mode on a multi-region with no ADC project fails FAILED_PRECONDITION at call time."""
+        with patch.dict(os.environ, {}, clear=True):
+            with patch('genkit_google_genai._google.google_auth_default', return_value=(None, None)):
+                plugin = VertexAI(api_key='k', location='eu')
+                with pytest.raises(GenkitError) as raised:
+                    plugin._runtime_client()
+        assert raised.value.status == 'FAILED_PRECONDITION'
+        assert 'express mode' in raised.value.message
+        assert 'k' not in raised.value.message.split()
 
     @pytest.mark.asyncio
     async def test_multi_region_without_project_fails_at_call_time(self) -> None:
@@ -440,7 +464,7 @@ class TestResolveRequestClient:
         model = _vertex_model()
         model._client_kwargs = dict(model._client_kwargs, project=None)
         with patch('genkit_google_genai._models._gemini.google_auth_default', return_value=(None, None)):
-            with pytest.raises(GenkitError, match='project is required'):
+            with pytest.raises(GenkitError, match=r'VertexAI\(project=\.\.\.\)'):
                 await model._resolve_request_client(_text_request({'location': 'eu'}))
 
     @pytest.mark.asyncio
@@ -453,7 +477,7 @@ class TestResolveRequestClient:
         with patch(
             'genkit_google_genai._models._gemini.google_auth_default', side_effect=DefaultCredentialsError('no adc')
         ):
-            with pytest.raises(GenkitError, match='project is required'):
+            with pytest.raises(GenkitError, match=r'VertexAI\(project=\.\.\.\)'):
                 await model._resolve_request_client(_text_request({'location': 'eu'}))
 
     @pytest.mark.asyncio

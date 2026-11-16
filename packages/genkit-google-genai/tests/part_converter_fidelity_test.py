@@ -151,6 +151,43 @@ def test_coalesce_does_not_merge_across_signed_part_or_tool_call() -> None:
     assert [p.text for p in out] == ['A', 'B', None, 'C']
 
 
+def test_coalesce_builds_each_merged_part_once(mocker: MockerFixture) -> None:
+    """A long stream joins its fragments once per run instead of rebuilding the part per fragment."""
+    parts = [Part.from_text('crumb ') for _ in range(2000)]
+    parts.append(Part.from_text('end.', metadata={'thoughtSignature': 'c2ln'}))
+    from_text = mocker.spy(Part, 'from_text')
+
+    out = _coalesce_stream_parts(parts)
+
+    assert from_text.call_count == 1
+    assert len(out) == 1
+    assert out[0].text == 'crumb ' * 2000 + 'end.'
+    assert out[0].metadata == {'thoughtSignature': 'c2ln'}
+
+
+def test_coalesce_attaches_trailing_signature_to_reasoning() -> None:
+    """A contentless signed part after unsigned reasoning signs the reasoning block."""
+    sig = {'thoughtSignature': 'c2ln'}
+    out = _coalesce_stream_parts([
+        Part.from_reasoning('Check '),
+        Part.from_reasoning('allergens.'),
+        Part.from_text('', metadata=sig),
+    ])
+
+    assert [p.model_dump(exclude_none=True) for p in out] == [{'reasoning': 'Check allergens.', 'metadata': sig}]
+
+
+def test_coalesce_passes_unmerged_parts_through_unchanged() -> None:
+    """A part with nothing to merge into is the same object, not a rebuilt copy."""
+    tool = Part.from_tool_request('lookup_menu', {})
+    text = Part.from_text('Pesto.')
+
+    out = _coalesce_stream_parts([tool, text])
+
+    assert out[0] is tool
+    assert out[1] is text
+
+
 @pytest.mark.asyncio
 async def test_streaming_final_message_is_coalesced(mocker: MockerFixture) -> None:
     """Chunks still stream as fragments; the final message has whole parts for guardrails to read."""

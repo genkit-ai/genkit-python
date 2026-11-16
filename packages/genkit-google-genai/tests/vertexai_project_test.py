@@ -23,12 +23,14 @@ import pytest
 from genkit_google_genai import VertexAI
 from genkit_google_genai._google import _plugin_client
 from genkit_google_genai._models._gemini import GeminiModel
+from genkit_google_genai._models._veo import VeoModel
+from genkit_google_genai._models._virtual_try_on import VirtualTryOnModel
 from google.auth.credentials import AnonymousCredentials
 from google.auth.exceptions import DefaultCredentialsError
 from google.genai import types as genai_types
 
 from genkit import Genkit, GenkitError, Message, Part, Role
-from genkit.model import ModelRequest
+from genkit.model import ModelContext, ModelRequest
 
 
 def test_vertex_without_project_is_failed_precondition() -> None:
@@ -62,6 +64,36 @@ def test_other_client_value_errors_are_not_rewritten() -> None:
         pytest.raises(ValueError, match='bad location'),
     ):
         _plugin_client(kwargs)
+
+
+def test_express_mode_value_error_is_not_rewritten_as_missing_project() -> None:
+    """With an api_key, a google-genai ValueError isn't a missing project and passes through."""
+    kwargs = {'vertexai': True, 'api_key': 'k', 'project': None, 'location': 'us-central1'}
+    with (
+        patch('genkit_google_genai._google.genai.client.Client', side_effect=ValueError('bad http_options')),
+        pytest.raises(ValueError, match='bad http_options'),
+    ):
+        _plugin_client(kwargs)
+
+
+def test_express_mode_multi_region_without_project_is_failed_precondition() -> None:
+    """api_key on a multi-region with no project fails before google-genai sends a project-less request."""
+    kwargs = {'vertexai': True, 'api_key': 'k', 'project': None, 'location': 'eu'}
+    with patch('genkit_google_genai._google.genai.client.Client') as ctor, pytest.raises(GenkitError) as raised:
+        _plugin_client(kwargs)
+
+    ctor.assert_not_called()
+    assert raised.value.status == 'FAILED_PRECONDITION'
+    assert 'express mode' in raised.value.message
+
+
+def test_express_mode_multi_region_with_project_builds_client() -> None:
+    """api_key plus a project on a multi-region is a valid client, not the express-mode error."""
+    kwargs = {'vertexai': True, 'api_key': 'k', 'project': 'menu-prod', 'location': 'eu'}
+    with patch('genkit_google_genai._google.genai.client.Client') as ctor:
+        _plugin_client(kwargs)
+
+    ctor.assert_called_once_with(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -128,3 +160,59 @@ async def test_gemini_resolve_request_client_missing_project_is_failed_precondit
 
     assert raised.value.status == 'FAILED_PRECONDITION'
     assert 'VertexAI(project=...)' in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_veo_request_client_missing_project_is_failed_precondition() -> None:
+    """Veo's per-request client reports a missing Vertex project the same way as Gemini's."""
+    model = VeoModel(
+        'veo-3.0-generate-001',
+        MagicMock(vertexai=True),
+        client_kwargs={'vertexai': True, 'api_key': None, 'project': None, 'location': 'us-central1'},
+    )
+    with (
+        patch(
+            'genkit_google_genai._models._veo.genai.Client', side_effect=ValueError('Project or API key must be set')
+        ),
+        pytest.raises(GenkitError) as raised,
+    ):
+        model._client_for_context(ModelContext(context={}), config={'api_version': 'v1'})
+
+    assert raised.value.status == 'FAILED_PRECONDITION'
+    assert 'VertexAI(project=...)' in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_virtual_try_on_request_client_missing_project_is_failed_precondition() -> None:
+    """Virtual Try-On's per-request client reports a missing Vertex project the same way as Gemini's."""
+    model = VirtualTryOnModel(
+        'virtual-try-on-preview-08-04',
+        MagicMock(vertexai=True),
+        client_kwargs={'vertexai': True, 'api_key': None, 'project': None, 'location': 'us-central1'},
+    )
+    with (
+        patch(
+            'genkit_google_genai._models._virtual_try_on.genai.Client',
+            side_effect=ValueError('Project or API key must be set'),
+        ),
+        pytest.raises(GenkitError) as raised,
+    ):
+        model._client_for_context(ModelContext(context={}), config={'api_version': 'v1'})
+
+    assert raised.value.status == 'FAILED_PRECONDITION'
+    assert 'VertexAI(project=...)' in raised.value.message
+
+
+@pytest.mark.asyncio
+async def test_veo_multi_region_override_without_project_is_failed_precondition() -> None:
+    """A multi-region location override with no project fails before the SDK sends a project-less request."""
+    model = VeoModel(
+        'veo-3.0-generate-001',
+        MagicMock(vertexai=True),
+        client_kwargs={'vertexai': True, 'api_key': None, 'project': None, 'location': 'us-central1'},
+    )
+    with patch('genkit_google_genai._models._veo.genai.Client') as ctor, pytest.raises(GenkitError) as raised:
+        model._client_for_context(ModelContext(context={}), config={'location': 'eu'})
+
+    ctor.assert_not_called()
+    assert raised.value.status == 'FAILED_PRECONDITION'

@@ -414,13 +414,55 @@ class TestDownloadMediaErrors:
                 await PartConverter.to_gemini(part)
 
 
-class TestPartValidationEdges:
-    """A malformed thought signature raises INVALID_ARGUMENT."""
+class TestThoughtSignatureDecoding:
+    """Signatures decode from standard or URL-safe base64; a bad one is dropped, not fatal."""
 
     @pytest.mark.asyncio
-    async def test_malformed_thought_signature_is_invalid_argument(self) -> None:
+    async def test_malformed_thought_signature_is_dropped_not_fatal(self) -> None:
         part = Part.from_text('hello', metadata={'thoughtSignature': '%%%not-valid-base64!'})
-        with pytest.raises(GenkitError) as raised:
-            await PartConverter.to_gemini(part)
-        assert raised.value.status == 'INVALID_ARGUMENT'
-        assert '%%%not-valid-base64!' not in raised.value.message
+
+        back = await PartConverter.to_gemini(part)
+
+        assert not isinstance(back, list)
+        assert back.text == 'hello'
+        assert back.thought_signature is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'part',
+        [
+            Part.from_text('hello', metadata={'thoughtSignature': 'skip_thought_signature_validator'}),
+            Part.from_tool_request(
+                'lookup_menu', {}, metadata={'thoughtSignature': 'skip_thought_signature_validator'}
+            ),
+        ],
+        ids=['text', 'tool_request'],
+    )
+    async def test_skip_validator_placeholder_round_trips(self, part: Part) -> None:
+        """Gemini's documented placeholder is URL-safe base64 and reaches the wire unchanged."""
+        back = await PartConverter.to_gemini(part)
+
+        assert not isinstance(back, list)
+        assert back.thought_signature is not None
+        assert (
+            back.model_dump(mode='json', exclude_none=True)['thought_signature'] == 'skip_thought_signature_validator'
+        )
+
+    @pytest.mark.asyncio
+    async def test_sdk_json_dump_signature_decodes(self) -> None:
+        """google-genai writes URL-safe base64 when it dumps a Part to JSON; that string decodes back."""
+        sig = bytes([0xFB, 0xFF, 0xBF, 0x00])
+        dumped = genai.types.Part(text='hi', thought_signature=sig).model_dump(mode='json')['thought_signature']
+        assert '-' in dumped or '_' in dumped
+
+        back = await PartConverter.to_gemini(Part.from_text('hi', metadata={'thoughtSignature': dumped}))
+
+        assert not isinstance(back, list)
+        assert back.thought_signature == sig
+
+    @pytest.mark.asyncio
+    async def test_unpadded_signature_decodes(self) -> None:
+        back = await PartConverter.to_gemini(Part.from_text('hi', metadata={'thoughtSignature': 'c2lnbg'}))
+
+        assert not isinstance(back, list)
+        assert back.thought_signature == b'sign'

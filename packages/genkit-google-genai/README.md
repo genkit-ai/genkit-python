@@ -247,7 +247,7 @@ logprobs, safety ratings) to the reply. Genkit keeps it on `response.custom`
 under the wire names: `custom['candidates'][i]` holds `groundingMetadata`,
 `urlContextMetadata`, `citationMetadata`, `logprobsResult`, `safetyRatings`,
 `avgLogprobs`, `finishMessage` and `tokenCount` for candidate `i`, and
-`custom['promptFeedback']` explains a blocked prompt. `custom` is `None` when
+`custom['promptFeedback']` explains a blocked prompt. `custom` is `{}` when
 Gemini sent neither. Streamed replies merge the chunks' metadata into the same
 shape.
 

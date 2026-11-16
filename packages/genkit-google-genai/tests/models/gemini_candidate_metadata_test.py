@@ -127,7 +127,8 @@ async def test_generate_without_metadata_leaves_custom_unset(mocker: MockerFixtu
 
     response = await gemini.generate(_request(), ModelContext())
 
-    assert response.custom in (None, {})
+    # ModelResponse fills an unset custom with {}, so callers never see None.
+    assert response.custom == {}
     assert response.finish_message is None
 
 
@@ -169,7 +170,7 @@ async def test_streaming_generate_keeps_trailing_grounding_under_candidates_and_
 async def test_streaming_generate_concatenates_logprobs_citations_and_merges_safety_ratings(
     mocker: MockerFixture,
 ) -> None:
-    """Logprobs and citations accumulate across chunks; safetyRatings update per category; scalars stay latest-wins."""
+    """Logprobs and citations accumulate across chunks; safetyRatings update per category."""
 
     def logprobs(token: str) -> genai_types.LogprobsResult:
         candidate = genai_types.LogprobsResultCandidate(token=token, log_probability=-0.1)
@@ -239,12 +240,13 @@ async def test_streaming_generate_concatenates_logprobs_citations_and_merges_saf
         {'category': 'HARM_CATEGORY_HATE_SPEECH', 'probability': 'NEGLIGIBLE'},
         {'category': 'HARM_CATEGORY_HARASSMENT', 'probability': 'LOW'},
     ]
-    assert cand0['avgLogprobs'] == -0.25
+    # One chosen token per chunk, so the reply's average weighs both chunks equally.
+    assert cand0['avgLogprobs'] == pytest.approx(-0.375)
 
 
 @pytest.mark.asyncio
 async def test_streaming_generate_merges_split_grounding_metadata_keys(mocker: MockerFixture) -> None:
-    """Gemini streams webSearchQueries/searchEntryPoint early and groundingChunks/groundingSupports later."""
+    """If Gemini ever splits groundingMetadata across chunks, the keys merge instead of the last chunk winning."""
 
     async def chunks() -> Any:  # noqa: ANN401
         yield genai_types.GenerateContentResponse(
@@ -319,3 +321,89 @@ async def test_generate_indexes_candidates_list_by_candidate_index(mocker: Mocke
             },
         ]
     }
+
+
+@pytest.mark.asyncio
+async def test_streaming_generate_sums_logprob_totals_and_token_counts(mocker: MockerFixture) -> None:
+    """logProbabilitySum and tokenCount add up across chunks; avgLogprobs is token-weighted."""
+
+    def logprobs(tokens: list[str], total: float) -> genai_types.LogprobsResult:
+        return genai_types.LogprobsResult(
+            chosen_candidates=[genai_types.LogprobsResultCandidate(token=t, log_probability=-0.1) for t in tokens],
+            log_probability_sum=total,
+        )
+
+    async def chunks() -> Any:  # noqa: ANN401
+        yield genai_types.GenerateContentResponse(
+            candidates=[
+                _candidate(
+                    'Pesto has ',
+                    logprobs_result=logprobs(['Pesto', 'has'], -1.0),
+                    avg_logprobs=-0.5,
+                    token_count=2,
+                )
+            ]
+        )
+        yield genai_types.GenerateContentResponse(
+            candidates=[
+                _candidate(
+                    'pine nuts.',
+                    finish_reason=genai_types.FinishReason.STOP,
+                    logprobs_result=logprobs(['pine', 'nuts', '.'], -0.6),
+                    avg_logprobs=-0.2,
+                    token_count=3,
+                )
+            ]
+        )
+
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content_stream.return_value = chunks()
+    gemini = GeminiModel('gemini-flash-latest', client)
+
+    response = await gemini.generate(_request(), ModelContext(streaming_callback=mocker.MagicMock()))
+
+    assert response.custom is not None
+    cand0 = response.custom['candidates'][0]
+    assert cand0['logprobsResult']['logProbabilitySum'] == pytest.approx(-1.6)
+    assert len(cand0['logprobsResult']['chosenCandidates']) == 5
+    assert cand0['tokenCount'] == 5
+    assert cand0['avgLogprobs'] == pytest.approx(-1.6 / 5)
+
+
+@pytest.mark.asyncio
+async def test_streaming_generate_drops_avg_logprobs_it_cannot_weigh(mocker: MockerFixture) -> None:
+    """Chunk averages with no token count or logprobs to weigh them by aren't reported as the reply's average."""
+
+    async def chunks() -> Any:  # noqa: ANN401
+        yield genai_types.GenerateContentResponse(candidates=[_candidate('Pesto ', avg_logprobs=-0.5)])
+        yield genai_types.GenerateContentResponse(
+            candidates=[_candidate('has pine nuts.', finish_reason=genai_types.FinishReason.STOP, avg_logprobs=-0.2)]
+        )
+
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content_stream.return_value = chunks()
+    gemini = GeminiModel('gemini-flash-latest', client)
+
+    response = await gemini.generate(_request(), ModelContext(streaming_callback=mocker.MagicMock()))
+
+    assert 'avgLogprobs' not in (response.custom or {}).get('candidates', [{}])[0]
+
+
+@pytest.mark.asyncio
+async def test_streaming_generate_keeps_single_chunk_avg_logprobs(mocker: MockerFixture) -> None:
+    """One chunk with avgLogprobs passes it through unchanged, as a one-shot call would."""
+
+    async def chunks() -> Any:  # noqa: ANN401
+        yield genai_types.GenerateContentResponse(candidates=[_candidate('Pesto ')])
+        yield genai_types.GenerateContentResponse(
+            candidates=[_candidate('has pine nuts.', finish_reason=genai_types.FinishReason.STOP, avg_logprobs=-0.2)]
+        )
+
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content_stream.return_value = chunks()
+    gemini = GeminiModel('gemini-flash-latest', client)
+
+    response = await gemini.generate(_request(), ModelContext(streaming_callback=mocker.MagicMock()))
+
+    assert response.custom is not None
+    assert response.custom['candidates'][0]['avgLogprobs'] == -0.2

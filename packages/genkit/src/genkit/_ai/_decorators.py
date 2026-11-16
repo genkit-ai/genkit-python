@@ -56,6 +56,9 @@ class _FlowDecorator:
     # - ty follows the typing spec's overload rule for Any: `(x: Any)` matches
     #   overloads with different returns, so ty types it Unknown. That's the
     #   best any arrangement can do there without breaking `(ctx: FlowContext)`.
+    # - The Callable[..., ...] catch-all is last. A shape that lands there
+    #   types Flow[Any, ...]; the typecheck contracts pin every other shape so
+    #   one can't fall through unnoticed.
     @overload
     def __call__(
         self, func: Callable[[FlowContext[ChunkT], object], Awaitable[OutputT]]
@@ -95,6 +98,11 @@ class _FlowDecorator:
 
     @overload
     def __call__(self, func: Callable[[], Awaitable[OutputT]]) -> Flow[None, OutputT]: ...
+
+    # Last: shapes the overloads above can't model, like a keyword-only
+    # context. The output stays typed; the input is Any.
+    @overload
+    def __call__(self, func: Callable[..., Awaitable[OutputT]]) -> Flow[Any, OutputT]: ...
 
     def __call__(self, func: Callable[..., Awaitable[Any]]) -> Flow[Any, Any, Any]:
         return define_flow(self._registry, func, self._name, self._description)
@@ -156,6 +164,11 @@ class _ToolDecorator:
 
     @overload
     def __call__(self, func: Callable[[], Awaitable[OutputT]]) -> Tool[None, OutputT]: ...
+
+    # Last: shapes the overloads above can't model, like a keyword-only
+    # context. The output stays typed; the input is Any.
+    @overload
+    def __call__(self, func: Callable[..., Awaitable[OutputT]]) -> Tool[Any, OutputT]: ...
 
     def __call__(self, func: Callable[..., Awaitable[Any]]) -> Tool[Any, Any, Any]:
         return define_tool(

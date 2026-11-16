@@ -389,6 +389,14 @@ class Genkit:
         /,
     ) -> Flow[None, OutputT]: ...
 
+    # Last: shapes the overloads above can't model, like a keyword-only context.
+    @overload
+    def flow(
+        self,
+        func: Callable[..., Awaitable[OutputT]],
+        /,
+    ) -> Flow[Any, OutputT]: ...
+
     def flow(
         self,
         name: str | Callable[..., Awaitable[Any]] | None = None,
@@ -576,6 +584,14 @@ class Genkit:
         func: Callable[[], Awaitable[OutputT]],
         /,
     ) -> Tool[None, OutputT]: ...
+
+    # Last: shapes the overloads above can't model, like a keyword-only context.
+    @overload
+    def tool(
+        self,
+        func: Callable[..., Awaitable[OutputT]],
+        /,
+    ) -> Tool[Any, OutputT]: ...
 
     def tool(
         self,

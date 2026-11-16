@@ -457,6 +457,17 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         input_schema: type[BaseModel] | dict[str, object] | None = None,
     ) -> None: ...
 
+    # Shapes the overloads above can't model, like a keyword-only context.
+    @overload
+    def __init__(
+        self: Tool[Any, _O, Any],
+        func: Callable[..., Awaitable[_O]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
     def __init__(
         self,
         func: Callable[..., Awaitable[Any]],

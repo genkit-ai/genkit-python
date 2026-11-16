@@ -138,6 +138,17 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
+    # Shapes the overloads above can't model, like a keyword-only context.
+    # InputT isn't bound, so it defaults to Any.
+    @overload
+    def __init__(
+        self,
+        func: Callable[..., Awaitable[OutputT]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
     def __init__(
         self,
         func: Callable[..., Awaitable[Any]],
@@ -267,6 +278,17 @@ def define_flow(
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[None, _FlowOutputT]: ...
+
+
+# Last: a shape the overloads above can't model, like a keyword-only
+# context. The output stays typed; the input is Any.
+@overload
+def define_flow(
+    registry: Registry,
+    func: Callable[..., Awaitable[_FlowOutputT]],
+    name: str | None = None,
+    description: str | None = None,
+) -> Flow[Any, _FlowOutputT]: ...
 
 
 def define_flow(

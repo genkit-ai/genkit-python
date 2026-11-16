@@ -42,7 +42,6 @@ from genkit.plugin_api import Action
         BackgroundAction.lookup,
         BackgroundModel.__init__,
         BackgroundModel.lookup,
-        GenerationUsage.from_messages,
     ],
     ids=lambda t: t.__qualname__,
 )
@@ -52,7 +51,7 @@ def test_public_annotations_resolve_at_runtime(target: object) -> None:
 
 
 def test_generation_usage_from_messages_counts_characters() -> None:
-    """from_messages still counts the request and reply after the signature change."""
+    """from_messages counts characters in the request messages and the reply."""
     usage = GenerationUsage.from_messages(
         [Message(role=Role.USER, content=[Part.from_text('Table for two')])],
         Message(role=Role.MODEL, content=[Part.from_text('Booked')]),

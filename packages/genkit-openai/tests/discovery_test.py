@@ -30,10 +30,10 @@ _FIXTURE = json.loads((Path(__file__).parent / 'testdata' / 'openai_listing_fixt
 _CHAT: list[str] = _FIXTURE['chat']
 _HIDDEN: list[str] = _FIXTURE['hidden']
 _OTHER: list[str] = _FIXTURE['other']
-_NO_TOOLS = set(_FIXTURE['tools']['never_on_chat_completions'])
+_NO_TOOLS = set(_FIXTURE['chat_without_tools'])
 
 # Not in the catalog, so discovery gives them generic info with no tools flag.
-_UNCATALOGED_CHAT_IDS = {'gpt-6-cyber', 'ft:gpt-4o-mini-2024-07-18:acme::abc123'}
+_UNCATALOGED_CHAT_IDS = {'gpt-6-cyber', 'gpt-6-cyber-2026-10-06', 'ft:gpt-4o-mini-2024-07-18:acme::abc123'}
 
 
 async def _listed() -> dict[str, Action]:

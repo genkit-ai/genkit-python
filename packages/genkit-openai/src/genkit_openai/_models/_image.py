@@ -100,8 +100,6 @@ def _limit_quality_options(model_name: str, custom_options: dict[str, Any]) -> N
             node['enum'] = [value for value in node['enum'] if value not in _MAX_QUALITY_VALUES]
 
 
-# Supported image generation models with their metadata. Other gpt-image
-# ids still resolve by name.
 _GPT_IMAGE_SUPPORTS = ModelSupports(
     media=False,
     output=['media'],
@@ -110,6 +108,8 @@ _GPT_IMAGE_SUPPORTS = ModelSupports(
     tools=False,
 )
 
+# Supported image generation models with their metadata. Other gpt-image
+# ids still resolve by name.
 SUPPORTED_IMAGE_MODELS: dict[str, ModelInfo] = {
     # Shutdown 2026-12-01.
     'gpt-image-1-mini': ModelInfo(
@@ -159,7 +159,7 @@ def _to_image_generate_params(
         raise GenkitError(
             status='INVALID_ARGUMENT',
             message=f'openai image: quality {quality!r} is not supported by {model_name}; '
-            'use low, medium, high or auto',
+            f"use low, medium, high or auto, or pass extra={{'quality': {quality!r}}} to send it anyway",
         )
 
     # Start with required params.

@@ -453,8 +453,8 @@ class OpenAIModel:
             A dictionary representing the response format, which may include:
             - 'type': 'json_schema' and a validated JSON Schema if a schema is provided.
             - 'type': 'json_object' if the model supports JSON mode, or the id
-              is not in the catalog (fine-tune, dated snapshot), and no schema
-              is provided.
+              is not in the catalog (such as a fine-tune), and no schema is
+              provided.
             - 'type': 'text' as the default fallback.
         """
         if request.output_format == 'json':

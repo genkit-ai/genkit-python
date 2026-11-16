@@ -66,9 +66,12 @@ tools only through the Responses API.
 
 The Dev UI lists the models your key can see on `/v1/models`, but only the ones
 this plugin can call: realtime, live, audio, moderation, Sora, Responses-only
-(such as computer-use and deep-research) and legacy completion models are left
-out. A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and
-stage of its alias.
+(such as computer-use, deep-research and gpt-oss) and legacy completion models
+are left out. The filter matches on the model id, so it applies on any host, including
+a custom `base_url`: ids such as `perplexity/sonar-deep-research`,
+`qwen-audio-turbo` and `dall-e-3` are hidden there too. A hidden id still
+resolves by name. A dated snapshot such as `gpt-5-2025-08-07` takes the
+capabilities and stage of its alias.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and

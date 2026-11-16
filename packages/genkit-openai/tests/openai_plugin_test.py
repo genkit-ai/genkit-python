@@ -122,6 +122,27 @@ def test_gpt_6_astra_catalog_entry() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ('model', 'media', 'tools', 'system_role'),
+    [
+        ('o3', True, True, False),
+        ('gpt-5-search-api', False, False, True),
+    ],
+)
+def test_o3_and_search_catalog_entries_declare_their_limits(
+    model: KnownGpt, media: bool, tools: bool, system_role: bool
+) -> None:
+    """o3 has no system role, and gpt-5-search-api takes neither media nor function tools."""
+    assert SUPPORTED_OPENAI_MODELS[model].supports == ModelSupports(
+        multiturn=True,
+        media=media,
+        tools=tools,
+        system_role=system_role,
+        output=['json', 'text'],
+        constrained=ConstrainedSupport.ALL,
+    )
+
+
 def test_catalog_models_all_accept_json_schema() -> None:
     """Every catalog chat model takes response_format json_schema, so none keeps the prompt's schema text."""
     for name, info in SUPPORTED_OPENAI_MODELS.items():
@@ -203,19 +224,36 @@ def test_new_chat_models_declare_chat_completions_tool_support(model: KnownGpt, 
     assert supports.system_role is True
 
 
-@pytest.mark.parametrize(
-    'model',
-    ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'gpt-5.1', 'gpt-5.4-nano', 'gpt-4o', 'gpt-4.1'],
-)
-def test_models_with_announced_shutdown_are_deprecated(model: KnownGpt) -> None:
-    """Catalog ids OpenAI has scheduled for shutdown carry stage=deprecated."""
-    assert SUPPORTED_OPENAI_MODELS[model].stage == ModelStage.DEPRECATED
-
-
-@pytest.mark.parametrize('model', ['gpt-5.2', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-6.1-terra'])
-def test_current_models_have_no_stage(model: KnownGpt) -> None:
-    """Models without a shutdown date leave stage unset."""
-    assert SUPPORTED_OPENAI_MODELS[model].stage is None
+def test_catalog_stages_match_announced_shutdowns() -> None:
+    """A catalog id carries stage=deprecated exactly when OpenAI has announced its shutdown."""
+    deprecated = ModelStage.DEPRECATED
+    assert {name: info.stage for name, info in SUPPORTED_OPENAI_MODELS.items()} == {
+        'gpt-4o': deprecated,
+        'gpt-4o-mini': deprecated,
+        'gpt-4o-mini-2024-07-18': deprecated,
+        'gpt-4.1': deprecated,
+        'gpt-4.1-mini': deprecated,
+        'o3': deprecated,
+        'gpt-5': deprecated,
+        'gpt-5-mini': deprecated,
+        'gpt-5-nano': deprecated,
+        'gpt-5.1': deprecated,
+        'gpt-5.2': None,
+        'gpt-5.4': None,
+        'gpt-5.4-mini': None,
+        'gpt-5.4-nano': deprecated,
+        'gpt-5.5': None,
+        'gpt-5.6-sol': None,
+        'gpt-5.6-terra': None,
+        'gpt-5.6-luna': None,
+        'gpt-5-search-api': None,
+        'chat-latest': None,
+        'gpt-6-astra': None,
+        'gpt-6-sol': None,
+        'gpt-6-luna': None,
+        'gpt-6.1-sol': None,
+        'gpt-6.1-terra': None,
+    }
 
 
 @pytest.mark.asyncio
@@ -352,9 +390,9 @@ async def test_unlisted_chat_model_resolves_with_default_supports() -> None:
     assert model_meta['supports'] == {'multiturn': True}
 
 
-@pytest.mark.parametrize('model', ['gpt-6-rosalind', 'gpt-rosalind-research'])
-def test_responses_only_rosalind_ids_are_known_unsupported(model: str) -> None:
-    """Discovery hides the Responses-only Rosalind ids, which Chat Completions does not serve."""
+@pytest.mark.parametrize('model', ['gpt-6-rosalind', 'gpt-rosalind-research', 'gpt-oss-120b', 'gpt-oss-20b'])
+def test_responses_only_ids_are_known_unsupported(model: str) -> None:
+    """Discovery hides the Responses-only Rosalind and gpt-oss ids, which Chat Completions does not serve."""
     assert _is_known_unsupported(model)
 
 
@@ -811,8 +849,9 @@ def _json_completion(content: str = '{"a": 1}') -> ChatCompletion:
 
 
 @pytest.mark.asyncio
-async def test_openai_unlisted_model_json_request_sends_json_object() -> None:
-    """ai.generate(model='openai/ft:gpt-4o:acme', output_format='json') still sends json_object."""
+@pytest.mark.parametrize('model', ['ft:gpt-4o:acme', 'gpt-4'])
+async def test_openai_unlisted_model_json_request_sends_json_object(model: str) -> None:
+    """A fine-tune or shut-down id with generic info still sends json_object for schema-less JSON output."""
     captured: dict[str, Any] = {}
     client = MagicMock()
 
@@ -823,7 +862,7 @@ async def test_openai_unlisted_model_json_request_sends_json_object() -> None:
     client.chat.completions.create = AsyncMock(side_effect=create)
     ai = Genkit(plugins=[_plugin_with(client)])
 
-    await ai.generate(model='openai/ft:gpt-4o:acme', prompt='give me json', output_format='json')
+    await ai.generate(model=f'openai/{model}', prompt='give me json', output_format='json')
 
     assert captured['response_format'] == {'type': 'json_object'}
 

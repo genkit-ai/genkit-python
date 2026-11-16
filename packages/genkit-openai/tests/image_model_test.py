@@ -345,7 +345,7 @@ class TestSupportedImageModels:
     async def test_gpt_image_without_max_quality_fails_before_the_api_call(
         self, name: str, quality: _Quality, typed: bool
     ) -> None:
-        """xhigh and max fail with INVALID_ARGUMENT naming the field and model, and never reach the Images API."""
+        """xhigh and max fail with INVALID_ARGUMENT naming the field, the model and the extra override."""
         ai, client = _genkit_with_image_client()
         config = OpenAIGptImageConfig(quality=quality) if typed else {'quality': quality}
 
@@ -356,7 +356,20 @@ class TestSupportedImageModels:
         assert response.error.status == 'INVALID_ARGUMENT'
         assert f"quality '{quality}'" in response.error.message
         assert name in response.error.message
+        assert f"extra={{'quality': '{quality}'}}" in response.error.message
         client.images.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('quality', ['xhigh', 'max'])
+    async def test_gpt_image_quality_in_extra_skips_the_local_check(self, quality: str) -> None:
+        """A quality in extra reaches the Images API on a model the local check refuses it for."""
+        ai, client = _genkit_with_image_client()
+
+        await ai.generate(
+            model='openai/gpt-image-2', prompt='a lighthouse at dusk', config={'extra': {'quality': quality}}
+        )
+
+        assert client.images.generate.call_args.kwargs['extra_body'] == {'quality': quality}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

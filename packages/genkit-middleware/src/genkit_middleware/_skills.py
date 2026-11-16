@@ -33,9 +33,9 @@ import re
 import stat
 import unicodedata
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, overload
 
 import yaml
 from pydantic import BaseModel as PydanticBaseModel, Field
@@ -62,6 +62,7 @@ _FRONTMATTER_FENCE = re.compile(r'^[ \t]*---[ \t]*\r?$', re.MULTILINE)
 
 _O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 _O_NONBLOCK = getattr(os, 'O_NONBLOCK', 0)
+_UNSET: Any = cast(Any, object())
 
 
 class _UseSkillInput(PydanticBaseModel):
@@ -150,6 +151,26 @@ class Skills(Middleware[SkillsConfig]):
     name = 'skills'
     description = 'Provides access to skill library for specialized instructions'
     _cached_scan: tuple[weakref.ref[MiddlewareContext], dict[str, dict[str, str]]] | None = None
+
+    @overload
+    def __init__(
+        self,
+        *,
+        skill_paths: Sequence[str] = ...,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, *, config: SkillsConfig) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        skill_paths: Sequence[str] = _UNSET,
+        config: SkillsConfig | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        fields = {'skill_paths': skill_paths} if skill_paths is not _UNSET else {}
+        super().__init__(config=config, **fields, **kwargs)
 
     def _scan_skills(self) -> dict[str, dict[str, str]]:
         skills: dict[str, dict[str, str]] = {}

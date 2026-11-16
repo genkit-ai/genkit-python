@@ -14,7 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from genkit import Genkit, Interrupt, Message, ModelResponse, Part, Role, ToolContext
-from genkit._core._action import Action, ActionRunContext
+from genkit._core._action import Action, ActionContext
 from genkit._core._telemetry._attrs import metadata_key
 from genkit._core._telemetry._http import ActiveSpan
 from genkit._core._telemetry._instrumentation import (
@@ -439,7 +439,7 @@ async def test_action_context_telemetry_redacts_auth_and_secrets(exporter) -> No
     """The Context panel hides identity and keys. The live action still sees them."""
     seen: dict[str, object] = {}
 
-    async def peek(_input: object, ctx: ActionRunContext) -> str:
+    async def peek(_input: object, ctx: ActionContext) -> str:
         seen['secrets'] = ctx.context['secrets']
         seen['auth'] = ctx.context['auth']
         return 'ok'
@@ -478,7 +478,7 @@ async def test_action_context_telemetry_redacts_auth_and_secrets(exporter) -> No
 async def test_action_context_telemetry_whole_bag_redaction(exporter) -> None:
     """Top-level auth and secrets bags are replaced in full regardless of key names."""
 
-    async def noop(_input: object, _ctx: ActionRunContext) -> str:
+    async def noop(_input: object, _ctx: ActionContext) -> str:
         return 'ok'
 
     action = Action(

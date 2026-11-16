@@ -439,13 +439,13 @@ async def test_dev_collector_nested_actions_share_trace_id(
     assert inner.span_id != outer.span_id
 
 
-def _start_collector() -> tuple[HTTPServer, list[str]]:
-    received: list[str] = []
+def _start_collector() -> tuple[HTTPServer, list[tuple[str, str]]]:
+    received: list[tuple[str, str]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             n = int(self.headers.get('Content-Length', '0'))
-            received.append(self.rfile.read(n).decode())
+            received.append((self.path, self.rfile.read(n).decode()))
             self.send_response(200)
             self.end_headers()
 
@@ -457,8 +457,8 @@ def _start_collector() -> tuple[HTTPServer, list[str]]:
     return server, received
 
 
-def _log_posts_with(posts: list[str], text: str) -> list[str]:
-    return [p for p in list(posts) if 'resourceLogs' in p and text in p]
+def _log_posts_with(posts: list[tuple[str, str]], text: str) -> list[str]:
+    return [body for path, body in list(posts) if path == '/api/otlp' and 'resourceLogs' in body and text in body]
 
 
 def test_reset_instrumentation_stops_dev_ui_log_export(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -485,17 +485,51 @@ def test_reset_instrumentation_stops_dev_ui_log_export(monkeypatch: pytest.Monke
         server.server_close()
 
 
-def _posted_spans(posts: list[str], name: str) -> list[dict[str, Any]]:
+def _posted_spans(posts: list[tuple[str, str]], name: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    for body in list(posts):
-        for resource in json.loads(body).get('resourceSpans', []):
-            for scope in resource['scopeSpans']:
-                found.extend(span for span in scope['spans'] if span['name'] == name)
+    for path, body in list(posts):
+        if path != '/api/traces':
+            continue
+        found.extend(span for span in json.loads(body)['spans'].values() if span['displayName'] == name)
     return found
 
 
 def _attr(span: dict[str, Any], key: str) -> object:
-    return next(a['value']['stringValue'] for a in span['attributes'] if a['key'] == key)
+    return span['attributes'][key]
+
+
+def test_dev_ui_spans_post_trace_data_and_logs_post_otlp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spans POST TraceData to /api/traces with the exception event; logs still POST OTLP to /api/otlp."""
+    server, posts = _start_collector()
+    monkeypatch.setenv(GENKIT_ENV, 'dev')
+    monkeypatch.setenv('GENKIT_TELEMETRY_SERVER', f'http://127.0.0.1:{server.server_address[1]}')
+
+    async def check_allergens(_span: SpanContext) -> None:
+        get_logger('kitchen').info('checking allergens for order 1042')
+        raise ValueError('allergen db unavailable')
+
+    try:
+        Genkit()
+        with pytest.raises(ValueError, match='allergen db unavailable'):
+            asyncio.run(run_in_new_span('checkAllergens', check_allergens))
+        deadline = time.monotonic() + 5
+        while not _log_posts_with(posts, 'order 1042') and time.monotonic() < deadline:
+            time.sleep(0.05)
+        reset_instrumentation()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert {path for path, _ in posts} == {'/api/traces', '/api/otlp'}
+    assert all('resourceSpans' not in body for _, body in posts)
+    assert _log_posts_with(posts, 'order 1042')
+    started, ended = _posted_spans(posts, 'checkAllergens')
+    assert started['endTime'] == 0
+    assert started['timeEvents'] == {'timeEvent': []}
+    assert ended['endTime'] > 0
+    (event,) = ended['timeEvents']['timeEvent']
+    assert event['annotation']['description'] == 'exception'
+    assert event['annotation']['attributes']['exception.message'] == 'allergen db unavailable'
 
 
 @pytest.mark.asyncio
@@ -548,7 +582,7 @@ class _MemorySink:
     def __init__(self) -> None:
         self._spans: list[ActiveSpan] = []
 
-    def export_spans(self, spans: list[ActiveSpan], *, resource_attributes: dict[str, object]) -> None:
+    def export_spans(self, spans: list[ActiveSpan]) -> None:
         self._spans.extend(spans)
 
     def flush(self) -> None:

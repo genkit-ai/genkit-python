@@ -27,6 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
+from numbers import Integral
 from typing import Any, ClassVar, Final, Generic, Literal, TypeGuard, cast, get_args
 
 from pydantic import (
@@ -317,19 +318,20 @@ ConfigT = TypeVar('ConfigT', bound=ModelConfig, default=ModelConfig)
 # because invariant generics forbid subtyping on the type parameter: bare
 # ModelRef must mean ModelRef[Any] to accept any typed ref.
 ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, default=Any)
-# ModelRequest[X], EmbedRequest[X] and the evaluator requests take a pydantic
-# model class; __class_getitem__ rejects the rest. Not bound to BaseModel: type
-# checkers would then reject the common bare ModelRequest(config={...}), where
-# the config is solved as a dict. Invariant: config is writable, so
+# ModelRequest[X] and EmbedRequest[X] take a pydantic model class;
+# __class_getitem__ rejects the rest. Not bound to BaseModel: type checkers
+# would then reject the common bare ModelRequest(config={...}), where the
+# config is solved as a dict. Invariant: config is writable, so
 # ModelRequest[GeminiConfig] is not a ModelRequest[ModelConfig] you can assign
-# a ModelConfig into. Defaults to Any so bare ModelRequest means
-# ModelRequest[Any], and Callable[[ModelRequest], ...] accepts a fn typed
-# ModelRequest[GeminiConfig].
+# a ModelConfig into.
+#
+# Both default to Any, the way a bare generic does in Python (list is
+# list[Any]). A helper annotated with bare ModelRequest or EmbedRequest then
+# accepts a typed request, and Callable[[ModelRequest], ...] accepts a fn
+# typed ModelRequest[GeminiConfig]. At runtime an untyped request still gets
+# its config / options as a dict (see check_options_value).
 ModelRequestConfigT = TypeVar('ModelRequestConfigT', default=Any)
-# Bare EmbedRequest / evaluator request options are always a dict at runtime, so the
-# default says so. Fn aliases take EmbedRequest[Any] / EvaluatorRequest[Any] so a fn
-# typed EmbedRequest[CrmEmbedConfig] still fits them.
-RequestOptionsT = TypeVar('RequestOptionsT', default=dict[str, Any])
+RequestOptionsT = TypeVar('RequestOptionsT', default=Any)
 
 
 def declared_config_type(cls: type) -> type[BaseModel] | None:
@@ -926,6 +928,7 @@ def reject_unanswered_interrupts(
                     f'resume part for {name!r} is still an interrupt; '
                     'use Part.restart(...) or Part.respond(...) before generate.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )
     for part in respond or []:
         if part.tool_request is not None and part.tool_response is None:
@@ -933,6 +936,7 @@ def reject_unanswered_interrupts(
             raise GenkitError(
                 status='INVALID_ARGUMENT',
                 message=(f'resume_respond got the paused request for {name!r}; answer it with Part.respond(output)'),
+                reason=ErrorReason.INVALID_RESUME,
             )
 
 
@@ -974,6 +978,38 @@ class Message(GenkitModel):
         return [p for p in self.tool_requests if p.metadata and p.metadata.get('interrupt')]
 
 
+def check_max_turns(max_turns: object) -> None:
+    """Validate that ``max_turns`` is a whole, non-negative count of tool rounds.
+
+    ``True`` would pass as 1 and ``nan`` would fail deep in validation, so
+    both get the same INVALID_ARGUMENT as a negative count. ``3.0`` (what
+    dotprompt's float field carries) and ``numbers.Integral`` values (such as
+    ``np.int64``) are accepted.
+    """
+    if max_turns is None:
+        return
+    if isinstance(max_turns, bool):
+        whole = False
+    elif isinstance(max_turns, Integral):
+        whole = True
+    elif isinstance(max_turns, float):
+        whole = max_turns.is_integer()
+    else:
+        whole = False
+    if not whole:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns must be a whole number, got {max_turns!r}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
+    if cast(float, max_turns) < 0:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns cannot be negative, got {max_turns}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
+
+
 class GenerateActionOptions(GenkitModel):
     """Generate options with messages as list[Message] for type-safe use with ai.generate()."""
 
@@ -990,6 +1026,12 @@ class GenerateActionOptions(GenkitModel):
     max_turns: float | None = None
     step_name: str | None = None
     use: list[MiddlewareRef] | None = None
+
+    @field_validator('max_turns', mode='before')
+    @classmethod
+    def _check_max_turns(cls, v: object) -> object:
+        check_max_turns(v)
+        return v
 
     @field_validator('messages', mode='before')
     @classmethod
@@ -1126,8 +1168,17 @@ def _untyped_options_schema(schema: JsonDict, cls: type) -> None:
 class EmbedRequest(GenkitModel, Generic[RequestOptionsT]):
     """Embed request whose documents are the public Document type.
 
-    Bare ``EmbedRequest`` gives the fn ``options`` as a dict.
-    ``EmbedRequest[CrmEmbedConfig]`` gives it a validated ``CrmEmbedConfig``.
+    What ``options`` holds depends on how the embedder annotates ``request``:
+
+    * **No annotation**: Genkit infers ``EmbedRequest[Cfg]`` from the
+      embedder's Pydantic ``config_schema``, so ``options`` is a ``Cfg``.
+    * ``EmbedRequest[CrmEmbedConfig]``: ``options`` is a validated
+      ``CrmEmbedConfig``.
+    * Bare ``EmbedRequest``: ``options`` is a ``dict``. An explicit annotation
+      is honored as written, the same as ``ModelRequest``.
+
+    Bare ``EmbedRequest`` means ``EmbedRequest[Any]`` to type checkers, so a
+    helper annotated with it accepts any typed request.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(json_schema_extra=_untyped_options_schema)

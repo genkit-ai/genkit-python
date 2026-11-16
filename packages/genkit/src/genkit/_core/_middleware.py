@@ -18,12 +18,21 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar, Generic, NamedTuple, Protocol, cast, get_args, get_origin
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+)
+from pydantic_core import PydanticSerializationError
 from typing_extensions import TypeVar
 
 from genkit._core._action import Action
@@ -145,15 +154,19 @@ def _dump_middleware_ref_config(config: BaseModel) -> dict[str, Any] | None:
     """Dump a middleware config for ``MiddlewareRef`` using keys the class validates.
 
     Excludes ``@computed_field``s and falls back to the validation alias or
-    field name when ``serialization_alias`` is output-only.
+    field name when ``serialization_alias`` is output-only. Returns ``None``
+    when the config contains non-JSON values (such as a callable or client).
     """
     cfg_cls = type(config)
     computed = set(cfg_cls.model_computed_fields)
-    dumped = config.model_dump(exclude_none=True, by_alias=True, mode='json', exclude=computed)
-    spellings = _config_key_spellings(cfg_cls)
-    if spellings is None or all(k in spellings for k in dumped):
-        return dumped or None
-    raw = config.model_dump(exclude_none=True, by_alias=False, mode='json', exclude=computed)
+    try:
+        dumped = config.model_dump(exclude_none=True, by_alias=True, mode='json', exclude=computed)
+        spellings = _config_key_spellings(cfg_cls)
+        if spellings is None or all(k in spellings for k in dumped):
+            return dumped or None
+        raw = config.model_dump(exclude_none=True, by_alias=False, mode='json', exclude=computed)
+    except PydanticSerializationError:
+        return None
     out: dict[str, Any] = {}
     for name, val in raw.items():
         info = cfg_cls.model_fields.get(name)
@@ -436,6 +449,31 @@ class Middleware(Generic[TConfig]):
 
     ``self.config`` is set once at construction. The attribute is read-only;
     treat the config object as read-only too (Pydantic models are not frozen).
+
+    Choose where to store state based on its lifetime:
+
+        * **Shared across all requests** (e.g., an audit client, rate limiter,
+          or compiled regex): set on ``self`` in ``__init__``.
+        * **Scoped to one ``generate()`` call** (e.g., retry counters or loop
+          budgets): use local variables inside ``wrap_generate``.
+        * **Scoped to one turn or tool call** (e.g., per-call timing or header
+          injection): use local variables inside ``wrap_model`` or ``wrap_tool``.
+        * **Shared between hooks in one ``generate()`` call** (e.g., recording
+          a tool call in ``wrap_tool`` and reading it in the next ``wrap_model``
+          turn): pass it through ``ctx.context``, or store a fresh container on
+          ``self`` in ``__copy__``.
+
+    Per-request containers via ``__copy__``:
+        Genkit calls ``copy.copy(mw)`` once at the start of each ``generate()``
+        call. Because a shallow copy shares any ``list`` or ``dict`` created in
+        ``__init__`` across concurrent requests, override ``__copy__`` when you
+        need a fresh per-request container without re-running ``__init__``::
+
+            def __copy__(self) -> Self:
+                clone = type(self).__new__(type(self))
+                clone.__dict__.update(self.__dict__)
+                clone._seen_tools = []  # isolated per generate() call
+                return clone
     """
 
     name: ClassVar[str] = ''
@@ -477,6 +515,7 @@ class Middleware(Generic[TConfig]):
         # Handle the case where no config type is specified, e.g. class Logging(Middleware):
         # This means there is no user-facing configuration for the middleware.
         cls.Config = config_cls or _EmptyMiddlewareConfig
+        _reject_legacy_hooks(cls)
 
     def __init__(self, *, config: TConfig | None = None, **kwargs: Any) -> None:  # noqa: ANN401
         if config is not None:
@@ -547,9 +586,48 @@ class Middleware(Generic[TConfig]):
         return await next_fn(params, ctx)
 
 
+# 0.12 hook names and their 0.13+ replacements.
+_LEGACY_HOOKS: dict[str, str] = {'model': 'wrap_model', 'generate': 'wrap_generate', 'tool': 'wrap_tool'}
+
+
+def _reject_legacy_hooks(cls: type[Middleware]) -> None:
+    """Fail at class definition when a 0.12 hook name would be a silent no-op.
+
+    A guardrail written as ``async def model(self, req, ctx, next)`` inherits
+    the no-op ``wrap_model`` and never runs. Only an ``async def`` with the
+    0.12 hook shape (self plus three positional parameters) is rejected, so a
+    helper like ``def tool(self, name)``, a property, or an attribute stays
+    legal, as does defining both names.
+    """
+    for legacy, hook in _LEGACY_HOOKS.items():
+        if not _looks_like_legacy_hook(cls.__dict__.get(legacy)):
+            continue
+        if getattr(cls, hook) is not getattr(Middleware, hook):
+            continue
+        raise TypeError(
+            f'{cls.__name__} defines `{legacy}()`, a 0.12 middleware hook that no longer runs. '
+            f'Rename it to `{hook}(self, params, ctx, next_fn)`.'
+        )
+
+
+def _looks_like_legacy_hook(fn: object) -> bool:
+    """True for ``async def name(self, req, ctx, next)``, the 0.12 hook shape."""
+    if not inspect.iscoroutinefunction(fn):
+        return False
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    params = [p for p in inspect.signature(cast(Callable[..., Any], fn)).parameters.values() if p.kind in positional]
+    return len(params) == 4
+
+
 def _copy_middleware_instance(impl: Middleware) -> Middleware:
-    """Return a fresh instance with the same config; internal hook state is not copied."""
-    return type(impl)(config=impl._config.model_copy(deep=True))
+    """Per-call shallow copy of a middleware instance.
+
+    Keeps ``__init__`` state and the config object as the caller built them, so
+    a custom ``__init__``, a client, or a ``re.Pattern`` with flags survives.
+    Rebinding an attribute in a hook does not leak into the caller's instance;
+    mutating a shared container does, by design.
+    """
+    return copy.copy(impl)
 
 
 class MiddlewareDef(Protocol):

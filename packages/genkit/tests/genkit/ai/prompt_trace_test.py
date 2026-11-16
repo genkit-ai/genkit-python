@@ -198,6 +198,8 @@ async def test_prompt_whose_model_fails_shows_the_cause_on_the_prompt_span(expor
     assert prompt_span.status_code == 2
     assert [s.name for s in spans if s.attributes.get(Attr.IS_FAILURE_SOURCE)] == [MODEL]
     assert '"finishReason":"failed"' in str(prompt_span.attributes[Attr.OUTPUT])
+    # The Traces tab titles the span from this, not "Error".
+    assert prompt_span.exception == {'exception.message': 'fake model failure'}
 
 
 @pytest.mark.asyncio

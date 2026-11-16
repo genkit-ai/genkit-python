@@ -162,7 +162,7 @@ async def run_tool_request(
     token_meta = _tool_resumed_metadata.set(resumed_meta)
     token_input = _tool_original_input.set(original_input)
     sink = _ScopedToolChunkSink(tool_request_part, on_tool_chunk) if on_tool_chunk is not None else None
-    run_context = dict(ctx.context) if ctx and ctx.context else None
+    run_context = dict(ctx.context) if ctx is not None and ctx.context is not None else None
     telemetry_labels = cast(dict[str, object], dict(ctx.telemetry_labels)) if ctx and ctx.telemetry_labels else None
     try:
         return (

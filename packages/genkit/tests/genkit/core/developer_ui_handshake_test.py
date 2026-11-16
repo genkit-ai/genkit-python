@@ -278,11 +278,11 @@ def test_poster_reuses_one_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     posted: list[str] = []
     monkeypatch.setattr(http_telemetry, 'post_json', lambda *, url, body: posted.append(body))
     before = set(threading.enumerate())
-    sink = CollectorHttpSink('http://127.0.0.1:4041/api/otlp')
+    sink = CollectorHttpSink('http://127.0.0.1:4041/api/traces')
     span = ActiveSpan(trace_id='t' * 32, span_id='s' * 16, parent_span_id=None, name='x', start_time_unix_nano=1)
     try:
         for _ in range(200):
-            sink.export_spans([span], resource_attributes={})
+            sink.export_spans([span])
         sink.flush()
 
         assert len(posted) == 200
@@ -300,7 +300,7 @@ async def test_dev_ui_run_flush_flushes_dev_ui_collector_only() -> None:
         def __init__(self) -> None:
             self.flushes = 0
 
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -335,7 +335,7 @@ async def test_dev_ui_run_flush_ignores_broken_collector_sink() -> None:
     """A raising Dev UI collector sink does not fail reflection v2 flush_tracing."""
 
     class BrokenSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:

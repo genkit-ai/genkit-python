@@ -76,7 +76,7 @@ from genkit_openai._models._model_info import (
     KnownGpt,
     get_default_openai_model_info,
 )
-from genkit_openai._models._utils import reraise_openai_error
+from genkit_openai._models._utils import _base_id, reraise_openai_error
 from genkit_openai._secrets import context_api_key
 from genkit_openai._typing import OpenAIConfig
 
@@ -178,6 +178,7 @@ def _classify_model(name: str) -> _ModelType:
     Returns:
         The classified model type.
     """
+    name = _base_id(name)
     if 'embed' in name:
         return _ModelType.EMBEDDER
     if _is_gpt_image(name) or 'dall-e' in name:
@@ -200,13 +201,14 @@ def _undated(name: str) -> str:
 _UNSUPPORTED_MODEL_PATTERN = re.compile(
     r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind|diarize'
     r'|^gpt-live-|^gpt-audio'
-    r'|^(ft:)?(ada|babbage|curie|davinci)\b'
+    r'|^(ada|babbage|curie|davinci)\b'
 )
 _LISTED_EXCEPTIONS = frozenset({'gpt-6-cyber'})
 
 
 def _is_known_unsupported(name: str) -> bool:
     """Report whether discovery hides a model id because no action in this plugin can serve it."""
+    name = _base_id(name)
     if _undated(name) in _LISTED_EXCEPTIONS:
         return False
     return _UNSUPPORTED_MODEL_PATTERN.search(name) is not None
@@ -339,7 +341,9 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
         return info
     if supports := _RETIRED_CHAT_MODEL_SUPPORTS.get(name):
         return ModelInfo(label=f'OpenAI - {name}', supports=supports)
-    base = name.split(':')[1] if name.startswith('ft:') else _undated(name)
+    base = _base_id(name)
+    if base == name:
+        base = _undated(name)
     if base in (name, '') or (info := _known_chat_model_info(base)) is None:
         return None
     return info.model_copy(update={'label': f'OpenAI - {name}'})

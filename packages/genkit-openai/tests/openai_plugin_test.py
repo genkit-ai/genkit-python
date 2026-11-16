@@ -35,6 +35,7 @@ from genkit_openai._openai_plugin import (
     _chat_model_info,
     _classify_model,
     _is_known_unsupported,
+    _is_listed,
     _ModelType,
 )
 from openai import APIConnectionError, APIStatusError, APITimeoutError
@@ -412,6 +413,52 @@ def test_unknown_snapshots_and_fine_tunes_get_generic_info(model: str) -> None:
     info = _chat_model_info(model)
     assert info.supports == ModelSupports(multiturn=True)
     assert info.stage is None
+
+
+_LISTED_CHAT_FINE_TUNES = [
+    'ft:gpt-4o-mini-2024-07-18:acme:support-pro-v2:abc',
+    'ft:gpt-4o-mini-2024-07-18:acme:pro:abc',
+    'ft:gpt-4.1:acme:realtime-x:abc',
+    'ft:gpt-4.1:acme:codex-helper:abc',
+    'ft:gpt-4.1:acme:moderation-bot:abc',
+    'ft:gpt-4.1:acme:image-captioner:abc',
+    'ft:gpt-4.1:acme:tts-helper:abc',
+    'ft:gpt-4.1:acme:embed-ranker:abc',
+    'ft:gpt-4.1:acme:transcribe-fix:abc',
+    'ft:gpt-4.1:acme:plain:abc',
+]
+
+
+@pytest.mark.parametrize(
+    ('model', 'listed'),
+    [
+        ('ft:babbage-002:org:sfx:id', False),
+        ('ft:davinci-002:org::abc', False),
+        *[(model, True) for model in _LISTED_CHAT_FINE_TUNES],
+    ],
+)
+def test_fine_tune_is_judged_by_its_base_id_not_its_suffix(model: str, listed: bool) -> None:
+    """A user suffix such as 'tts-helper' or 'support-pro-v2' does not change a fine-tune's type or listing."""
+    model_type = _classify_model(model)
+
+    assert model_type == _ModelType.CHAT
+    assert _is_listed(model, model_type) is listed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model', _LISTED_CHAT_FINE_TUNES)
+async def test_fine_tune_with_non_chat_suffix_resolves_as_chat(model: str) -> None:
+    """resolve() and OpenAI.gpt() serve a fine-tune as a chat model, whatever its suffix says."""
+    plugin = OpenAI(api_key='test-key')
+
+    action = await plugin.resolve(ActionKind.MODEL, model)
+
+    assert action is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    assert 'frequencyPenalty' in model_meta['customOptions']['properties']
+    assert model_meta['supports']['tools'] is True
+    assert await plugin.resolve(ActionKind.EMBEDDER, model) is None
+    assert OpenAI.gpt(model).name == f'openai/{model}'
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,24 @@ async def test_get_openai_config_uses_max_completion_tokens_for_reasoning_models
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_name', ['ft:gpt-4o-mini-2024-07-18:acme:o3-style:x1', 'openai/ft:gpt-4.1:acme:gpt-5-ish:x1']
+)
+async def test_fine_tune_token_field_follows_its_base_model_not_its_suffix(model_name: str) -> None:
+    """A fine-tune of a non-reasoning model keeps max_tokens even when its suffix names a reasoning model."""
+    model = OpenAIModel(model=model_name, client=MagicMock())
+    request = ModelRequest(
+        messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
+        config=OpenAIConfig(max_output_tokens=32),
+    )
+
+    body = await model._get_openai_request_config(request)
+
+    assert body['max_tokens'] == 32
+    assert 'max_completion_tokens' not in body
+
+
+@pytest.mark.asyncio
 async def test_get_openai_config_keeps_max_tokens_for_legacy_models() -> None:
     """Legacy OpenAI-compatible models receive max_output_tokens as max_tokens."""
     model = OpenAIModel(model='gpt-4o', client=MagicMock())

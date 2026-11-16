@@ -20,14 +20,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence  # noqa: TC003 - get_type_hints(GenerationUsage.from_messages) needs it
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import ConfigDict, Field, RootModel
 from pydantic.alias_generators import to_camel
 
 from genkit._core._base import GenkitConfig, GenkitModel
 from genkit._core._compat import StrEnum
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from genkit._core import _model
 
 
 class AgentFinishReason(StrEnum):
@@ -481,11 +485,11 @@ class GenerationUsage(GenkitModel):
     cache_write_tokens: float | None = None
 
     @classmethod
-    def from_messages(cls, messages: Sequence[object], response: object) -> GenerationUsage:
+    def from_messages(cls, messages: Sequence[_model.Message], response: _model.Message) -> GenerationUsage:
         """Character and media counts for the request messages and the model reply."""
-        from genkit._core._model import as_message, count_message_usage  # noqa: PLC0415 - _model imports this module
+        from genkit._core._model import count_message_usage  # noqa: PLC0415 - _model imports this module
 
-        return cls.model_validate(count_message_usage([as_message(m) for m in messages], as_message(response)))
+        return cls.model_validate(count_message_usage(messages, response))
 
 
 class MediaPart(GenkitModel):

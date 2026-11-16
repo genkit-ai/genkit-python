@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing_extensions import assert_type
 
 from genkit import Flow, FlowContext, Genkit
+from genkit._core._flow import DefaultedFlow
 
 
 @pytest.mark.asyncio
@@ -404,7 +405,7 @@ async def test_flow_input_type_inference_across_shapes() -> None:
     assert_type(ai.flow(stream_order), Flow[_Order, str, str])
     assert_type(ai.flow(stream_any), Flow[Any, str, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.flow(specials), Flow[None, str])
-    assert_type(ai.flow(with_default), Flow[str, str])
+    assert_type(ai.flow(with_default), DefaultedFlow[str, str])
 
     # 2. Standalone Flow(fn). An __init__ overload can't pin InputT to None,
     # so ctx-only and no-arg flows leave it at its Any default.

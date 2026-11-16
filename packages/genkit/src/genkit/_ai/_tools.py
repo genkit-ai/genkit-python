@@ -21,7 +21,15 @@ from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
 
-from genkit._core._action import Action
+from genkit._core._action import (
+    Action,
+    ActionKind,
+    CtxDefaultInputFn,
+    DefaultInputCtxFn,
+    DefaultInputFn,
+    input_from_json,
+    input_has_default,
+)
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
@@ -29,6 +37,7 @@ from genkit._core._model import MultipartToolResponse as MultipartToolResponse, 
 from genkit._core._registry import Registry
 from genkit._core._tool import (
     ORIGINAL_OUTPUT_SCHEMA_KEY as ORIGINAL_OUTPUT_SCHEMA_KEY,
+    DefaultedTool,
     Tool as _Tool,
     ToolContext as ToolContext,
     _tool_original_input as _tool_original_input,
@@ -162,12 +171,14 @@ async def run_tool_request(
     token_meta = _tool_resumed_metadata.set(resumed_meta)
     token_input = _tool_original_input.set(original_input)
     sink = _ScopedToolChunkSink(tool_request_part, on_tool_chunk) if on_tool_chunk is not None else None
-    run_context = dict(ctx.context) if ctx and ctx.context else None
+    run_context = dict(ctx.context) if ctx is not None and ctx.context is not None else None
     telemetry_labels = cast(dict[str, object], dict(ctx.telemetry_labels)) if ctx and ctx.telemetry_labels else None
     try:
         return (
             await tool._run(
-                tool_req.input,
+                # The model's JSON can't tell null from omitted; both mean no
+                # input, so a no-arg call still gets the function's default.
+                input_from_json(tool_req.input),
                 on_chunk=sink,
                 context=run_context,
                 telemetry_labels=telemetry_labels,
@@ -273,7 +284,10 @@ def _define_tool(
     cases like define_interrupt where the handler signature cannot express
     the input shape.
     """
-    built: _Tool[Any, Any, Any] = _Tool(func, name=name, description=description, input_schema=input_schema)
+    # A defaulted input builds a DefaultedTool, so isinstance agrees with
+    # what define_tool's overloads promise.
+    cls = DefaultedTool if input_has_default(func, ActionKind.TOOL) else _Tool
+    built: _Tool[Any, Any, Any] = cls(func, name=name, description=description, input_schema=input_schema)
     registry.register_action_from_instance(built)
     return built
 
@@ -288,6 +302,8 @@ def _define_tool(
 #   flow: the function takes no input, so a direct call passes none.
 # - ty types ``(ctx, x: Any)`` as Unknown: the typing spec's overload rule for
 #   Any arguments makes it ambiguous, and no order fixes that.
+# - A defaulted input returns ``DefaultedTool``. ``(x = ..., ctx = None)``
+#   also fits ``[InputT, ToolContext]``, so its shape comes before that one.
 @overload
 def define_tool(
     registry: Registry,
@@ -302,12 +318,34 @@ def define_tool(
 @overload
 def define_tool(
     registry: Registry,
+    func: DefaultInputCtxFn[ToolContext[ToolChunkT], ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> DefaultedTool[ToolInputT, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
     func: Callable[[ToolInputT, ToolContext[ToolChunkT]], Awaitable[ToolOutputT]],
     name: str | None = None,
     description: str | None = None,
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
 ) -> _Tool[ToolInputT, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
+    func: CtxDefaultInputFn[ToolContext[ToolChunkT], ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> DefaultedTool[ToolInputT, ToolOutputT, ToolChunkT]: ...
 
 
 @overload
@@ -341,6 +379,17 @@ def define_tool(
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
 ) -> _Tool[None, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
+    func: DefaultInputFn[ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> DefaultedTool[ToolInputT, ToolOutputT]: ...
 
 
 @overload

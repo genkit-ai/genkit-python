@@ -8,7 +8,7 @@ The package root `__init__.py` is the only file that exports anything, and its `
 
 ```text
 genkit_mcp/
-  __init__.py   # McpClient, McpHost, define_mcp_client, define_mcp_host
+  __init__.py   # McpClient, McpHost, McpServerEntry, define_mcp_client, define_mcp_host
   _client.py
   _config.py    # McpStdioServerConfig: not exported
   _connection.py
@@ -20,7 +20,8 @@ genkit_mcp/
 
 A name goes in `__all__` only if a user constructs it, calls it, or writes it in an annotation, and there's no simpler way to do that. Leave it out if:
 
-- it only names a shape a parameter already accepts. A `TypedDict` for a dict argument or an alias for a callback type adds an import and nothing else.
+- it only names a shape a parameter already accepts and the user has a better typed path. An alias for a callback type adds an import and nothing else, since a `def` keeps its signature wherever it's written. A `TypedDict` that mirrors a typed config class (the user should import the family config instead) is the same.
+  - Exception: export a `TypedDict` when it's the only typed way to build the argument away from the call. A dict literal assigned to a variable infers as `dict[str, ...]` and fails pyright, pyrefly and ty against the `TypedDict` parameter, so without the name the user can only write it inline. `genkit_mcp.McpServerEntry` for `mcp_servers=` is the example.
 - it belongs to a request or response the user never makes directly.
 - it declares no fields of its own. A config class that accepts anything does nothing a dict doesn't.
 - it's a nested config class the user would have to build by hand. See the next section.

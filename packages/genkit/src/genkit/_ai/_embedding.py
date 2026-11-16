@@ -86,9 +86,11 @@ class EmbedderRef(Generic[EmbedderRefConfigT]):
         object.__setattr__(self, 'info', check_ref_info(name=self.name, info=self.info, info_type=EmbedderInfo))
 
 
+# The request and an optional EmbedContext, in either order, like a model fn.
 EmbedderFn = (
-    Callable[[EmbedRequest[Any]], Awaitable[EmbedResponse]]
-    | Callable[[EmbedRequest[Any], EmbedContext], Awaitable[EmbedResponse]]
+    Callable[[EmbedRequest[Any], EmbedContext], Awaitable[EmbedResponse]]
+    | Callable[[EmbedContext, EmbedRequest[Any]], Awaitable[EmbedResponse]]
+    | Callable[[EmbedRequest[Any]], Awaitable[EmbedResponse]]
 )
 
 

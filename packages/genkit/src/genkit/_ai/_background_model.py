@@ -47,9 +47,19 @@ from genkit._core._schema import custom_options_schema
 from genkit._core._typing import ModelInfo
 
 # A fn may return a plain Operation; its output is validated as a ModelResponse.
-StartModelOpFn = Callable[[ModelRequest, ModelContext], Awaitable[Operation]]
-CheckModelOpFn = Callable[[Operation[ModelResponse], ModelContext], Awaitable[Operation]]
-CancelModelOpFn = Callable[[Operation[ModelResponse], ModelContext], Awaitable[Operation]]
+# Like a model fn, each takes its input and an optional ModelContext, in
+# either order.
+StartModelOpFn = (
+    Callable[[ModelRequest, ModelContext], Awaitable[Operation]]
+    | Callable[[ModelContext, ModelRequest], Awaitable[Operation]]
+    | Callable[[ModelRequest], Awaitable[Operation]]
+)
+CheckModelOpFn = (
+    Callable[[Operation[ModelResponse], ModelContext], Awaitable[Operation]]
+    | Callable[[ModelContext, Operation[ModelResponse]], Awaitable[Operation]]
+    | Callable[[Operation[ModelResponse]], Awaitable[Operation]]
+)
+CancelModelOpFn = CheckModelOpFn
 
 # Keys a ModelResponse dump carries. An Operation dump always has 'id'.
 _MODEL_RESPONSE_KEYS = frozenset({'message', 'finishReason', 'finish_reason', 'operation'})

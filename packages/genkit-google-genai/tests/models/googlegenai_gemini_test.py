@@ -2890,6 +2890,22 @@ async def test_unmapped_4xx_is_unknown_genkit_error(mocker: MockerFixture, code:
 
 
 @pytest.mark.asyncio
+async def test_api_error_text_names_the_message_once(mocker: MockerFixture) -> None:
+    """str() of the error is `STATUS: message`, not the message plus the SDK's dict repr of it."""
+    body = {
+        'error': {
+            'code': 404,
+            'message': 'models/gemini-0.9-menu is not found for API version v1beta',
+            'status': 'NOT_FOUND',
+        }
+    }
+
+    error = await _generate_failure(mocker, APIError(404, body))
+
+    assert str(error) == 'NOT_FOUND: models/gemini-0.9-menu is not found for API version v1beta'
+
+
+@pytest.mark.asyncio
 async def test_429_retry_after_header_sets_retry_delay(mocker: MockerFixture) -> None:
     """A Gemini 429 with a Retry-After header tells retry how long to wait."""
     error = await _generate_failure(mocker, _quota_error(headers={'Retry-After': '7'}))

@@ -22,7 +22,8 @@ import asyncio
 import math
 import random
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, cast, overload
 
 from pydantic import Field
 
@@ -30,9 +31,11 @@ from genkit import GenkitError, ModelResponse
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
 from genkit.plugin_api import GenkitConfig
 from genkit_middleware._statuses import TRANSIENT_STATUSES
+from genkit_middleware._streaming import watch_stream
 
 _DEFAULT_RETRY_STATUSES: list[str] = list(TRANSIENT_STATUSES)
 _sleep = asyncio.sleep
+_UNSET: Any = cast(Any, object())
 
 
 class RetryConfig(GenkitConfig):
@@ -52,6 +55,47 @@ class Retry(Middleware[RetryConfig]):
     name = 'retry'
     description = 'Retries model calls on transient failures with exponential backoff'
 
+    @overload
+    def __init__(
+        self,
+        *,
+        max_retries: int = 3,
+        statuses: Sequence[str] = ...,
+        initial_delay_ms: int = 1000,
+        max_delay_ms: int = 60000,
+        backoff_factor: float = 2.0,
+        no_jitter: bool = False,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, *, config: RetryConfig) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        max_retries: int = _UNSET,
+        statuses: Sequence[str] = _UNSET,
+        initial_delay_ms: int = _UNSET,
+        max_delay_ms: int = _UNSET,
+        backoff_factor: float = _UNSET,
+        no_jitter: bool = _UNSET,
+        config: RetryConfig | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        fields = {
+            k: v
+            for k, v in (
+                ('max_retries', max_retries),
+                ('statuses', statuses),
+                ('initial_delay_ms', initial_delay_ms),
+                ('max_delay_ms', max_delay_ms),
+                ('backoff_factor', backoff_factor),
+                ('no_jitter', no_jitter),
+            )
+            if v is not _UNSET
+        }
+        super().__init__(config=config, **fields, **kwargs)
+
     async def wrap_model(
         self,
         params: ModelHookParams,
@@ -63,12 +107,17 @@ class Retry(Middleware[RetryConfig]):
 
         for attempt in range(self.config.max_retries + 1):
             try:
-                return await next_fn(params, ctx)
+                with watch_stream(ctx) as stream:
+                    return await next_fn(params, ctx)
             except Exception as e:
                 curr = asyncio.current_task()
                 if curr is not None and sys.version_info >= (3, 11) and curr.cancelling() > 0:
                     raise
                 if attempt == self.config.max_retries:
+                    raise
+                # The caller already has part of this answer; a retry would
+                # append a second one to it.
+                if stream.committed:
                     raise
 
                 # A GenkitError is retried only when its status is listed. Any

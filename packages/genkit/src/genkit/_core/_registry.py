@@ -31,6 +31,7 @@ from typing_extensions import Never, TypeVar
 from genkit._core._action import (
     GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR,
     Action,
+    ActionContext,
     ActionKind,
     ActionName,
     FlowContext,
@@ -84,6 +85,7 @@ ChunkT = TypeVar('ChunkT', default=Never)
 ActionFn = (
     Callable[[], OutputT | Awaitable[OutputT]]
     | Callable[[InputT], OutputT | Awaitable[OutputT]]
+    | Callable[[InputT, ActionContext], OutputT | Awaitable[OutputT]]
     | Callable[[InputT, FlowContext], OutputT | Awaitable[OutputT]]
     | Callable[[InputT, ModelContext], OutputT | Awaitable[OutputT]]
 )

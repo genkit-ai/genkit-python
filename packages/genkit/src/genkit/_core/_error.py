@@ -20,8 +20,10 @@ import builtins
 import copy
 import importlib
 import math
+import os
 import reprlib
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -482,8 +484,9 @@ def validation_problem(err: ErrorDetails, *, show_input: bool) -> str:
     """Pydantic's message for one error, plus ``, got <value>`` when the value is worth printing.
 
     For a missing field the input is the whole parent object, which says nothing new.
+    A ``common_field_bounds`` message already ends in ``got <value>``.
     """
-    if err['type'] == 'missing' or not show_input:
+    if err['type'] in ('missing', 'common_field_bounds') or not show_input:
         return err['msg']
     return f'{err["msg"]}, got {_value_preview.repr(err["input"])}'
 
@@ -559,8 +562,12 @@ class GenkitError(Exception):
         else:
             # Skip a cause whose text is empty or already in the message, so a
             # bare TimeoutError() adds no dangling ': ' and nothing repeats.
+            # Also skip one whose own .message is ours: provider_error takes a
+            # google-genai APIError's message, and str() of that APIError is
+            # the same message again inside a dict repr.
             cause_text = str(cause) if cause is not None else ''
-            cause_suffix = f': {cause_text}' if cause_text and cause_text not in message else ''
+            repeats = cause_text in message or getattr(cause, 'message', None) == message
+            cause_suffix = f': {cause_text}' if cause_text and not repeats else ''
         super().__init__(f'{source_prefix}{self.status}: {message}{cause_suffix}')
         self.message: str = message
 
@@ -882,10 +889,6 @@ def _split_rendered(error: GenkitError) -> tuple[str | None, str]:
     return text[:at].removesuffix(': ') or None, text[at + len(error.status) + 2 :]
 
 
-def _known_reason(reason: object) -> ErrorReason | None:
-    return reason if isinstance(reason, ErrorReason) else None
-
-
 @dataclass(frozen=True)
 class BoxedFailure:
     """Plain-data record of a boxed turn failure for SSE error framing.
@@ -903,10 +906,6 @@ class BoxedFailure:
     # A plain exception's own words, without the type name ``message`` adds.
     # The caller gets ``internal error``; the failed generate span shows this.
     trace_message: str = ''
-    # Kept so to_exception() re-raises what Retry middleware and callers read:
-    # the provider's Retry-After hint and the machine-readable reason.
-    retry_after_ms: float | None = None
-    reason: ErrorReason | None = None
 
     @classmethod
     def from_exc(cls, exc: BaseException) -> Self:
@@ -916,22 +915,10 @@ class BoxedFailure:
                 details = _client_details(exc.details)
             except Exception:
                 details = None
-            return cls(
-                status=exc.status,
-                message=exc.message,
-                is_public=True,
-                details=details,
-                retry_after_ms=exc.retry_after_ms,
-            )
+            return cls(status=exc.status, message=exc.message, is_public=True, details=details)
         if isinstance(exc, GenkitError):
             source, message = _split_rendered(exc)
-            return cls(
-                status=exc.status,
-                message=message,
-                source=source,
-                retry_after_ms=exc.retry_after_ms,
-                reason=_known_reason(exc.reason),
-            )
+            return cls(status=exc.status, message=message, source=source)
         text = str(exc)
         return cls(
             status='INTERNAL',
@@ -942,21 +929,12 @@ class BoxedFailure:
     def to_exception(self) -> GenkitError:
         """Reconstruct a fresh GenkitError or PublicError for SSE logging and wire framing."""
         if self.is_public:
-            public = PublicError(
+            return PublicError(
                 self.status,
                 self.message,
                 details=copy.deepcopy(self.details) if self.details is not None else None,
             )
-            # A PublicError's reason already rides in its details.
-            public.retry_after_ms = self.retry_after_ms
-            return public
-        return GenkitError(
-            status=self.status,
-            message=self.message,
-            source=self.source,
-            retry_after_ms=self.retry_after_ms,
-            reason=self.reason,
-        )
+        return GenkitError(status=self.status, message=self.message, source=self.source)
 
 
 def error_status(error: Exception) -> int:
@@ -990,7 +968,9 @@ def get_reflection_json(error: object, *, trace_id: str | None = None) -> Reflec
         ref = ReflectionError(
             details=ReflectionErrorDetails(**raw_details),
             code=StatusCodes[error.status].value,
-            message=f'{error.message}: {repr(cause)}' if cause else error.message,
+            # Same text as the span's status.message, so the runner and the
+            # trace agree: `STATUS: message`, plus the cause when it adds anything.
+            message=str(error),
         )
     else:
         ref = ReflectionError(
@@ -1063,3 +1043,34 @@ def get_error_stack(error: object) -> str | None:
         # For now, return an empty string to keep Dev UI clean as per requirements.
         return ''
     return None
+
+
+# The action runtime, telemetry and generate loop. Every action call enters
+# through 6-10 frames here before it reaches the user's function.
+_GENKIT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_INTERNAL_DIRS = tuple(os.path.join(_GENKIT_DIR, name) + os.sep for name in ('_core', '_ai'))
+
+
+def format_exception_stack(exc: BaseException) -> str:
+    """``traceback.format_exception`` text, minus the Genkit frames that lead into user code.
+
+    Python prints the outermost frame first, so a failed tool reads
+    ``run_in_new_span``, ``_run_with_span``, ``_invoke`` ... before the line
+    that raised. Each traceback in the cause/context chain drops its leading
+    frames under ``genkit/_core`` and ``genkit/_ai``; one that is all Genkit
+    frames is kept whole, so a bug in Genkit still shows where it happened.
+    """
+    top = traceback.TracebackException.from_exception(exc)
+    pending: list[traceback.TracebackException] = [top]
+    seen: set[int] = set()
+    while pending:
+        te = pending.pop()
+        if id(te) in seen:
+            continue
+        seen.add(id(te))
+        frames = list(te.stack)
+        first_user = next((i for i, f in enumerate(frames) if not f.filename.startswith(_INTERNAL_DIRS)), 0)
+        if first_user:
+            te.stack = traceback.StackSummary.from_list(frames[first_user:])
+        pending.extend(t for t in (te.__cause__, te.__context__) if t is not None)
+    return ''.join(top.format())

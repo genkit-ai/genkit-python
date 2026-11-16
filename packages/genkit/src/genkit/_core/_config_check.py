@@ -96,6 +96,46 @@ def fold_config_aliases(*, config: dict[str, Any], schema: type[BaseModel]) -> d
     return {names.get(key, key): value for key, value in config.items()}
 
 
+def wire_config_key(schema: type[BaseModel], name: str) -> str:
+    """The key ``schema`` writes for field ``name`` in Genkit JSON, if it also reads it back.
+
+    ``maxOutputTokens`` for a GenkitConfig field. A field whose serialization
+    alias the class won't validate (validate_by_alias=False, or a different
+    validation_alias) keeps config_key, so the bag still validates.
+    """
+    field = schema.model_fields[name]
+    wire = field.serialization_alias or field.alias
+    if wire is None or wire == name or schema.model_config.get('validate_by_alias') is False:
+        return config_key(schema, name)
+    accepted = field.validation_alias
+    if accepted is None:
+        readable = wire == field.alias
+    elif isinstance(accepted, AliasChoices):
+        readable = wire in accepted.choices
+    else:
+        readable = wire == accepted
+    return wire if readable else config_key(schema, name)
+
+
+@functools.cache
+def config_wire_names(schema: type[BaseModel]) -> Mapping[str, str]:
+    """Map each field name and alias to wire_config_key. Cached per class."""
+    field_for_key = {config_key(schema, name): name for name in schema.model_fields}
+    return MappingProxyType({
+        spelling: wire_config_key(schema, field_for_key[key]) for spelling, key in config_field_names(schema).items()
+    })
+
+
+def wire_config(*, config: dict[str, Any], schema: type[BaseModel]) -> dict[str, Any]:
+    """Rewrite each spelling of a field to its wire key. Unknown keys stay as written.
+
+    The Dev UI pre-fills the model runner from the generate span's config by
+    exact key, so ``max_output_tokens`` there shows up as "default".
+    """
+    names = config_wire_names(schema)
+    return {names.get(key, key): value for key, value in config.items()}
+
+
 def overlay_config(*, layers: list[dict[str, Any]], schema: type[BaseModel] | None) -> dict[str, Any]:
     """Fold each layer, last layer wins.
 

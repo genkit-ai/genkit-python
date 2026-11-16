@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from genkit import FinishReason, Media, Message, ModelResponse, ModelResponseChunk, Part, Role
 from genkit._ai._model import text_from_content
 from genkit._core import _typing as wire
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._model import ABNORMAL_FINISH_REASONS, OutputConfig, SessionState, chunk_for_stream
 from genkit._core._schema import InvalidOutputSchemaError, to_json_schema
@@ -439,10 +439,30 @@ def test_chunk_media_is_first_media_part() -> None:
     assert ModelResponseChunk(content=[Part.from_text('b')]).media is None
 
 
+def test_reasoning_accessors_stay_out_of_text() -> None:
+    """.reasoning joins thinking parts on a message, response, and chunk; .text leaves them out."""
+    message = Message(
+        role='model',
+        content=[
+            Part.from_reasoning('Check allergens first. '),
+            Part.from_reasoning('Nuts: none.'),
+            Part.from_text('Safe.'),
+        ],
+    )
+    response = ModelResponse(message=message)
+    chunk = ModelResponseChunk(role='model', content=[Part.from_reasoning('Thinking')])
+
+    assert message.reasoning == 'Check allergens first. Nuts: none.'
+    assert response.reasoning == message.reasoning
+    assert response.text == 'Safe.'
+    assert chunk.reasoning == 'Thinking'
+    assert ModelResponse().reasoning == ''
+
+
 def test_model_action_metadata() -> None:
     """Test for Model(...)._action_metadata()."""
 
-    async def fn(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def fn(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
 
     action_metadata = Model(
@@ -461,7 +481,7 @@ def test_model_action_metadata() -> None:
 def test_model_action_metadata_label_defaults_to_name() -> None:
     """With no label, the listed model shows its action name."""
 
-    async def fn(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def fn(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
 
     action_metadata = Model('bistro/menu-writer', fn)._action_metadata()
@@ -486,7 +506,7 @@ def test_model_action_metadata_label_defaults_to_name() -> None:
 def test_model_action_metadata_matches_model(info: ModelInfo | None, config_schema: type[BaseModel] | None) -> None:
     """Model(...)._action_metadata() carries identical metadata and schemas to the Model instance."""
 
-    async def menu_writer(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def menu_writer(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('Smoked Salmon Tartine')]))
 
     resolved = Model('bistro/menu-writer', menu_writer, info=info, config_schema=config_schema)
@@ -501,7 +521,7 @@ def test_model_action_metadata_matches_model(info: ModelInfo | None, config_sche
 def test_model_rejects_long_running() -> None:
     """A model action can't claim longRunning; that's a background model."""
 
-    async def fn(request: ModelRequest, ctx: ActionRunContext) -> ModelResponse:
+    async def fn(request: ModelRequest, ctx: ActionContext) -> ModelResponse:
         return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('ok')]))
 
     with pytest.raises(GenkitError, match='longRunning'):

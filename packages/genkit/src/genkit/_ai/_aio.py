@@ -48,6 +48,8 @@ from genkit._ai._formats._builtin import built_in_formats
 from genkit._ai._formats._types import Formatter
 from genkit._ai._generate import (
     CallScope,
+    box_from_exc,
+    check_max_turns,
     define_generate_action,
     generate_action,
     register_middleware,
@@ -87,7 +89,7 @@ from genkit._core._channel import run_loop
 from genkit._core._config_check import layer_call_config
 from genkit._core._dap import DapFn, DynamicActionProvider
 from genkit._core._environment import is_dev_environment
-from genkit._core._error import ErrorReason, GenkitError
+from genkit._core._error import ErrorReason, GenkitError, PublicError
 from genkit._core._flow import Flow
 from genkit._core._logger import (
     REFLECTION_THREAD_NAME,
@@ -1283,7 +1285,11 @@ class Genkit:
                 if isinstance(plugin, Plugin):  # pyright: ignore[reportUnnecessaryIsInstance]
                     self._registry.register_plugin(plugin)
                 else:
-                    raise ValueError(f'Invalid {plugin=} provided to Genkit: must be of type `genkit.ai.Plugin`')
+                    raise ValueError(
+                        f'Invalid {plugin=} provided to Genkit: must be a `genkit.plugin_api.Plugin` instance. '
+                        'Middleware classes such as `genkit.middleware.Middleware` subclasses go in `use=[...]`; '
+                        'register the `genkit_middleware.Middleware()` plugin in `plugins=[...]`.'
+                    )
 
     def _register_plugin_middleware(self, plugins: list[Plugin] | None) -> None:
         """Register middleware classes returned by ``Plugin.list_middleware``."""
@@ -1641,6 +1647,11 @@ class Genkit:
                 print(res.output)
             # => city='Paris' forecast='Sunny'
 
+        ``max_turns`` caps tool rounds (default 50, matching Go): the model may
+        call tools that many times and then reply, so a run uses at most
+        ``max_turns + 1`` model calls. Past the cap the response is ``ABORTED``
+        with reason ``MAX_TURNS_EXCEEDED``.
+
         ``prompt`` and ``system`` strings are sent exactly as written. Braces
         are content (JSON, code, or another template), not Handlebars.
         Partials (``{{> persona}}``), ``define_helper`` helpers and
@@ -1838,14 +1849,10 @@ class Genkit:
             # => stop
             ```
         """
+        check_max_turns(max_turns)
         initial_msgs: list[Message] = []
         if not isinstance(messages, str):
-            if system:
-                initial_msgs.append(Message(role=Role.SYSTEM, content=parts_from_prompt(system)))
-            if messages:
-                initial_msgs.extend(messages)
-            if prompt:
-                initial_msgs.append(Message(role=Role.USER, content=parts_from_prompt(prompt)))
+            initial_msgs = call_messages(system=system, messages=messages, prompt=prompt)
 
         async def _run_generate(
             send_chunk: Callable[[ModelResponseChunk], None],
@@ -1912,6 +1919,21 @@ class Genkit:
         """
         if isinstance(messages, str):
             raise TypeError('messages must be a list of Message; pass text with prompt=')
+        # Before GenerateCall, whose lax int field turns True into 1.
+        check_max_turns(max_turns)
+        if prompt is not None and (resume_respond is not None or resume_restart is not None):
+            return box_from_exc(
+                response=ModelResponse(),
+                messages=call_messages(system=system, messages=messages, prompt=prompt),
+                exc=PublicError(
+                    'FAILED_PRECONDITION',
+                    "Cannot 'resume' generation unless the previous message is a model message with at least one"
+                    ' tool request. resume_respond/resume_restart cannot be combined with prompt=.',
+                    reason=ErrorReason.INVALID_RESUME,
+                ),
+                caller_stopped=False,
+                reason=ErrorReason.INVALID_RESUME,
+            )
 
         scope = CallScope(self)
         registry = scope.registry
@@ -1922,13 +1944,7 @@ class Genkit:
         # strings passed at call time are content, not templates: braces may be
         # JSON, code, or another template. templates are what you define up
         # front (define_prompt, .prompt files, define_agent's system).
-        resolved_msgs: list[Message] = []
-        if system:
-            resolved_msgs.append(Message(role=Role.SYSTEM, content=parts_from_prompt(system)))
-        if messages:
-            resolved_msgs.extend(messages)
-        if prompt:
-            resolved_msgs.append(Message(role=Role.USER, content=parts_from_prompt(prompt)))
+        resolved_msgs = call_messages(system=system, messages=messages, prompt=prompt)
         options = await to_generate_options(
             registry=registry,
             call=GenerateCall(
@@ -2050,31 +2066,40 @@ class Genkit:
 
     async def run(
         self,
-        *,
         name: str,
         fn: Callable[[], Awaitable[T]],
+        *,
         metadata: dict[str, Any] | None = None,
     ) -> T:
-        """Run a coroutine function as a discrete traced step within a flow.
+        """Run a function as a discrete traced step within a flow.
 
-        ``fn`` is a zero-argument ``async def`` function; each call creates its
-        own ``flowStep`` span in the trace.
+        ``fn`` takes no arguments and returns an awaitable, so ``async def``
+        functions, ``lambda: fetch(i)``, and callables with an ``async def
+        __call__`` all work. Same shape as JS ``ai.run('step', fn)``.
 
         Example:
             ```python
-            # 1. Wrap a step in an async def and pass it with name= and fn=
-            async def fetch_menu() -> list[str]:
-                return await load_daily_specials()
+            # 1. Each fan-out step gets its own span in the trace
+            menus = await asyncio.gather(*[ai.run(f'fetch-{i}', lambda i=i: fetch_menu(i)) for i in range(3)])
 
-
-            menu = await ai.run(name='fetch-menu', fn=fetch_menu)
+            # 2. Keyword form still works
+            total = await ai.run(name='sum', fn=lambda: sum_prices(menus))
             ```
         """
-        if not inspect.iscoroutinefunction(fn):
-            raise TypeError('fn must be a coroutine function')
+        if not callable(fn):
+            raise TypeError(f'fn must be callable, got {type(fn).__name__}')
+        not_awaitable = (
+            'fn must return an awaitable: pass an async def, a lambda returning a coroutine, '
+            'or wrap blocking work in asyncio.to_thread'
+        )
 
         async def body(_span: object) -> T:
-            return await fn()
+            result = fn()
+            if not inspect.isawaitable(result):
+                # Steps stay async like tools and flows; blocking work goes
+                # through asyncio.to_thread.
+                raise TypeError(not_awaitable)
+            return await result
 
         attributes = {metadata_key(k): str(v) for k, v in (metadata or {}).items()}
         return await run_in_new_span(name, body, action_type='flowStep', attributes=attributes)
@@ -2291,3 +2316,23 @@ class Genkit:
         if not response.operation:
             raise missing_operation_error(name=model_action.name)
         return as_model_operation(response.operation, name=model_action.name, status='INTERNAL')
+
+
+def call_messages(
+    *,
+    system: str | list[Part] | None,
+    messages: list[Message] | None,
+    prompt: str | list[Part] | None,
+) -> list[Message]:
+    """History for one generate call: system, then messages, then prompt.
+
+    ``messages=`` is sent as given. A ``system=`` passed with it goes in
+    front; system messages already in that history stay where they are.
+    """
+    out: list[Message] = []
+    if system:
+        out.append(Message(role=Role.SYSTEM, content=parts_from_prompt(system)))
+    out.extend(messages or [])
+    if prompt:
+        out.append(Message(role=Role.USER, content=parts_from_prompt(prompt)))
+    return out

@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import base64
 import inspect
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -30,13 +29,22 @@ from typing_extensions import TypeVar
 
 from genkit._core._action import (
     Action,
+    ActionContext,
     ActionKind,
-    ActionRunContext,
     get_func_description,
     resolve_type_hints,
 )
 from genkit._core._error import ErrorReason, GenkitError
-from genkit._core._model import MultipartToolResponse, Part, as_part
+from genkit._core._model import (
+    MultipartToolResponse,
+    Part,
+    as_part,
+    dump_part as dump_part,
+    dump_tool_metadata as dump_tool_metadata,
+    dump_tool_output as dump_tool_output,
+    live_payload_error as live_payload_error,
+    wire_part_is_live as wire_part_is_live,
+)
 from genkit._core._schema import to_json_schema
 from genkit._core._telemetry._instrumentation import set_custom_metadata_attributes
 from genkit._core._typing import MultipartToolResponse as MultipartToolResponseData, ToolDefinition
@@ -60,70 +68,6 @@ _tool_resumed_metadata: ContextVar[dict[str, Any] | None] = ContextVar('tool_res
 _tool_original_input: ContextVar[Any | None] = ContextVar('tool_original_input', default=None)  # noqa: ANN401
 
 
-def _usable_locator(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def wire_part_is_live(dumped: dict[str, Any]) -> bool:
-    """True when a dumped part has a payload a model plugin can actually use."""
-    if isinstance(dumped.get('text'), str):
-        return True
-    media = dumped.get('media')
-    if isinstance(media, dict) and _usable_locator(media.get('url')):
-        return True
-    if dumped.get('data') is not None or dumped.get('custom') is not None:
-        return True
-    if isinstance(dumped.get('reasoning'), str):
-        return True
-    resource = dumped.get('resource')
-    if isinstance(resource, dict) and _usable_locator(resource.get('uri')):
-        return True
-    tool_request = dumped.get('toolRequest')
-    if isinstance(tool_request, dict) and _usable_locator(tool_request.get('name')):
-        return True
-    tool_response = dumped.get('toolResponse')
-    if isinstance(tool_response, dict) and _usable_locator(tool_response.get('name')):
-        return True
-    return False
-
-
-def _wire_fallback(obj: object) -> object:
-    if isinstance(obj, bytes):
-        try:
-            return base64.b64encode(obj).decode('utf-8')
-        except Exception:
-            return '<bytes>'
-    raise TypeError(f'{type(obj).__name__} is not JSON-serializable')
-
-
-def dump_part(part: Part, *, tool_name: str | None = None, what: str = 'content') -> dict[str, Any]:
-    """Dump a part to JSON-compatible wire dict, raising INVALID_ARGUMENT if unserializable."""
-    try:
-        return as_part(part).model_dump(mode='json', by_alias=True, exclude_none=True, fallback=_wire_fallback)
-    except GenkitError:
-        raise
-    except Exception as e:
-        if tool_name is not None:
-            message = f'Tool {tool_name!r} {what} is not JSON-serializable.'
-        else:
-            message = f'MultipartToolResponse {what} is not JSON-serializable.'
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=message,
-            cause=e,
-            reason=ErrorReason.INVALID_PART,
-        ) from e
-
-
-def live_payload_error(*, tool_name: str, where: str) -> GenkitError:
-    """Build the INVALID_ARGUMENT error for a part with no usable payload."""
-    return GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f'Tool {tool_name!r} {where} includes a part with no live payload.',
-        reason=ErrorReason.INVALID_PART,
-    )
-
-
 def require_live_part(part: Part, *, tool_name: str | None = None, where: str = 'content') -> Part:
     """Return ``part`` as a :class:`Part` if it carries a live payload, else raise ``INVALID_ARGUMENT``."""
     p = as_part(part)
@@ -136,41 +80,6 @@ def require_live_part(part: Part, *, tool_name: str | None = None, where: str = 
         status='INVALID_ARGUMENT',
         message='MultipartToolResponse content includes a part with no live payload.',
         reason=ErrorReason.INVALID_PART,
-    )
-
-
-def dump_tool_output(value: Any, *, tool_name: str | None = None, what: str = 'output') -> Any:  # noqa: ANN401
-    """Dump structured output the way the advertised JSON Schema describes it."""
-    try:
-        if isinstance(value, BaseModel):
-            return value.model_dump(mode='json', by_alias=True)
-        return TypeAdapter(object).dump_python(value, mode='json', by_alias=True)
-    except GenkitError:
-        raise
-    except Exception as e:
-        # The handler already ran. A dump crash here would look like an
-        # internal failure, and a retry would do the side effect twice.
-        name = tool_name if tool_name is not None else 'tool'
-        raise GenkitError(
-            status='INVALID_ARGUMENT',
-            message=f'Tool {name!r} {what} is not JSON-serializable.',
-            cause=e,
-            reason=ErrorReason.INVALID_INPUT,
-        ) from e
-
-
-def dump_tool_metadata(value: dict[str, Any] | None, *, tool_name: str | None = None) -> dict[str, Any] | None:
-    """Dump envelope metadata the same way as structured output."""
-    if value is None:
-        return None
-    dumped = dump_tool_output(value, tool_name=tool_name, what='metadata')
-    if isinstance(dumped, dict):
-        return dumped
-    name = tool_name if tool_name is not None else 'tool'
-    raise GenkitError(
-        status='INVALID_ARGUMENT',
-        message=f'Tool {name!r} metadata is not a JSON object.',
-        reason=ErrorReason.INVALID_INPUT,
     )
 
 
@@ -241,7 +150,7 @@ def model_schema_from_return_annotation(
     return to_json_schema(cast(type | dict[str, Any] | str, inner))
 
 
-class ToolContext(ActionRunContext[ChunkT]):
+class ToolContext(ActionContext[ChunkT]):
     """What a tool sees while it runs: request context, streaming, and resume state.
 
     Annotate a tool parameter with it to receive it:
@@ -282,7 +191,7 @@ class ToolContext(ActionRunContext[ChunkT]):
 
     def __init__(
         self,
-        ctx: ActionRunContext[ChunkT],
+        ctx: ActionContext[ChunkT],
         *,
         resumed_metadata: dict[str, Any] | None = None,
         original_input: Any = None,  # noqa: ANN401 - prior tool_request.input when replacing on restart
@@ -314,7 +223,7 @@ async def call_tool_fn(
     tool: Action[Any, Any, Any, Any],
     func: Callable[..., Awaitable[OutputT]],
     raw_input: object,
-    ctx: ActionRunContext[Any],
+    ctx: ActionContext[Any],
 ) -> OutputT:
     """Call a tool function with a ``ToolContext`` carrying resume state.
 
@@ -322,7 +231,8 @@ async def call_tool_fn(
     function through here, so resume metadata reaches it either way.
     """
     resumed_meta = _tool_resumed_metadata.get()
-    if resumed_meta:
+    # A bare restart() resumes with {}; it is still a resume.
+    if resumed_meta is not None:
         # Record resumed metadata on the current span for observability.
         set_custom_metadata_attributes({'resumed': resumed_meta})
     # The ctx parameter always receives this ToolContext, whatever context
@@ -453,16 +363,17 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
             ephemeral = Tool(lookup_price, name='lookup_price')
             res = await ai.generate(prompt='Price of SKU-1?', tools=[ephemeral])
         """
-        if not inspect.iscoroutinefunction(func):
+        # A callable instance with `async def __call__` is async too.
+        if not (inspect.iscoroutinefunction(func) or inspect.iscoroutinefunction(type(func).__call__)):
             raise TypeError(f'Tool function must be async. Got sync function: {getattr(func, "__name__", repr(func))}')
         tool_name = name if name is not None else getattr(func, '__name__', None)
         if tool_name is None:
             raise ValueError(f'Cannot infer a tool name from {func!r}; pass name= explicitly.')
         tool_description = get_func_description(func, description)
-        typed_func = cast(Callable[..., Awaitable[OutputT]], func)
+        typed_func: Callable[..., Awaitable[OutputT]] = func
         self._wire_action = None
 
-        async def tool_fn(raw_input: object, ctx: ActionRunContext[Any]) -> OutputT:
+        async def tool_fn(raw_input: object, ctx: ActionContext[Any]) -> OutputT:
             return await call_tool_fn(self, typed_func, raw_input, ctx)
 
         super().__init__(
@@ -476,7 +387,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         model_schema = model_schema_from_return_annotation(func, inferred=self.output_schema)
         self.metadata[ORIGINAL_OUTPUT_SCHEMA_KEY] = model_schema
 
-        async def wire_fn(raw_input: object, ctx: ActionRunContext[Any]) -> MultipartToolResponse[Any]:
+        async def wire_fn(raw_input: object, ctx: ActionContext[Any]) -> MultipartToolResponse[Any]:
             raw = await call_tool_fn(self, typed_func, raw_input, ctx)
             return as_multipart_tool_response(raw, tool_name=self.name)
 
@@ -540,7 +451,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
             output_schema=self.model_output_schema,
         )
 
-    async def _invoke(self, input: object | None, ctx: ActionRunContext) -> OutputT:
+    async def _invoke(self, input: object | None, ctx: ActionContext) -> OutputT:
         """Run the function, then check its result the way generate would send it to a model.
 
         A value the model couldn't receive (unserializable output or metadata,

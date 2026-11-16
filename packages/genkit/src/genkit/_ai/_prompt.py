@@ -1737,12 +1737,13 @@ def load_prompt_folder_recursively(
             if not entry.is_file() or not entry.name.endswith('.prompt'):
                 continue
             if not entry.name.startswith('_'):
-                # One bad file (YAML typo, bad template) must not take its
-                # siblings and subdirectories down with it.
+                # One bad file (unreadable, bad frontmatter) must not take its
+                # siblings and subdirectories down with it. Templates compile
+                # on first use, so template errors surface there, not here.
                 try:
                     load_prompt(ai, dir_path, entry.name, prefix, ns)
-                except Exception as e:  # noqa: BLE001 - logged with the file, siblings keep loading
-                    logger.error(f'Failed to load prompt file {entry.path}: {e}')
+                except Exception:  # noqa: BLE001 - logged with the file, siblings keep loading
+                    logger.exception(f'Failed to load prompt file {entry.path}')
                 continue
 
             short_name = entry.name[1:-7]  # Remove "_" prefix and ".prompt" suffix
@@ -1759,8 +1760,8 @@ def load_prompt_folder_recursively(
             try:
                 with Path(entry.path).open(encoding='utf-8') as f:
                     source = strip_frontmatter(f.read())
-            except Exception as e:  # noqa: BLE001 - logged with the file, siblings keep loading
-                logger.error(f'Failed to load partial file {entry.path}: {e}')
+            except Exception:  # noqa: BLE001 - logged with the file, siblings keep loading
+                logger.exception(f'Failed to load partial file {entry.path}')
                 continue
 
             for name in names:

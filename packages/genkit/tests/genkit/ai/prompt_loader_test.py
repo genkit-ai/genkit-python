@@ -10,58 +10,88 @@ from pathlib import Path
 
 import pytest
 
-from genkit import Genkit
+from genkit import Genkit, Message, ModelResponse, Part
 from genkit._ai._prompt import strip_frontmatter
+from genkit._core._typing import ConstrainedSupport, Role
+from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelSupports
 from genkit.testing import define_scripted_model
 
 _SCHEMA_PROMPT = """---
-model: scriptedModel
+model: menuModel
 output:
   schema:
     title: string
   constrained: {constrained}
-  contentType: application/json
 ---
 Suggest a dish.
 """
 
 
+def _define_menu_model(ai: Genkit) -> list[ModelRequest]:
+    """A model that supports native JSON mode and records what it receives."""
+    seen: list[ModelRequest] = []
+
+    async def menu_model(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        seen.append(request)
+        return ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('{"title": "Tartine"}')]))
+
+    ai.define_model(
+        name='menuModel', fn=menu_model, info=ModelInfo(supports=ModelSupports(constrained=ConstrainedSupport.ALL))
+    )
+    return seen
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('constrained', [False, True])
-async def test_prompt_file_honors_output_constrained(constrained: bool) -> None:
-    """`constrained: false` in frontmatter turns native JSON mode off; the schema stays."""
+async def test_prompt_file_output_constrained_reaches_the_model(constrained: bool) -> None:
+    """`constrained: false` in frontmatter turns native JSON mode off on the model request."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         text = _SCHEMA_PROMPT.format(constrained=str(constrained).lower())
         (Path(tmp_dir) / 'dish.prompt').write_text(text)
-        ai = Genkit(prompt_dir=tmp_dir, model='scriptedModel')
-        define_scripted_model(ai)
+        ai = Genkit(prompt_dir=tmp_dir)
+        seen = _define_menu_model(ai)
 
-        opts = await ai.prompt('dish').render()
+        await ai.prompt('dish')()
 
-        assert opts.output is not None
-        assert opts.output.constrained is constrained
-        assert opts.output.content_type == 'application/json'
-        assert opts.output.json_schema is not None
+        assert seen[0].output is not None
+        assert seen[0].output.constrained is constrained
+        assert seen[0].output.schema is not None
 
 
 @pytest.mark.asyncio
 async def test_prompt_file_schema_without_constrained_defaults_to_native_json() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         (Path(tmp_dir) / 'dish.prompt').write_text(
-            '---\nmodel: scriptedModel\noutput:\n  schema:\n    title: string\n---\nSuggest a dish.\n'
+            '---\nmodel: menuModel\noutput:\n  schema:\n    title: string\n---\nSuggest a dish.\n'
         )
-        ai = Genkit(prompt_dir=tmp_dir, model='scriptedModel')
-        define_scripted_model(ai)
+        ai = Genkit(prompt_dir=tmp_dir)
+        seen = _define_menu_model(ai)
 
-        opts = await ai.prompt('dish').render()
+        await ai.prompt('dish')()
 
-        assert opts.output is not None
-        assert opts.output.constrained is True
+        assert seen[0].output is not None
+        assert seen[0].output.constrained is True
+
+
+@pytest.mark.asyncio
+async def test_prompt_file_content_type_reaches_the_model_without_a_format() -> None:
+    """With no format or schema, frontmatter contentType is what the model sees."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        (Path(tmp_dir) / 'menu.prompt').write_text(
+            '---\nmodel: menuModel\noutput:\n  contentType: text/markdown\n---\nWrite the menu.\n'
+        )
+        ai = Genkit(prompt_dir=tmp_dir)
+        seen = _define_menu_model(ai)
+
+        await ai.prompt('menu')()
+
+        assert seen[0].output is not None
+        assert seen[0].output.content_type == 'text/markdown'
 
 
 @pytest.mark.asyncio
 async def test_one_bad_prompt_file_does_not_drop_its_siblings(capfd: pytest.CaptureFixture[str]) -> None:
-    """A YAML typo in one file is logged with its path; the rest of the folder loads."""
+    """A YAML typo in one file is logged with its path and traceback; the rest of the folder loads."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         root = Path(tmp_dir)
         (root / 'a_broken.prompt').write_text('---\ndescription: Note: always greet\n  bad: [\n---\nHi\n')
@@ -76,6 +106,7 @@ async def test_one_bad_prompt_file_does_not_drop_its_siblings(capfd: pytest.Capt
         assert (await ai.prompt('sub/menu').render()).messages
         out, err = capfd.readouterr()
         assert 'a_broken.prompt' in out + err
+        assert 'Traceback' in out + err
 
 
 @pytest.mark.asyncio

@@ -2255,8 +2255,12 @@ def apply_format(
 
     out_request.output.constrained = constrained
 
-    if format_def.config.content_type is not None:
+    # The format fills in a content type only when the caller didn't set one,
+    # the same as `constrained` above and JS applyFormat.
+    if out_request.output.content_type is None:
         out_request.output.content_type = format_def.config.content_type
+    # `format` stays format-owned: a custom format (say `cited-json`) maps onto
+    # the wire format (`json`) that models and the instruction rule key on.
     if format_def.config.format is not None:
         out_request.output.format = format_def.config.format
 

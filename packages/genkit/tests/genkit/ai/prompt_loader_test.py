@@ -74,11 +74,22 @@ async def test_prompt_file_schema_without_constrained_defaults_to_native_json() 
 
 
 @pytest.mark.asyncio
-async def test_prompt_file_content_type_reaches_the_model_without_a_format() -> None:
-    """With no format or schema, frontmatter contentType is what the model sees."""
+@pytest.mark.parametrize(
+    ('output', 'expected'),
+    [
+        ('contentType: text/markdown', 'text/markdown'),
+        (
+            'schema:\n    title: string\n  contentType: application/vnd.restaurant+json',
+            'application/vnd.restaurant+json',
+        ),
+    ],
+    ids=['no_format', 'with_schema'],
+)
+async def test_prompt_file_content_type_reaches_the_model(output: str, expected: str) -> None:
+    """Frontmatter contentType is what the model sees, even when the json format has its own."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         (Path(tmp_dir) / 'menu.prompt').write_text(
-            '---\nmodel: menuModel\noutput:\n  contentType: text/markdown\n---\nWrite the menu.\n'
+            f'---\nmodel: menuModel\noutput:\n  {output}\n---\nWrite the menu.\n'
         )
         ai = Genkit(prompt_dir=tmp_dir)
         seen = _define_menu_model(ai)
@@ -86,7 +97,7 @@ async def test_prompt_file_content_type_reaches_the_model_without_a_format() -> 
         await ai.prompt('menu')()
 
         assert seen[0].output is not None
-        assert seen[0].output.content_type == 'text/markdown'
+        assert seen[0].output.content_type == expected
 
 
 @pytest.mark.asyncio

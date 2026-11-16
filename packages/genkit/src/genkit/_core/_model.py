@@ -672,7 +672,9 @@ class Part(GenkitModel):
         (a screenshot, a chart). A ``MultipartToolResponse`` passed as
         ``output`` is unwrapped the way the engine does it: its ``output``,
         ``content``, and ``metadata`` land in their own slots instead of being
-        serialized as JSON text.
+        serialized as JSON text. Setting ``content`` or ``metadata`` both on
+        the ``MultipartToolResponse`` and as a keyword raises ``GenkitError``
+        (``INVALID_ARGUMENT``) instead of dropping one.
 
         ``output`` and ``metadata`` are dumped to JSON and ``content`` to wire
         parts, the same as a tool return inside ``generate``, so a Pydantic
@@ -682,6 +684,19 @@ class Part(GenkitModel):
         """
         if isinstance(output, MultipartToolResponse):
             multipart = cast('MultipartToolResponse[Any]', output)
+            # Two sources for one slot is a caller mistake; picking one would drop the other silently.
+            for slot, explicit, wrapped in (
+                ('content', content, multipart.content),
+                ('metadata', metadata, multipart.metadata),
+            ):
+                if explicit is not None and wrapped is not None:
+                    raise GenkitError(
+                        status='INVALID_ARGUMENT',
+                        message=(
+                            f"tool '{name}': {slot} is set on the MultipartToolResponse and passed as {slot}=. "
+                            'Pass it in one place.'
+                        ),
+                    )
             if content is None:
                 content = multipart.content
             if metadata is None:

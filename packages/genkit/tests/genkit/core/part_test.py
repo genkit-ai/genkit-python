@@ -229,6 +229,45 @@ def test_part_from_tool_response_unwraps_a_multipart_output() -> None:
     assert p.metadata == {'cached': True}
 
 
+@pytest.mark.parametrize(
+    ('multipart', 'kwargs', 'slot'),
+    [
+        (MultipartToolResponse(output={'total': 42}, content=[CHART]), {'content': [CHART]}, 'content'),
+        (
+            MultipartToolResponse(output={'total': 42}, metadata={'cached': True}),
+            {'metadata': {'cached': False}},
+            'metadata',
+        ),
+    ],
+    ids=['content-twice', 'metadata-twice'],
+)
+def test_part_from_tool_response_rejects_a_slot_set_twice(
+    multipart: MultipartToolResponse, kwargs: dict[str, object], slot: str
+) -> None:
+    """A slot on the MultipartToolResponse and as a keyword raises instead of dropping one."""
+    with pytest.raises(GenkitError) as err:
+        Part.from_tool_response(name='sales_chart', output=multipart, **kwargs)  # type: ignore[arg-type]
+
+    assert err.value.status == 'INVALID_ARGUMENT'
+    assert "tool 'sales_chart'" in err.value.message
+    assert f'{slot}=' in err.value.message
+
+
+def test_part_from_tool_response_fills_a_slot_the_multipart_leaves_empty() -> None:
+    """content= and metadata= are fine when the MultipartToolResponse doesn't set them."""
+    p = Part.from_tool_response(
+        name='sales_chart',
+        output=MultipartToolResponse(output={'total': 42}),
+        content=[CHART],
+        metadata={'cached': True},
+    )
+
+    assert p.tool_response is not None
+    assert p.tool_response.output == {'total': 42}
+    assert p.tool_response.content == [WIRE_CHART]
+    assert p.metadata == {'cached': True}
+
+
 def test_part_from_tool_response_dumps_pydantic_output_and_metadata() -> None:
     """A model object goes out as the JSON the tool runner sends, not a Python object."""
 

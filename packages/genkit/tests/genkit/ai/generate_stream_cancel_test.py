@@ -22,7 +22,7 @@ from genkit import (
     Role,
     ToolContext,
 )
-from genkit._core._action import ActionRunContext
+from genkit._core._action import ActionContext
 from genkit._core._compat import cancelling
 from genkit._core._model import ModelRequest
 from genkit.exp.agent import AgentContext
@@ -80,7 +80,7 @@ async def settle(aw: Awaitable[T]) -> T:
 async def test_contexts_do_not_expose_abort_signal() -> None:
     """Action, flow, tool, model, agent, and middleware contexts omit abort_signal."""
     ai = Genkit()
-    action_ctx: ActionRunContext[str] = ActionRunContext()
+    action_ctx: ActionContext[str] = ActionContext()
     flow_ctx: FlowContext[str] = FlowContext()
     tool_ctx: ToolContext[str] = ToolContext(action_ctx)
     model_ctx: ModelContext = ModelContext()

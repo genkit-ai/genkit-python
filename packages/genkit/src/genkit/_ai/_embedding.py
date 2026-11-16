@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from typing_extensions import Never, TypeVar
 
-from genkit._core._action import Action, ActionKind, FlowContext, get_func_description, with_request_annotation
+from genkit._core._action import Action, ActionKind, EmbedContext, get_func_description, with_request_annotation
 from genkit._core._model import EmbedRequest, check_ref_config, check_ref_info
 from genkit._core._registry import Registry
 from genkit._core._schema import custom_options_schema, fixed_json_schema
@@ -85,7 +85,7 @@ class EmbedderRef(Generic[EmbedderRefConfigT]):
 
 EmbedderFn = (
     Callable[[EmbedRequest[Any]], Awaitable[EmbedResponse]]
-    | Callable[[EmbedRequest[Any], FlowContext[Any]], Awaitable[EmbedResponse]]
+    | Callable[[EmbedRequest[Any], EmbedContext], Awaitable[EmbedResponse]]
 )
 
 
@@ -97,7 +97,8 @@ class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
 
     The options class comes from ``config_schema`` or the fn's
     ``EmbedRequest[Cfg]`` annotation; given both, they must be the same class.
-    An unannotated fn still gets an ``EmbedRequest``.
+    An unannotated fn still gets an ``EmbedRequest``, typed by ``config_schema``
+    when that is a Pydantic class.
     """
 
     def __init__(
@@ -142,10 +143,19 @@ class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
         embedder_meta: dict[str, object] = metadata.copy() if metadata else {}
         embedder_meta['embedder'] = embedder_info
 
+        # An unannotated request gets EmbedRequest[Cfg] when config_schema is a
+        # Pydantic class, so options arrive as Cfg on every call path (ai.embed,
+        # Dev UI, CLI); an explicit ``request: EmbedRequest`` annotation keeps
+        # dict options. Built at runtime, so checkers can't read
+        # EmbedRequest[options_class] as a type.
+        from genkit._ai._model import python_config_schema  # noqa: PLC0415
+
+        options_class = python_config_schema(config_schema)
+        request_type = cast(Any, EmbedRequest)[options_class] if options_class is not None else EmbedRequest
         super().__init__(
             kind=ActionKind.EMBEDDER,
             name=name,
-            fn=with_request_annotation(fn, EmbedRequest, kind=ActionKind.EMBEDDER),
+            fn=with_request_annotation(fn, request_type, kind=ActionKind.EMBEDDER),
             metadata=embedder_meta,
             description=get_func_description(fn, description),
             config_schema=config_schema,

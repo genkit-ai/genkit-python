@@ -47,7 +47,7 @@ from genkit._ai._generate import (
     mark_failure_logged,
 )
 from genkit._ai._json_patch import diff_json
-from genkit._core._action import ActionRunContext, get_current_context
+from genkit._core._action import ActionContext, get_current_context
 from genkit._core._channel import CloseableQueue, QueueShutDown
 from genkit._core._compat import await_unchained, cancelling
 from genkit._core._error import (
@@ -277,7 +277,7 @@ class SessionRunner(Generic[StateT]):
         await self.session.update_custom(fn)
 
 
-class AgentContext(ActionRunContext[AgentStreamChunk]):
+class AgentContext(ActionContext[AgentStreamChunk]):
     """Execution context passed to a custom agent function.
 
     Provides ``ctx.send_chunk(chunk)`` for streaming :class:`AgentStreamChunk`

@@ -259,3 +259,25 @@ async def test_gemma_history_replay_strips_reasoning_and_thought_signatures(mock
     ]
     # Caller's Part metadata is not mutated in place.
     assert signed_answer.metadata == {**sig_meta, 'source': 'menu'}
+
+
+@pytest.mark.asyncio
+async def test_parts_without_a_gemini_field_are_not_sent(mocker: MockerFixture) -> None:
+    """Replaying Part.data (a2ui) used to send an empty Part(), which Gemini rejects."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = genai_types.GenerateContentResponse(
+        candidates=[genai_types.Candidate(content=genai_types.Content(parts=[genai_types.Part(text='ok')]))]
+    )
+    request = ModelRequest(
+        messages=[
+            Message(role=Role.USER, content=[Part.from_text('Show the menu.')]),
+            Message(role=Role.MODEL, content=[Part.from_text('Here it is.'), Part.from_data({'surface': 'menu'})]),
+            Message(role=Role.MODEL, content=[Part.from_data({'surface': 'cart'})]),
+            Message(role=Role.USER, content=[Part.from_text('Add pesto.')]),
+        ]
+    )
+
+    await GeminiModel('gemini-flash-latest', client).generate(request, ModelContext())
+
+    contents = client.aio.models.generate_content.call_args.kwargs['contents']
+    assert [[p.text for p in c.parts] for c in contents] == [['Show the menu.'], ['Here it is.'], ['Add pesto.']]

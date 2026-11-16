@@ -122,7 +122,7 @@ async def test_gemini_resolve_request_client_missing_project_is_failed_precondit
         await model._resolve_request_client(
             ModelRequest(
                 messages=[Message(role=Role.USER, content=[Part.from_text('hi')])],
-                config={'api_version': 'v1'},
+                config={'apiVersion': 'v1'},
             )
         )
 

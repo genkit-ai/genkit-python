@@ -39,6 +39,7 @@ from genkit_google_genai._models._sdk_config import (
     reject_bool_timeout,
     request_client_kwargs,
     sdk_config_error,
+    server_timeout_header,
     split_sdk_fields,
     timeout_seconds_to_ms,
 )
@@ -686,7 +687,8 @@ class GeminiConfig(ModelConfig):
         default=None,
         description=(
             'HTTP timeout for this request, in seconds (positive, finite). Overrides the plugin timeout for this call. '
-            'The Gemini API rejects deadlines under 10s with HTTP 400; Vertex AI accepts shorter values.'
+            'The Gemini API rejects server deadlines under 10s, so the plugin sends a 10s server deadline there '
+            'and enforces the shorter timeout locally.'
         ),
     )
 
@@ -733,7 +735,8 @@ class GeminiConfig(ModelConfig):
     context_cache: bool | None = Field(
         default=None,
         description=(
-            'Context caching allows you to save and reuse precomputed input tokens that you wish to use repeatedly.'
+            'Context caching allows you to save and reuse precomputed input tokens that you wish to use repeatedly. '
+            "Mark the last message to cache with metadata={'cache': True}. False ignores those markers."
         ),
     )
 
@@ -2182,14 +2185,9 @@ class GeminiModel:
             raise missing_api_key_error()
 
         if request.config:
-            if isinstance(request.config, dict):
-                api_version = request.config.get('api_version')
-                base_url_override = request.config.get('base_url')
-                location_override = request.config.get('location')
-            else:
-                api_version = getattr(request.config, 'api_version', None)
-                base_url_override = getattr(request.config, 'base_url', None)
-                location_override = getattr(request.config, 'location', None)
+            api_version = _config_value(request.config, 'api_version', 'apiVersion')
+            base_url_override = _config_value(request.config, 'base_url', 'baseUrl')
+            location_override = _config_value(request.config, 'location')
 
         if location_override and not self._is_vertex():
             # Location is a Vertex AI concept; ignore it for the Gemini API backend.
@@ -2445,6 +2443,8 @@ class GeminiModel:
         """
         request_contents: list[genai_types.Content] = []
         cache = None
+        # context_cache=False turns off metadata['cache'] markers for this call.
+        use_cache = _config_value(request.config, 'context_cache', 'contextCache') is not False
         gemma = is_gemma_model(model_name)
 
         for msg in request.messages:
@@ -2458,15 +2458,16 @@ class GeminiModel:
                         continue
                     p = stripped
                 converted = await PartConverter.to_gemini(p, tools=tools)
-                if isinstance(converted, list):
-                    content_parts.extend(converted)
-                else:
-                    content_parts.append(converted)
+                for gemini_part in converted if isinstance(converted, list) else [converted]:
+                    # A part Gemini has no field for (Part.data, say) converts
+                    # to an empty Part(), which the API rejects.
+                    if gemini_part.model_dump(exclude_none=True):
+                        content_parts.append(gemini_part)
             role = 'model' if msg.role in (Role.MODEL, 'model') else 'user'
             if content_parts:
                 request_contents.append(genai_types.Content(parts=content_parts, role=role))
 
-            if msg.metadata and msg.metadata.get('cache'):
+            if use_cache and msg.metadata and msg.metadata.get('cache'):
                 cache = await self._retrieve_cached_content(
                     request=request,
                     model_name=model_name,
@@ -2623,9 +2624,21 @@ class GeminiModel:
 
             if tools:
                 cfg.tools = cast(genai_types.ToolListUnion, tools)
+                # Genkit runs tools itself. google-genai's AFC only runs Python
+                # callables and warns about every FunctionDeclaration.
+                cfg.automatic_function_calling = genai_types.AutomaticFunctionCallingConfig(disable=True)
 
             if tool_choice:
                 cfg.tool_config = _tool_config(tool_choice, function_tools)
+
+            if self._needs_server_side_tool_invocations(tools):
+                # Gemini 3 rejects built-in tools (google_search, url_context,
+                # code_execution, file_search) next to function declarations
+                # unless the request opts in to server-side tool invocations.
+                # The Gemini API only; Vertex AI has no such field.
+                if cfg.tool_config is None:
+                    cfg.tool_config = genai_types.ToolConfig()
+                cfg.tool_config.include_server_side_tool_invocations = True
 
             cfg.system_instruction = genai_types.Content(parts=system_instruction) if system_instruction else None
             cfg = attach_leftovers(cfg, leftovers, nest='generationConfig')
@@ -2648,7 +2661,9 @@ class GeminiModel:
                 headers = {
                     key: val for key, val in (http_options.headers or {}).items() if key.lower() != 'x-server-timeout'
                 }
-                headers['X-Server-Timeout'] = str(math.ceil(ms / 1000))
+                # The Gemini API rejects X-Server-Timeout under 10s with a 400;
+                # the header is floored there and httpx still enforces `ms`.
+                headers['X-Server-Timeout'] = server_timeout_header(ms, vertexai=self._is_vertex())
                 http_options.headers = headers
                 cfg.http_options = http_options
             return cfg
@@ -2663,6 +2678,14 @@ class GeminiModel:
 
     # Keys that may not be supported by older google-genai SDK versions.
     _SDK_GATED_KEYS = frozenset(['image_config', 'thinking_config', 'response_modalities'])
+
+    def _needs_server_side_tool_invocations(self, tools: list[genai_types.Tool]) -> bool:
+        """Whether *tools* mixes function declarations with built-in tools on the Gemini API."""
+        if self._is_vertex():
+            return False
+        has_functions = any(tool.function_declarations for tool in tools)
+        has_builtin = any(not tool.function_declarations for tool in tools)
+        return has_functions and has_builtin
 
     def _apply_output_config(self, cfg: genai_types.GenerateContentConfig, request: ModelRequest) -> None:
         """Set the response MIME type and schema for the request's output format.

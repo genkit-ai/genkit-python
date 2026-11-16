@@ -49,13 +49,16 @@ kept in mind when modifying media handling or tool conversion logic:
 
 import base64
 import binascii
+import re
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote_to_bytes, urlparse, urlsplit, urlunsplit
 
 import httpx
 from google import genai
+from pydantic import ValidationError
 
 from genkit import GenkitError, Part, get_logger
 from genkit.model import ToolRequest, ToolResponse
@@ -161,6 +164,9 @@ class PartConverter:
 
     EXECUTABLE_CODE = 'executableCode'
     CODE_EXECUTION_RESULT = 'codeExecutionResult'
+    # Server-side (built-in) tool invocations, as in the JS plugin.
+    GEMINI_TOOL_CALL = 'geminiToolCall'
+    GEMINI_TOOL_RESPONSE = 'geminiToolResponse'
     OUTCOME = 'outcome'
     OUTPUT = 'output'
     LANGUAGE = 'language'
@@ -245,6 +251,8 @@ class PartConverter:
                             media = _function_response_part(gemini_part)
                             if media is not None:
                                 fn_media.append(media)
+                    except (GenkitError, httpx.HTTPError):
+                        raise
                     except Exception as exc:
                         logger.debug('Skipping unrecognised tool-response content part: %s', exc)
 
@@ -262,13 +270,12 @@ class PartConverter:
                             media_info = item['media']
                             url = media_info.get('url') or ''
                             content_type = media_info.get('contentType') or media_info.get('content_type')
-                            if url.startswith(cls.DATA):
-                                _, data_str = url.split(',', 1)
-                                data = base64.b64decode(data_str)
+                            if url.lower().startswith(cls.DATA):
+                                uri_mime, data = _decode_data_uri(url)
                                 fn_media.append(
                                     genai.types.FunctionResponsePart.from_bytes(
                                         data=data,
-                                        mime_type=content_type or 'application/octet-stream',
+                                        mime_type=_media_type(content_type) or uri_mime or 'application/octet-stream',
                                     )
                                 )
                     if fn_media:
@@ -291,21 +298,17 @@ class PartConverter:
             )
         if part.media is not None:
             url = part.media.url
-            if url.startswith(cls.DATA):
-                # Extract mime type and data from data:mime_type;base64,data
-                metadata, data_str = url.split(',', 1)
-                mime_type = part.media.content_type or metadata.split(':', 1)[1].split(';', 1)[0]
-                data = base64.b64decode(data_str)
-
+            if url.lower().startswith(cls.DATA):
+                uri_mime, data = _decode_data_uri(url)
                 return genai.types.Part(
                     inline_data=genai.types.Blob(
-                        mime_type=mime_type,
+                        mime_type=_media_type(part.media.content_type) or uri_mime or 'application/octet-stream',
                         data=data,
                     ),
                     thought_signature=signature,
                 )
 
-            if url.startswith('http'):
+            if url.lower().startswith(('http://', 'https://')):
                 # URLs from hosts the Gemini API can natively resolve (YouTube,
                 # Files API) are passed as file_data — downloading them would
                 # fetch HTML pages instead of actual media content.
@@ -322,8 +325,12 @@ class PartConverter:
                 # middleware (JS parity) once model middleware is implemented.
                 # The Gemini API cannot fetch arbitrary HTTP URLs via file_uri,
                 # so we must download the content and send it as inline_data.
-                data, mime_type = await cls._download_image(url)
-                mime_type = mime_type or part.media.content_type or 'image/jpeg'
+                data, served_type = await cls._download_image(url)
+                # The caller's content_type wins: object stores (S3, R2, GCS)
+                # often serve application/octet-stream, which Gemini rejects.
+                mime_type = (
+                    _media_type(part.media.content_type) or _media_type(served_type, skip_generic=True) or 'image/jpeg'
+                )
                 return genai.types.Part(
                     inline_data=genai.types.Blob(
                         mime_type=mime_type,
@@ -334,6 +341,9 @@ class PartConverter:
 
             # Non-HTTP, non-data URIs (e.g. gs://, Files API URIs) are
             # passed through as file_data — the Gemini API can resolve these.
+            # Local paths and raw base64 are not URIs; refuse them here rather
+            # than send them to Gemini and get them echoed back in a 400.
+            _reject_non_uri_media(url)
             return genai.types.Part(
                 file_data=genai.types.FileData(
                     mime_type=part.media.content_type,
@@ -377,6 +387,32 @@ class PartConverter:
                     outcome=custom_data[cls.CODE_EXECUTION_RESULT][cls.OUTCOME],
                     output=custom_data[cls.CODE_EXECUTION_RESULT][cls.OUTPUT],
                 ),
+                thought_signature=signature,
+            )
+        if part.custom and cls.GEMINI_TOOL_CALL in part.custom:
+            try:
+                tool_call = genai.types.ToolCall.model_validate(part.custom[cls.GEMINI_TOOL_CALL])
+            except (ValidationError, TypeError, ValueError) as e:
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message='Invalid custom.geminiToolCall payload',
+                    cause=e,
+                ) from e
+            return genai.types.Part(
+                tool_call=tool_call,
+                thought_signature=signature,
+            )
+        if part.custom and cls.GEMINI_TOOL_RESPONSE in part.custom:
+            try:
+                tool_response = genai.types.ToolResponse.model_validate(part.custom[cls.GEMINI_TOOL_RESPONSE])
+            except (ValidationError, TypeError, ValueError) as e:
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message='Invalid custom.geminiToolResponse payload',
+                    cause=e,
+                ) from e
+            return genai.types.Part(
+                tool_response=tool_response,
                 thought_signature=signature,
             )
         return genai.types.Part()
@@ -477,6 +513,22 @@ class PartConverter:
                 },
                 metadata=signature,
             )
+        if part.tool_call:
+            # A built-in tool the server ran (include_server_side_tool_invocations).
+            # Kept wire-shaped so the next turn can send it back unchanged.
+            return Part(
+                custom={cls.GEMINI_TOOL_CALL: part.tool_call.model_dump(mode='json', by_alias=True, exclude_none=True)},
+                metadata=cls._encode_thought_signature(part.thought_signature),
+            )
+        if part.tool_response:
+            return Part(
+                custom={
+                    cls.GEMINI_TOOL_RESPONSE: part.tool_response.model_dump(
+                        mode='json', by_alias=True, exclude_none=True
+                    )
+                },
+                metadata=cls._encode_thought_signature(part.thought_signature),
+            )
         if part.thought_signature:
             # A signature with no content (streaming sends these at the end of a
             # non-thinking turn): keep as signed empty text so replay doesn't
@@ -543,9 +595,11 @@ class PartConverter:
             A tuple containing the content (bytes) and its MIME type (str or None).
 
         Raises:
-            GenkitError: INVALID_ARGUMENT if the body is larger than 20MB,
-                if the host sends a compressed ``Content-Encoding``, or when
-                the media host answers with a 4xx other than 408/429.
+            GenkitError: INVALID_ARGUMENT if the body is larger than 20MB
+                (after gzip/deflate decoding), if the compressed body is
+                corrupt or truncated, if the host sends any other
+                ``Content-Encoding`` (br, zstd), or when the media host
+                answers with a 4xx other than 408/429.
             httpx.HTTPStatusError: A 5xx, 408, or 429 from the media host, left
                 raw. It is not Gemini's failure, so Fallback must not switch
                 models over it (the next model needs the same URL); Retry
@@ -554,43 +608,81 @@ class PartConverter:
                 unclassified because it may pass on retry.
         """
         client = _media_client()
-        async with client.stream('GET', url, timeout=60.0) as response:
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                code = e.response.status_code
-                where = _redact_url(str(e.request.url))
-                sanitized = httpx.HTTPStatusError(
-                    f'HTTP {code} for {where}',
-                    request=e.request,
-                    response=e.response,
-                )
-                if 400 <= code < 500 and code not in (408, 429):
+        try:
+            async with client.stream('GET', url, timeout=60.0) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    code = e.response.status_code
+                    where = _redact_url(str(e.request.url))
+                    sanitized = httpx.HTTPStatusError(
+                        f'HTTP {code} for {where}',
+                        request=e.request,
+                        response=e.response,
+                    )
+                    if 400 <= code < 500 and code not in (408, 429):
+                        raise GenkitError(
+                            status='INVALID_ARGUMENT',
+                            message=f'Could not download request media (HTTP {code} for {where})',
+                            cause=sanitized,
+                        ) from sanitized
+                    raise sanitized from None
+                encoding = response.headers.get('content-encoding', '').strip().lower()
+                if encoding not in ('', 'identity', 'gzip', 'x-gzip', 'deflate'):
                     raise GenkitError(
                         status='INVALID_ARGUMENT',
-                        message=f'Could not download request media (HTTP {code} for {where})',
-                        cause=sanitized,
-                    ) from sanitized
-                raise sanitized from None
-            encoding = response.headers.get('content-encoding', '').strip().lower()
-            if encoding not in ('', 'identity'):
-                raise GenkitError(
-                    status='INVALID_ARGUMENT',
-                    message=(
-                        f'media at {_redact_url(url)} sent unsupported '
-                        f'Content-Encoding {encoding!r}; expected uncompressed bytes'
-                    ),
-                )
-            declared = response.headers.get('content-length', '')
-            if declared.isdigit() and int(declared) > _MAX_MEDIA_DOWNLOAD_BYTES:
-                raise _media_too_large(url)
-            body = bytearray()
-            chunks = response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
-            async for chunk in chunks:
-                body.extend(chunk)
-                if len(body) > _MAX_MEDIA_DOWNLOAD_BYTES:
+                        message=(
+                            f'media at {_redact_url(url)} sent unsupported '
+                            f'Content-Encoding {encoding!r}; expected identity, gzip or deflate'
+                        ),
+                    )
+                declared = response.headers.get('content-length', '')
+                if declared.isdigit() and int(declared) > _MAX_MEDIA_DOWNLOAD_BYTES:
                     raise _media_too_large(url)
-            return bytes(body), response.headers.get('content-type')
+                # Some CDNs gzip despite Accept-Encoding: identity. Decompress here,
+                # bounded, so the cap applies to the decompressed size and a small
+                # compressed body can't expand past it in one step.
+                decoder = _bounded_decoder(encoding)
+                chunks = response.aiter_raw()
+                if response.is_stream_consumed:
+                    # Already read (mock transports): httpx has decoded it.
+                    decoder, chunks = None, response.aiter_bytes()
+                body = bytearray()
+                try:
+                    async for chunk in chunks:
+                        if decoder is None:
+                            body.extend(chunk)
+                        else:
+                            data = chunk
+                            while data:
+                                body.extend(decoder.decompress(data, _MAX_MEDIA_DOWNLOAD_BYTES + 1 - len(body)))
+                                if len(body) > _MAX_MEDIA_DOWNLOAD_BYTES:
+                                    raise _media_too_large(url)
+                                data = decoder.unconsumed_tail
+                        if len(body) > _MAX_MEDIA_DOWNLOAD_BYTES:
+                            raise _media_too_large(url)
+                    if decoder is not None:
+                        body.extend(decoder.flush())
+                        if len(body) > _MAX_MEDIA_DOWNLOAD_BYTES:
+                            raise _media_too_large(url)
+                except zlib.error as e:
+                    raise GenkitError(
+                        status='INVALID_ARGUMENT',
+                        message=f'media at {_redact_url(url)} has a corrupt {encoding} body',
+                        cause=e,
+                    ) from e
+                if decoder is not None and not decoder.eof:
+                    raise GenkitError(
+                        status='INVALID_ARGUMENT',
+                        message=f'media at {_redact_url(url)} has a truncated {encoding} body',
+                    )
+                return bytes(body), response.headers.get('content-type')
+        except httpx.DecodingError as e:
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message=f'media at {_redact_url(url)} has a corrupt compressed body',
+                cause=e,
+            ) from e
 
 
 # A truncated image or video is a corrupt file, so a URL over the cap fails
@@ -611,3 +703,77 @@ def _enum_value(value: object) -> object:
 
 def _media_too_large(url: str) -> GenkitError:
     return GenkitError(status='INVALID_ARGUMENT', message=f'media at {_redact_url(url)} is larger than 20MB')
+
+
+def _bounded_decoder(encoding: str) -> Any:  # noqa: ANN401
+    """A zlib decompressobj for a gzip/deflate Content-Encoding, or None for identity."""
+    if encoding in ('gzip', 'x-gzip'):
+        return zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if encoding == 'deflate':
+        # RFC 9110 deflate is zlib-wrapped; 32 + MAX_WBITS also accepts gzip headers.
+        return zlib.decompressobj(32 + zlib.MAX_WBITS)
+    return None
+
+
+# Media types that say nothing about the content; a caller's or the URI's type is better.
+_GENERIC_MEDIA_TYPES = frozenset({'application/octet-stream', 'binary/octet-stream', 'application/x-binary'})
+
+
+def _media_type(value: str | None, *, skip_generic: bool = False) -> str | None:
+    """*value* without parameters (``; charset=...``), lowercased; None if empty or generic when *skip_generic*."""
+    if not value:
+        return None
+    media_type = value.split(';', 1)[0].strip().lower()
+    if not media_type or (skip_generic and media_type in _GENERIC_MEDIA_TYPES):
+        return None
+    return media_type
+
+
+def _invalid_media(message: str) -> GenkitError:
+    return GenkitError(status='INVALID_ARGUMENT', message=message)
+
+
+def _decode_data_uri(url: str) -> tuple[str | None, bytes]:
+    """The media type and bytes of an RFC 2397 ``data:`` URI.
+
+    Raises:
+        GenkitError: INVALID_ARGUMENT for a URI with no ``,`` or a payload
+            that doesn't decode. The payload is not echoed back.
+    """
+    header, sep, payload = url.partition(',')
+    if not sep:
+        raise _invalid_media("media data: URI has no ',' before its payload; expected data:<type>;base64,<data>")
+    params = header[len('data:') :].split(';')
+    is_base64 = any(p.strip().lower() == 'base64' for p in params[1:])
+    try:
+        data = (
+            base64.b64decode(payload.translate(_ASCII_WHITESPACE), validate=True)
+            if is_base64
+            else unquote_to_bytes(payload)
+        )
+    except (binascii.Error, ValueError) as e:
+        raise _invalid_media('media data: URI payload is not valid base64') from e
+    return _media_type(params[0]), data
+
+
+# A Windows drive path (C:\x or C:/x) parses as a one-letter URI scheme.
+_WINDOWS_PATH = re.compile(r'^[A-Za-z]:[\\/]')
+
+
+def _reject_non_uri_media(url: str) -> None:
+    """Raise for media URLs Gemini can't resolve: ``file://``, local paths, schemeless strings.
+
+    The message names the problem, not the value, so a path or payload
+    isn't echoed into logs and traces.
+    """
+    scheme = urlsplit(url).scheme.lower() if not _WINDOWS_PATH.match(url) else ''
+    if scheme == 'file' or (not scheme and (url.startswith(('/', './', '../', '~', '\\')) or _WINDOWS_PATH.match(url))):
+        raise _invalid_media(
+            'media url is a local file path; Gemini cannot read local files. '
+            'Read the bytes and pass a data: URI, or upload the file and pass its URI.'
+        )
+    if not scheme:
+        raise _invalid_media(
+            'media url has no URI scheme; pass inline bytes as a data:<type>;base64,<data> URI, '
+            'or pass an https:// or gs:// URI.'
+        )

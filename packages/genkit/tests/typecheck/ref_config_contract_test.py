@@ -220,8 +220,9 @@ async def test_define_prompt_ref_config() -> None:
     typed_dish = ai.define_prompt(
         name='typed_dish', model=BISTRO, prompt='Suggest a dish.', config=BistroConfig(), output_schema=Dish
     )
-    # ty types define_prompt Unknown whenever config and a typed output_schema are both
-    # passed, with a ref or a model name. Same on the base branch; pyright and pyrefly get it.
+    # ty < 0.0.33 bug: the overload result depends on keyword-argument order, so prompt=
+    # before config= types this Unknown. Fixed upstream (astral-sh/ty#3139). Remove when
+    # ty is bumped.
     assert_type((await typed_dish()).output, Dish | None)  # ty: ignore[type-assertion-failure]
 
     # 3. Wrong family

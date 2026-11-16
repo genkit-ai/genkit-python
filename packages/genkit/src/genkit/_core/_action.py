@@ -375,7 +375,7 @@ class ActionParams:
         self,
         fn: Callable[..., _CallT],
         input: object,  # noqa: A002
-        ctx: 'ActionContext',
+        ctx: ActionContext,
     ) -> _CallT:
         """Call ``fn`` with ``input`` and ``ctx`` passed by parameter name.
 

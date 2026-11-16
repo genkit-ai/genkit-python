@@ -196,7 +196,7 @@ def _undated(name: str) -> str:
 
 
 _UNSUPPORTED_MODEL_PATTERN = re.compile(
-    r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind|diarize'
+    r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind'
     r'|^gpt-live-|^gpt-audio'
     r'|^(ada|babbage|curie|davinci)\b'
 )

@@ -78,7 +78,7 @@ async def test_chat_ids_are_listed_as_chat_models(model_id: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model_id', _HIDDEN)
 async def test_hidden_ids_are_not_listed(model_id: str) -> None:
-    """Realtime, live, audio, moderation, diarize, Responses-only, legacy base and DALL-E ids are not listed."""
+    """Realtime, live, audio, moderation, Responses-only, legacy base and DALL-E ids are not listed."""
     assert model_id not in await _listed()
 
 
@@ -106,6 +106,15 @@ async def test_non_chat_ids_are_listed_under_their_own_kind(model_id: str, kind:
     """Embedders, speech, transcription and GPT Image ids are listed with their own config."""
     listed = await _listed()
     assert listed[model_id].kind == kind
+
+
+@pytest.mark.asyncio
+async def test_gpt_4o_transcribe_diarize_is_listed_as_a_transcription_model() -> None:
+    """gpt-4o-transcribe-diarize is listed with the transcription config, not hidden or listed as chat."""
+    action = (await _listed())['gpt-4o-transcribe-diarize']
+
+    assert action.kind == ActionKind.MODEL
+    assert _model_meta(action)['customOptions']['title'] == 'OpenAISttConfig'
 
 
 @pytest.mark.asyncio

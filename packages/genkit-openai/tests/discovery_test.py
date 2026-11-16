@@ -96,6 +96,7 @@ async def test_other_ids_are_not_listed_as_chat_models(model_id: str) -> None:
     ('model_id', 'kind'),
     [
         ('text-embedding-3-small', ActionKind.EMBEDDER),
+        ('text-embedding-ada-002', ActionKind.EMBEDDER),
         ('tts-1-hd-1106', ActionKind.MODEL),
         ('gpt-4o-mini-transcribe-2025-12-15', ActionKind.MODEL),
         ('gpt-image-2.5-flare-2026-09-08', ActionKind.MODEL),

@@ -451,7 +451,7 @@ class Prompt(Generic[InputT, OutputT]):
         resume_respond: Part | list[Part] | None = None,
         resume_restart: Part | list[Part] | None = None,
         resume_metadata: dict[str, Any] | None = None,
-        on_chunk: Callable[[ModelResponseChunk], Any] | None = None,
+        on_chunk: Callable[[ModelResponseChunk[OutputT]], Any] | None = None,
     ) -> ModelResponse[OutputT]:
         """Render the prompt with ``input`` as template variables, run it, and return the response.
 
@@ -481,7 +481,7 @@ class Prompt(Generic[InputT, OutputT]):
         *,
         input: InputT | dict[str, Any] | None,
         opts: PromptGenerateOptions,
-        on_chunk: Callable[[ModelResponseChunk], Any] | None,
+        on_chunk: Callable[[ModelResponseChunk[OutputT]], Any] | None,
         caller_stopped: asyncio.Event | None,
     ) -> ModelResponse[OutputT]:
         async def run() -> ModelResponse:
@@ -489,7 +489,9 @@ class Prompt(Generic[InputT, OutputT]):
             return await generate_action(
                 prepared.scope,
                 prepared.options,
-                on_chunk=on_chunk,
+                # generate_action isn't generic in the output type; it parses chunk
+                # output with this prompt's schema, so chunks are ModelResponseChunk[OutputT].
+                on_chunk=cast('Callable[[ModelResponseChunk], None] | None', on_chunk),
                 # Same context the template already rendered, so {{@auth}} and tools agree.
                 context=prepared.context,
                 caller_stopped=caller_stopped,
@@ -561,7 +563,7 @@ class Prompt(Generic[InputT, OutputT]):
             return await self._run(
                 input=input,
                 opts=opts,
-                on_chunk=lambda c: send_chunk(cast('ModelResponseChunk[OutputT]', c)),
+                on_chunk=send_chunk,
                 caller_stopped=caller_stopped,
             )
 

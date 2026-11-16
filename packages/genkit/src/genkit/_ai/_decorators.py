@@ -24,7 +24,7 @@ from typing import Any, TypeVar, overload
 from pydantic import BaseModel
 
 from genkit._ai._tools import define_tool
-from genkit._core._action import CtxDefaultInputFn, DefaultInputFn, FlowContext
+from genkit._core._action import CtxDefaultInputFn, DefaultInputCtxFn, DefaultInputFn, FlowContext
 from genkit._core._flow import DefaultedFlow, Flow, define_flow
 from genkit._core._registry import Registry
 from genkit._core._tool import DefaultedTool, Tool, ToolContext
@@ -47,7 +47,8 @@ class _FlowDecorator:
     #
     # - A defaulted input (`async def f(x: str = '...')`) matches the
     #   Default*Fn Protocols and returns DefaultedFlow[str, ...]: the input may
-    #   be omitted, but None isn't a str.
+    #   be omitted, but None isn't a str. `(x = ..., ctx = None)` also fits
+    #   the (input, ctx) shape, so DefaultInputCtxFn comes before it.
     # - `(x: Any)` and `(x: object)` also accept a FlowContext, so they'd match
     #   the ctx-only shape and type as Flow[None, ...]. The `object` shapes
     #   come first and catch them as Flow[Any, ...]. A real `(ctx: FlowContext)`
@@ -59,6 +60,11 @@ class _FlowDecorator:
     def __call__(
         self, func: Callable[[FlowContext[ChunkT], object], Awaitable[OutputT]]
     ) -> Flow[Any, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
+        self, func: DefaultInputCtxFn[FlowContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedFlow[InputT, OutputT, ChunkT]: ...
 
     @overload
     def __call__(
@@ -115,6 +121,11 @@ class _ToolDecorator:
     def __call__(
         self, func: Callable[[ToolContext[ChunkT], object], Awaitable[OutputT]]
     ) -> Tool[Any, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
+        self, func: DefaultInputCtxFn[ToolContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedTool[InputT, OutputT, ChunkT]: ...
 
     @overload
     def __call__(

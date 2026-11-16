@@ -25,6 +25,7 @@ from genkit._core._action import (
     Action,
     ActionKind,
     CtxDefaultInputFn,
+    DefaultInputCtxFn,
     DefaultInputFn,
     input_from_json,
     input_has_default,
@@ -301,7 +302,8 @@ def _define_tool(
 #   flow: the function takes no input, so a direct call passes none.
 # - ty types ``(ctx, x: Any)`` as Unknown: the typing spec's overload rule for
 #   Any arguments makes it ambiguous, and no order fixes that.
-# - A defaulted input returns ``DefaultedTool``.
+# - A defaulted input returns ``DefaultedTool``. ``(x = ..., ctx = None)``
+#   also fits ``[InputT, ToolContext]``, so its shape comes before that one.
 @overload
 def define_tool(
     registry: Registry,
@@ -311,6 +313,17 @@ def define_tool(
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
 ) -> _Tool[Any, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
+    func: DefaultInputCtxFn[ToolContext[ToolChunkT], ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> DefaultedTool[ToolInputT, ToolOutputT, ToolChunkT]: ...
 
 
 @overload

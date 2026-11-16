@@ -30,6 +30,7 @@ from genkit._core._action import (
     ChunkT,
     CtxDefaultInputFn,
     DefaultedAction,
+    DefaultInputCtxFn,
     DefaultInputFn,
     FlowContext,
     InputT,
@@ -62,6 +63,18 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
+    # The defaulted-input shapes are self-typed to DefaultedFlow, so they
+    # apply when define_flow builds one. Flow(fn) itself stays a Flow and
+    # skips them. `(x = ..., ctx = None)` also fits (input, ctx); catch it first.
+    @overload
+    def __init__(
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT],
+        func: DefaultInputCtxFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
     @overload
     def __init__(
         self,
@@ -71,9 +84,6 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
-    # The defaulted-input shapes are self-typed to DefaultedFlow, so they
-    # apply when define_flow builds one. Flow(fn) itself stays a Flow and
-    # skips them.
     @overload
     def __init__(
         self: DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT],
@@ -176,6 +186,15 @@ def define_flow(
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[Any, _FlowOutputT, _FlowChunkT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
+    func: DefaultInputCtxFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT]: ...
 
 
 @overload

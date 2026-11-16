@@ -87,6 +87,7 @@ from genkit._core._action import (
     Action,
     ActionKind,
     CtxDefaultInputFn,
+    DefaultInputCtxFn,
     DefaultInputFn,
     FlowContext,
     get_current_context,
@@ -328,6 +329,13 @@ class Genkit:
     @overload
     def flow(
         self,
+        func: DefaultInputCtxFn[FlowContext[ChunkT], InputT, OutputT],
+        /,
+    ) -> DefaultedFlow[InputT, OutputT, ChunkT]: ...
+
+    @overload
+    def flow(
+        self,
         func: Callable[[InputT, FlowContext[ChunkT]], Awaitable[OutputT]],
         /,
     ) -> Flow[InputT, OutputT, ChunkT]: ...
@@ -505,6 +513,13 @@ class Genkit:
         func: Callable[[ToolContext[ChunkT], object], Awaitable[OutputT]],
         /,
     ) -> Tool[Any, OutputT, ChunkT]: ...
+
+    @overload
+    def tool(
+        self,
+        func: DefaultInputCtxFn[ToolContext[ChunkT], InputT, OutputT],
+        /,
+    ) -> DefaultedTool[InputT, OutputT, ChunkT]: ...
 
     @overload
     def tool(

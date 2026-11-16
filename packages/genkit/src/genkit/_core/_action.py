@@ -886,6 +886,22 @@ class CtxDefaultInputFn(Protocol[_FnCtxT_contra, _FnInputT_contra, _FnOutputT_co
     ) -> Awaitable[_FnOutputT_co]: ...
 
 
+class DefaultInputCtxFn(Protocol[_FnCtxT_contra, _FnInputT_contra, _FnOutputT_co]):
+    """``DefaultInputFn`` with the context last.
+
+    ``async def greet(name: str = 'world', ctx: FlowContext | None = None)``.
+    Python makes a parameter after a defaulted one take a default too. Both
+    are positional here, so the context matches by position, whatever it's named.
+    """
+
+    def __call__(
+        self,
+        input: _FnInputT_contra = ...,  # noqa: A002
+        ctx: _FnCtxT_contra = ...,
+        /,
+    ) -> Awaitable[_FnOutputT_co]: ...
+
+
 # Generic streaming callback - use Callable[[ChunkT], None] for typed chunks
 # This untyped version is for internal use where chunk type is unknown
 StreamingCallback = Callable[[object], None]

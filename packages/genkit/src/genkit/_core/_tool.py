@@ -34,6 +34,7 @@ from genkit._core._action import (
     ActionKind,
     CtxDefaultInputFn,
     DefaultedAction,
+    DefaultInputCtxFn,
     DefaultInputFn,
     get_func_description,
     resolve_type_hints,
@@ -363,6 +364,19 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         input_schema: type[BaseModel] | dict[str, object] | None = None,
     ) -> None: ...
 
+    # The defaulted-input shapes are self-typed to DefaultedTool, so they
+    # apply when define_tool builds one. Tool(fn) itself stays a Tool and
+    # skips them. `(x = ..., ctx = None)` also fits (input, ctx); catch it first.
+    @overload
+    def __init__(
+        self: DefaultedTool[_I, _O, _C],
+        func: DefaultInputCtxFn[ToolContext[_C], _I, _O],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
     @overload
     def __init__(
         self: Tool[_I, _O, _C],
@@ -373,9 +387,6 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         input_schema: type[BaseModel] | dict[str, object] | None = None,
     ) -> None: ...
 
-    # The defaulted-input shapes are self-typed to DefaultedTool, so they
-    # apply when define_tool builds one. Tool(fn) itself stays a Tool and
-    # skips them.
     @overload
     def __init__(
         self: DefaultedTool[_I, _O, _C],

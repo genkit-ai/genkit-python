@@ -655,13 +655,13 @@ async def test_plugin_without_key_lists_built_in_catalog_without_calling_openai(
 def test_openai_positional_argument_raises_type_error() -> None:
     """OpenAI('sk-...') raises TypeError; the key is passed as api_key=."""
     with pytest.raises(TypeError):
-        OpenAI('sk-key')  # type: ignore[misc]
+        OpenAI('sk-key')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_openai_misspelled_api_key_raises_type_error() -> None:
     """OpenAI(apikey=...) raises TypeError naming apikey instead of silently running without a key."""
     with pytest.raises(TypeError, match='apikey'):
-        OpenAI(apikey='sk-key')  # type: ignore[call-arg]
+        OpenAI(apikey='sk-key')  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_openai_api_key_in_both_places_raises() -> None:

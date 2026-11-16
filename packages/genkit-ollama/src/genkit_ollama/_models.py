@@ -474,7 +474,7 @@ class OllamaModel:
         if streaming_request:
             async with wrap_connection_errors(self._base_url):
                 # Streaming call with literal stream=True for proper overload resolution
-                chat_response = await client.chat(  # type: ignore[no-matching-overload]
+                chat_response = await client.chat(  # type: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
                     model=self.model_definition.name,
                     messages=messages,
                     tools=tools,
@@ -513,7 +513,7 @@ class OllamaModel:
         else:
             async with wrap_connection_errors(self._base_url):
                 # Non-streaming call with literal stream=False for proper overload resolution
-                chat_response = await client.chat(  # type: ignore[no-matching-overload]
+                chat_response = await client.chat(  # type: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
                     model=self.model_definition.name,
                     messages=messages,
                     tools=tools,

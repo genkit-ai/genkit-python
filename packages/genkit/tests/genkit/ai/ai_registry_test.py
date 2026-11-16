@@ -109,10 +109,10 @@ class TestDefineJsonSchema:
 
         assert schema is not None
         assert schema['type'] == 'object'
-        properties: dict[str, object] = schema['properties']  # type: ignore[assignment]
+        properties = schema['properties']
         assert isinstance(properties, dict)
         assert 'ingredients' in properties
-        ingredients: dict[str, object] = properties['ingredients']  # type: ignore[assignment]
+        ingredients = properties['ingredients']
         assert isinstance(ingredients, dict)
         assert ingredients['type'] == 'array'
 

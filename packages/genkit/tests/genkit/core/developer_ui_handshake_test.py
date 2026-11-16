@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Generator
+from collections.abc import Awaitable, Callable, Generator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -208,8 +208,8 @@ async def test_handshake_still_fills_the_traces_tab_when_another_backend_is_on(
     url = f'http://127.0.0.1:{server.server_address[1]}'
 
     class AlreadyOn:
-        async def run_in_new_span(self, metadata: object, next: object) -> object:
-            return await next()  # type: ignore[misc]
+        async def run_in_new_span(self, metadata: object, next: Callable[[], Awaitable[object]]) -> object:
+            return await next()
 
     try:
         configure_instrumentation(AlreadyOn())

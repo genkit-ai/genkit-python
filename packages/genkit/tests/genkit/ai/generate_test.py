@@ -823,7 +823,7 @@ def test_middleware_config_is_read_only() -> None:
     assert by_config.config.prefix == 'b'
 
     with pytest.raises(AttributeError):
-        by_kwargs.config = _PrefixConfig(prefix='z')  # type: ignore[misc]
+        by_kwargs.config = _PrefixConfig(prefix='z')  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     assert by_kwargs.config.prefix == 'a'
 
 
@@ -831,7 +831,7 @@ def test_base_middleware_rejects_explicit_config_class() -> None:
     with pytest.raises(TypeError, match='must not define Config'):
 
         class _Bad(Middleware):
-            class Config(BaseModel):
+            class Config(BaseModel):  # ty: ignore[invalid-attribute-override]
                 x: int = 1
 
 
@@ -3270,7 +3270,7 @@ def test_chunk_accumulator_make_kwargs_only() -> None:
     raw_chunk = ModelResponseChunk(role=Role.MODEL, content=[Part.from_text('hi')])
 
     with pytest.raises(TypeError):
-        acc.make(Role.MODEL, raw_chunk)  # type: ignore[misc]
+        acc.make(Role.MODEL, raw_chunk)  # type: ignore[misc]  # ty: ignore[missing-argument, too-many-positional-arguments]
 
     wrapped = acc.make(role=Role.MODEL, chunk=raw_chunk)
     assert wrapped.index == 0
@@ -7738,7 +7738,7 @@ async def test_generate_wrap_generate_dict_after_next_fn_keeps_model_turn() -> N
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -7781,7 +7781,7 @@ async def test_generate_wrap_generate_dict_after_next_fn_keeps_closed_rounds() -
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         _model_calls_tool(name='lookup', ref='r1'),
@@ -7820,7 +7820,7 @@ async def test_generate_wrap_generate_dict_before_next_fn_drops_unanswered_model
             ctx: MiddlewareContext,
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -7871,7 +7871,7 @@ async def test_generate_wrap_generate_dict_after_short_circuit_next_fn_keeps_mod
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -7974,7 +7974,7 @@ async def test_generate_wrap_generate_dict_after_short_circuit_dict_next_fn_drop
             ctx: MiddlewareContext,
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
-            return {'text': 'cached-dict'}  # type: ignore[return-value]
+            return {'text': 'cached-dict'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     @ai.middleware(name='dump_after_cache_dict')
     class DumpAfterCache(Middleware[Config]):
@@ -7985,7 +7985,7 @@ async def test_generate_wrap_generate_dict_after_short_circuit_dict_next_fn_drop
             next_fn: Callable[[GenerateHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -8021,7 +8021,7 @@ async def test_generate_wrap_model_dict_after_short_circuit_dict_next_fn_drops_u
             ctx: MiddlewareContext,
             next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
-            return {'text': 'cached-dict'}  # type: ignore[return-value]
+            return {'text': 'cached-dict'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     @ai.middleware(name='dump_after_cache_model_dict')
     class DumpAfterCache(Middleware[Config]):
@@ -8032,7 +8032,7 @@ async def test_generate_wrap_model_dict_after_short_circuit_dict_next_fn_drops_u
             next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -8068,7 +8068,7 @@ async def test_generate_wrap_model_dict_before_next_fn_drops_unanswered_model() 
             ctx: MiddlewareContext,
             next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(
@@ -8140,7 +8140,7 @@ async def test_generate_wrap_model_dict_after_next_fn_drops_unanswered_model() -
             next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
         ) -> ModelResponse:
             await next_fn(params, ctx)
-            return {'text': 'nope'}  # type: ignore[return-value]
+            return {'text': 'nope'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     pm.responses = [
         ModelResponse(

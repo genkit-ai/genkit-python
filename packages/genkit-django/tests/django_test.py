@@ -150,7 +150,7 @@ def _build_views() -> dict[str, Any]:
     @genkit_django_handler(ai)
     @ai.flow()
     async def close_tab(table: int) -> Receipt:
-        return {'table': table, 'note': None}  # type: ignore[return-value]
+        return {'table': table, 'note': None}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     @genkit_django_handler(ai)
     @ai.flow()
@@ -181,7 +181,7 @@ def urlconf(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     module = types.ModuleType('genkit_django_tests_urls')
     # Django reads urlpatterns off the module object; type checkers can't see
     # this attribute on `types.ModuleType`, hence the suppressions.
-    module.urlpatterns = [  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    module.urlpatterns = [  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
         path('chat', views['say_hi']),
         path('error_flow', views['raise_error']),
         path('invalid_flow', views['raise_invalid']),
@@ -526,7 +526,7 @@ async def test_django_streaming_client_disconnect_cancels_flow(monkeypatch: pyte
         return 'never'
 
     module = types.ModuleType('genkit_django_disconnect_urls')
-    module.urlpatterns = [path('slow', slow)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    module.urlpatterns = [path('slow', slow)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
     monkeypatch.setitem(sys.modules, 'genkit_django_disconnect_urls', module)
 
     first_chunk = asyncio.Event()
@@ -590,7 +590,7 @@ async def test_django_non_streaming_client_disconnect_cancels_flow(monkeypatch: 
         return 'never'
 
     module = types.ModuleType('genkit_django_nonstream_disconnect_urls')
-    module.urlpatterns = [path('slow', slow)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    module.urlpatterns = [path('slow', slow)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
     monkeypatch.setitem(sys.modules, 'genkit_django_nonstream_disconnect_urls', module)
 
     request_read = False

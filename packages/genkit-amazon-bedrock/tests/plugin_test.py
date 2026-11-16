@@ -474,7 +474,7 @@ async def test_generate_bedrock_arn_model_keeps_full_path() -> None:
 def test_bedrock_positional_region_raises_type_error() -> None:
     """Bedrock('us-east-1') raises TypeError; the region is passed as region=."""
     with pytest.raises(TypeError):
-        Bedrock('us-east-1')  # type: ignore[misc]
+        Bedrock('us-east-1')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 @pytest.mark.asyncio

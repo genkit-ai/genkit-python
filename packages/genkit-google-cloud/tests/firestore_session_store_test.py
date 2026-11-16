@@ -1439,9 +1439,11 @@ async def test_firestore_session_store_shrinking_checkpoint_prunes_orphan_shards
     assert _shard_path('snap-1', 0) in h.docs
     assert _shard_path('snap-1', 2) in h.docs  # >= 3 shards at size 64
 
-    await store.save_snapshot(
-        'snap-1', lambda e: e.model_copy(update={'state': SessionState(session_id='sess-1', custom={})})
-    )
+    def shrink(existing: SessionSnapshot | None) -> SessionSnapshot:
+        assert existing is not None
+        return existing.model_copy(update={'state': SessionState(session_id='sess-1', custom={})})
+
+    await store.save_snapshot('snap-1', shrink)
 
     assert _shard_path('snap-1', 0) in h.docs
     assert _shard_path('snap-1', 1) not in h.docs

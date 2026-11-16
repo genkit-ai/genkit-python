@@ -1136,7 +1136,9 @@ async def test_vertexai_resolve_embedder(mock_list_models: MagicMock, mock_clien
 def test_importing_embedding_task_type_raises() -> None:
     """from genkit_google_genai import EmbeddingTaskType raises ImportError."""
     with pytest.raises(ImportError):
-        from genkit_google_genai import EmbeddingTaskType  # type: ignore[attr-defined]  # noqa: F401
+        from genkit_google_genai import (
+            EmbeddingTaskType,  # type: ignore[attr-defined]  # noqa: F401  # ty: ignore[unresolved-import]
+        )
 
 
 def test_gemini_config() -> None:

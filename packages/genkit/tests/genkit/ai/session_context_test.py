@@ -40,7 +40,7 @@ async def test_middleware_context_ai_current_session_inside_agent_session_raises
 
     async def check() -> None:
         with pytest.raises(AttributeError):
-            ctx.ai.current_session()  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+            ctx.ai.current_session()  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # ty: ignore[unresolved-attribute]
 
     await run_with_session(session=session, coro=check())
 

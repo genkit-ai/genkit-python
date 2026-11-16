@@ -314,7 +314,7 @@ async def test_generate_bedrock_image_without_extra_body_unchanged(model: str, e
 def test_bedrock_config_with_old_additional_fields_name_raises_validation_error() -> None:
     """`BedrockConfig(additional_model_request_fields=...)` is a ValidationError."""
     with pytest.raises(ValidationError):
-        BedrockConfig(additional_model_request_fields=THINKING)  # type: ignore[call-arg]
+        BedrockConfig(additional_model_request_fields=THINKING)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.asyncio

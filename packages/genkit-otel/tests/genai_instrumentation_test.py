@@ -18,7 +18,7 @@ import asyncio
 import datetime
 import json
 from collections.abc import Mapping
-from typing import get_args
+from typing import cast, get_args
 
 import pytest
 from genkit_otel import GenAiInstrumentation
@@ -472,8 +472,8 @@ async def test_event_only_records_tool_arguments_on_event_not_span(harness) -> N
     record = _operation_details_record(harness)
     assert record is not None
     attrs = dict(record.attributes or {})
-    assert 'the recipe' in attrs[GenAiAttr.TOOL_CALL_ARGUMENTS]
-    assert 'classified' in attrs[GenAiAttr.TOOL_CALL_RESULT]
+    assert 'the recipe' in cast(str, attrs[GenAiAttr.TOOL_CALL_ARGUMENTS])
+    assert 'classified' in cast(str, attrs[GenAiAttr.TOOL_CALL_RESULT])
     assert record.trace_id == span.context.trace_id
     assert record.span_id == span.context.span_id
 
@@ -490,8 +490,8 @@ async def test_span_and_event_records_tool_arguments_on_span_and_event(harness) 
     record = _operation_details_record(harness)
     assert record is not None
     attrs = dict(record.attributes or {})
-    assert 'the recipe' in attrs[GenAiAttr.TOOL_CALL_ARGUMENTS]
-    assert 'classified' in attrs[GenAiAttr.TOOL_CALL_RESULT]
+    assert 'the recipe' in cast(str, attrs[GenAiAttr.TOOL_CALL_ARGUMENTS])
+    assert 'classified' in cast(str, attrs[GenAiAttr.TOOL_CALL_RESULT])
 
 
 @pytest.mark.asyncio

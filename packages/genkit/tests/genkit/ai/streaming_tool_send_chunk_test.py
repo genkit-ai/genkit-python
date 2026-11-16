@@ -163,7 +163,7 @@ async def test_tool_chunk_type_inference_and_two_arg_compatibility() -> None:
 
     # 5. Streaming ephemeral Tool(fn) yields typed Step chunks
     stream = ephemeral.stream(KitchenTicket(dish='Short Rib', servings=2))
-    assert_type(stream, StreamResponse[Step, Recipe])  # ty: ignore[type-assertion-failure]
+    assert_type(stream, StreamResponse[Step, Recipe])
     emitted = [chunk async for chunk in stream]
     assert emitted == [Step(stage='sear:Short Rib', percent=40)]
     assert await stream.response == Recipe(title='Short Rib', steps=['sear', 'simmer'])

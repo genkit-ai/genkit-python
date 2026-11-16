@@ -99,7 +99,8 @@ def test_a_prefixed_id_is_not_stamped_twice(
 def test_a_config_passed_at_construction_rides_on_the_ref(
     method: str, constructor: RefConstructor, model_id: str, schema: type[BaseModel]
 ) -> None:
-    config = schema(seed=7) if 'seed' in schema.model_fields else schema(max_output_tokens=256)
+    fields = {'seed': 7} if 'seed' in schema.model_fields else {'max_output_tokens': 256}
+    config = schema.model_validate(fields)
     ref = constructor(model_id, config=config)
 
     assert ref.config == config

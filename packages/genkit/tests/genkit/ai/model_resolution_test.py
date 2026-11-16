@@ -153,7 +153,7 @@ def test_resolved_model_is_frozen() -> None:
     """ResolvedModel is immutable once constructed."""
     resolved = ResolvedModel(name='m', config={})
     with pytest.raises(FrozenInstanceError):
-        resolved.name = 'other'  # type: ignore[misc]
+        resolved.name = 'other'  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_normalize_config_rejects_unsupported_type() -> None:

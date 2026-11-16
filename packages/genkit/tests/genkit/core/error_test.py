@@ -87,14 +87,14 @@ def test_error_reason_accessor_keeps_reason_nested() -> None:
     assert Failure(message='bad', details={'reason': 5}).reason is None
     assert Failure(message='bad', details={'reason': 'not-valid'}).reason is None
     with pytest.raises(ValidationError):
-        error.reason = ErrorReason.TOOL_FAILED  # type: ignore[misc]
+        error.reason = ErrorReason.TOOL_FAILED  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_failure_fields_are_read_only() -> None:
     """Assigning ``error.message = 'x'`` raises a validation error."""
     error = Failure(status='INTERNAL', message='bad')
     with pytest.raises(ValidationError):
-        error.message = 'x'
+        error.message = 'x'  # ty: ignore[invalid-assignment]
     assert error.message == 'bad'
 
 
@@ -208,7 +208,7 @@ def test_genkit_error_reason_stays_in_details() -> None:
     assert 'MODEL_NOT_FOUND' not in error.message
     assert GenkitError(status='NOT_FOUND', message='missing').reason is None
     with pytest.raises(AttributeError):
-        error.reason = ErrorReason.TOOL_NOT_FOUND  # type: ignore[misc]
+        error.reason = ErrorReason.TOOL_NOT_FOUND  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_genkit_error() -> None:

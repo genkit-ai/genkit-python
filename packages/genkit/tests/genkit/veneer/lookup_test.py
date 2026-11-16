@@ -292,7 +292,7 @@ def test_define_value_requires_keywords() -> None:
     ai = Genkit()
 
     with pytest.raises(TypeError):
-        ai.define_value('catalog', 'banner', 'value')  # type: ignore[misc]  # pyright: ignore[reportCallIssue]
+        ai.define_value('catalog', 'banner', 'value')  # type: ignore[misc]  # pyright: ignore[reportCallIssue]  # ty: ignore[missing-argument, too-many-positional-arguments]
 
     assert ai.lookup_value(kind='catalog', name='banner') is None
     assert ai.lookup_value(kind='banner', name='catalog') is None
@@ -328,7 +328,7 @@ def test_genkit_has_no_registry_attribute() -> None:
     ai = Genkit()
 
     with pytest.raises(AttributeError):
-        _ = ai.registry  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+        _ = ai.registry  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # ty: ignore[unresolved-attribute]
 
 
 @pytest.mark.asyncio

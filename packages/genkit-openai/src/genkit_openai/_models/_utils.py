@@ -21,7 +21,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import httpx
 from openai import (
@@ -512,7 +512,7 @@ class MessageAdapter:
             The reasoning content string or None.
         """
         try:
-            return self._data.reasoning_content  # type: ignore[union-attr]
+            return self._data.reasoning_content  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
         except AttributeError:
             return None
 
@@ -693,8 +693,9 @@ class MessageConverter:
             func_args = func.arguments if hasattr(func, 'arguments') else ''
         else:
             # Assume dict-like access
-            func = tool_call.get('function', {})  # type: ignore[attr-defined]
-            tool_id = tool_call.get('id', '')  # type: ignore[attr-defined]
+            tool_call_dict = cast(dict[str, Any], tool_call)
+            func = tool_call_dict.get('function', {})
+            tool_id = tool_call_dict.get('id', '')
             func_name = func.get('name', '')
             func_args = func.get('arguments', '')
 

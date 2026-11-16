@@ -11,7 +11,7 @@ naming the middleware, before anything reaches the next layer.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -120,7 +120,7 @@ async def test_middleware_and_model_see_the_same_config_class() -> None:
     )
 
     assert [type(c) for c in (*outer, *inner, *model.configs)] == [StrictConfig] * 3
-    assert model.configs[0].temperature == 0.2  # type: ignore[attr-defined]
+    assert cast(StrictConfig, model.configs[0]).temperature == 0.2
 
 
 @pytest.mark.asyncio
@@ -407,7 +407,7 @@ async def test_outer_retry_after_fixing_the_value_reaches_the_model() -> None:
     )
 
     assert response.text == 'ok'
-    assert [c.temperature for c in model.configs] == [0.5]  # type: ignore[attr-defined]
+    assert [cast(StrictConfig, c).temperature for c in model.configs] == [0.5]
 
 
 def _append_stop(params: Any) -> None:  # noqa: ANN401

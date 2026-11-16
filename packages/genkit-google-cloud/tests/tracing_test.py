@@ -154,7 +154,7 @@ def test_enable_google_cloud_telemetry_with_project() -> None:
 def test_enable_google_cloud_telemetry_positional_project_raises_type_error() -> None:
     """enable_google_cloud_telemetry('my-project') raises TypeError; the project is passed as project=."""
     with pytest.raises(TypeError):
-        enable_google_cloud_telemetry('my-project')  # type: ignore[misc]
+        enable_google_cloud_telemetry('my-project')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_enable_google_cloud_telemetry_skips_in_dev_without_force() -> None:
@@ -340,7 +340,7 @@ def test_enable_adds_a_logging_processor_when_they_already_own_a_logger_provider
         added.append(processor)
         original(processor)
 
-    existing.add_log_record_processor = _spy  # type: ignore[method-assign]
+    existing.add_log_record_processor = _spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
     _stub_cloud_logging_exporter.return_value = InMemoryLogRecordExporter()
     with (
         mock.patch.dict(os.environ, {_GENKIT_ENV: _ENV_PROD}),

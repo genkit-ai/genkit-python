@@ -714,25 +714,25 @@ async def test_middleware_edit_that_breaks_a_merged_rule_fails_before_send(
 def test_anthropic_positional_argument_raises_type_error() -> None:
     """Anthropic('sk-ant-...') raises TypeError; the key is passed as api_key=."""
     with pytest.raises(TypeError):
-        Anthropic('sk-ant-key')  # type: ignore[misc]
+        Anthropic('sk-ant-key')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_anthropic_misspelled_api_key_raises_type_error() -> None:
     """Anthropic(apikey=...) raises TypeError naming apikey instead of silently running without a key."""
     with pytest.raises(TypeError, match='apikey'):
-        Anthropic(apikey='sk-ant-key')  # type: ignore[call-arg]
+        Anthropic(apikey='sk-ant-key')  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_anthropic_models_argument_raises_type_error() -> None:
     """Anthropic(models=[...]) raises TypeError; any Claude model resolves by name without a list."""
     with pytest.raises(TypeError, match='models'):
-        Anthropic(models=['claude-sonnet-4-6'])  # type: ignore[call-arg]
+        Anthropic(models=['claude-sonnet-4-6'])  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_anthropic_timeout_outside_client_options_raises_type_error() -> None:
     """Anthropic(timeout=30) raises TypeError; client settings go in client_options={'timeout': 30}."""
     with pytest.raises(TypeError, match='timeout'):
-        Anthropic(timeout=30)  # type: ignore[call-arg]
+        Anthropic(timeout=30)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_anthropic_api_key_in_both_places_raises() -> None:

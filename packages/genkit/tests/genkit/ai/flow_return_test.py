@@ -33,7 +33,7 @@ async def test_flow_returning_matching_dict_gives_caller_the_model() -> None:
 
     @ai.flow()
     async def charge(name: str) -> Receipt:
-        return {'account': name, 'amount': 1}  # type: ignore[return-value]
+        return {'account': name, 'amount': 1}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     result = await charge('acme')
 
@@ -61,7 +61,7 @@ async def test_flow_returning_wrong_shape_raises_invalid_output_with_validation_
 
     @ai.flow()
     async def charge(name: str) -> Receipt:
-        return {'account': name}  # type: ignore[return-value]
+        return {'account': name}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await charge('acme')
@@ -79,7 +79,7 @@ async def test_flow_returning_int_for_str_annotation_raises_invalid_output() -> 
 
     @ai.flow()
     async def label(name: str) -> str:
-        return 5  # type: ignore[return-value]
+        return 5  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await label('acme')
@@ -94,7 +94,7 @@ async def test_flow_annotated_none_returning_value_raises_invalid_output() -> No
 
     @ai.flow()
     async def notify(name: str) -> None:
-        return 'x'  # type: ignore[return-value]
+        return 'x'  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await notify('acme')
@@ -136,7 +136,7 @@ async def test_streamed_flow_response_is_the_model() -> None:
 
     @ai.flow()
     async def charge(name: str) -> Receipt:
-        return {'account': name, 'amount': 1}  # type: ignore[return-value]
+        return {'account': name, 'amount': 1}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     assert await charge.stream('acme').response == Receipt(account='acme', amount=1)
 
@@ -164,7 +164,7 @@ async def test_flow_returning_dict_with_extra_keys_gives_model_without_them() ->
 
     @ai.flow()
     async def close_tab(table: int) -> TabReceipt:
-        return {'table': table, 'tip_cents': 300}  # type: ignore[return-value]
+        return {'table': table, 'tip_cents': 300}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     result = await close_tab(4)
 
@@ -179,7 +179,7 @@ async def test_flow_returning_extra_keys_for_forbid_model_raises_invalid_output(
 
     @ai.flow()
     async def close_tab(table: int) -> StrictReceipt:
-        return {'table': table, 'tip_cents': 300}  # type: ignore[return-value]
+        return {'table': table, 'tip_cents': 300}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await close_tab(4)
@@ -196,7 +196,7 @@ async def test_flow_return_with_hidden_input_model_omits_value_from_error() -> N
 
     @ai.flow()
     async def login(_name: str) -> Secret:
-        return {'password': 'hunter2-secret'}  # type: ignore[return-value]
+        return {'password': 'hunter2-secret'}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await login('ada')
@@ -212,7 +212,7 @@ async def test_tool_returning_wrong_shape_is_not_checked() -> None:
 
     @ai.tool()
     async def echo(_name: str) -> int:
-        return 'x'  # type: ignore[return-value]
+        return 'x'  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     result = await echo('ada')
     assert result == 'x'
@@ -225,7 +225,7 @@ async def test_dev_ui_run_with_bad_return_reports_internal_invalid_output(hex_id
 
     @ai.flow()
     async def charge(name: str) -> Receipt:
-        return {'account': name}  # type: ignore[return-value]
+        return {'account': name}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     client = AsyncClient(transport=ASGITransport(app=create_reflection_asgi_app(ai._registry)), base_url='http://test')
     try:

@@ -357,7 +357,7 @@ def test_enable_when_process_tracer_cannot_attach_does_not_raise() -> None:
     def boom(_processor: object) -> None:
         raise RuntimeError('processor dead')
 
-    global_provider.add_span_processor = boom  # type: ignore[method-assign]
+    global_provider.add_span_processor = boom  # type: ignore[method-assign]  # ty: ignore[unresolved-attribute]
     with _cloud_enable():
         pass
 

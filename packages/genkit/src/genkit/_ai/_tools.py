@@ -439,11 +439,11 @@ def define_interrupt(
 
     async def interrupt_wrapper(input: Any) -> Any:  # noqa: ANN401 - wire JSON args; never returns (raises Interrupt)
         # Interrupt tools accept arbitrary JSON args like any tool.
-        meta = None
-        if callable(request_metadata):
-            meta = request_metadata(input)
-        elif request_metadata is not None:
+        meta: dict[str, Any] | None
+        if request_metadata is None or isinstance(request_metadata, dict):
             meta = request_metadata
+        else:
+            meta = request_metadata(input)
         raise Interrupt(meta)
 
     # The handler stays annotated ``Any`` so the model is told it may return anything.

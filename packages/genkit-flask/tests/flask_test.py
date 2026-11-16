@@ -435,7 +435,7 @@ def test_flask_flow_returning_dict_for_model_omits_none_fields() -> None:
     @genkit_flask_handler(ai)
     @ai.flow()
     async def close_tab(table: int) -> Receipt:
-        return {'table': table, 'note': None}  # type: ignore[return-value]
+        return {'table': table, 'note': None}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     response = app.test_client().post('/close_tab', json={'data': 4})
 

@@ -569,7 +569,7 @@ async def test_tool_constructor_infers_types_from_function() -> None:
     # constructors yet and infers Tool[Any, Any]; @ai.tool() is typed for it.
     assert_type(Tool(add_pair), Tool[Pair, int])  # ty: ignore[type-assertion-failure]
     assert_type(Tool(add_pair_ctx_first), Tool[Pair, int])  # ty: ignore[type-assertion-failure]
-    assert_type(Tool(whoami), Tool[Any, str])  # ty: ignore[type-assertion-failure]
+    assert_type(Tool(whoami), Tool[None, str])  # ty: ignore[type-assertion-failure]
     assert_type(Tool(double), Tool[int, int])  # ty: ignore[type-assertion-failure]
     assert_type(Tool(shot, name='shot'), Tool[None, ShotOut])  # ty: ignore[type-assertion-failure]
 
@@ -717,7 +717,7 @@ async def test_tool_input_type_inference_across_shapes() -> None:
     # ambiguous. No arrangement fixes it without breaking `(ctx: ToolContext)`.
     assert_type(ai.tool(echo_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool(echo_object), Tool[Any, str])
-    assert_type(ai.tool(whoami), Tool[Any, str])  # ty: ignore[type-assertion-failure]
+    assert_type(ai.tool(whoami), Tool[None, str])
     assert_type(ai.tool(ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool()(ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.tool()(echo_object), Tool[Any, str])

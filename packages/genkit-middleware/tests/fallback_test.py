@@ -26,6 +26,7 @@ from genkit_middleware import Fallback
 from pydantic import Field, ValidationError
 
 from genkit import (
+    Document,
     ErrorReason,
     FinishReason,
     Genkit,
@@ -310,6 +311,38 @@ async def test_fallback_backup_usage_lands_in_total_usage() -> None:
     assert response.text == 'Oat milk is on shelf 3.'
     assert response.usage == GenerationUsage(input_tokens=100, output_tokens=7)
     assert response.total_usage == GenerationUsage(input_tokens=110, output_tokens=11)
+
+
+@pytest.mark.asyncio
+async def test_fallback_backup_model_gets_the_docs() -> None:
+    """docs= are inlined in the model action, so the backup Fallback calls directly still sees them."""
+    ai = Genkit()
+    seen: list[ModelRequest] = []
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    async def backup(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        seen.append(request)
+        return ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('Lentil soup is vegan.')]),
+        )
+
+    ai.define_model(name='primary', fn=primary)
+    ai.define_model(name='backup', fn=backup)
+
+    await ai.generate(
+        model='primary',
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[Fallback(models=['backup'])],
+    )
+
+    context = [p for m in seen[0].messages for p in m.content if (p.metadata or {}).get('purpose') == 'context']
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
 
 
 @pytest.mark.asyncio

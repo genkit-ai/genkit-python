@@ -2283,3 +2283,93 @@ GenerateActionOptions.model_rebuild(
         'Role': Role,
     }
 )
+
+
+# docs= inlining. Runs in the model action (Action._run), after every wrap_model.
+
+
+CONTEXT_PREFACE = '\n\nUse the following information to complete your task:\n\n'
+
+
+def last_user_message(*, messages: list[Message]) -> Message | None:
+    """Find the last user message in a list."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == 'user':
+            return messages[i]
+    return None
+
+
+def context_item_template(d: Document, index: int) -> str:
+    """Render a document as a citation line for context injection.
+
+    Only ``ref``/``id`` goes on the line, same as JS. Other metadata (ACLs,
+    embeddings, tenant ids) stays out of the prompt. Only the document's text
+    is rendered; media parts in a document are not sent.
+    """
+    out = '- '
+    ref = (d.metadata and (d.metadata.get('ref') or d.metadata.get('id'))) or index
+    out += f'[{ref}]: '
+    out += text_from_content(d.content) + '\n'
+    return out
+
+
+def augment_with_context(
+    request: ModelRequest,
+    *,
+    preface: str | None = CONTEXT_PREFACE,
+    item_template: Callable[[Document, int], str] | None = None,
+    citation_key: str | None = None,
+) -> ModelRequest:
+    """Return a deepcopy of ``request`` with ``request.docs`` injected as a context part on the last user message.
+
+    No-op (returns ``request`` unchanged) when there are no docs, no user message, or the last user message
+    already has a non-pending ``purpose: 'context'`` part.
+    """
+    if not request.docs:
+        return request
+
+    user_message = last_user_message(messages=request.messages)
+    if user_message is None:
+        return request
+
+    # Find any existing context part in the last user message
+    context_idx = -1
+    for i, part in enumerate(user_message.content):
+        metadata = part.metadata or {}
+        if metadata.get('purpose') == 'context':
+            context_idx = i
+            break
+
+    # If context already exists, only proceed if it is a pending placeholder
+    if context_idx >= 0:
+        meta = user_message.content[context_idx].metadata or {}
+        if not meta.get('pending'):
+            logger.warning(
+                'docs= not injected: the last user message already has a context part',
+                docs=len(request.docs),
+            )
+            return request
+
+    # Render all documents as a single formatted text string
+    template = item_template or context_item_template
+    rendered_docs = []
+    for i, doc_data in enumerate(request.docs):
+        doc = Document(content=doc_data.content, metadata=doc_data.metadata)
+        if citation_key and doc.metadata:
+            doc.metadata['ref'] = doc.metadata.get(citation_key, i)
+        rendered_docs.append(template(doc, i))
+
+    text_content = (preface or '') + ''.join(rendered_docs) + '\n'
+    text_part = Part.from_text(text_content, metadata={'purpose': 'context'})
+
+    # Safe-mutation via deep copy
+    new_req = deepcopy(request)
+    new_user = last_user_message(messages=new_req.messages)
+    assert new_user is not None
+
+    if context_idx >= 0:
+        new_user.content[context_idx] = text_part
+    else:
+        new_user.content.append(text_part)
+
+    return new_req

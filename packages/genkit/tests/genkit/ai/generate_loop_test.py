@@ -655,25 +655,31 @@ async def test_total_usage_stays_off_when_no_model_reported_usage() -> None:
     assert response.total_usage is None
 
 
-@pytest.mark.asyncio
-async def test_response_request_is_what_the_model_received() -> None:
-    """A wrap_model that strips sensitive docs must not see them echoed on response.request.
+def _context_parts(request: ModelRequest | None) -> list[Part]:
+    assert request is not None
+    return [p for m in request.messages for p in m.content if (p.metadata or {}).get('purpose') == 'context']
 
-    Messages on response.request stay the resendable history by design; scrub
-    those in wrap_generate.
+
+class DropPatientDocs(Middleware):
+    async def wrap_model(
+        self,
+        params: ModelHookParams,
+        ctx: MiddlewareContext,
+        next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        return await next_fn(ModelHookParams(request=params.request.model_copy(update={'docs': None})), ctx)
+
+
+@pytest.mark.asyncio
+async def test_wrap_model_clearing_docs_keeps_them_from_the_model() -> None:
+    """Docs are inlined in the model action, after wrap_model, so clearing them really drops them.
+
+    response.request echoes what the model got: no docs. Its messages stay the
+    resendable history.
     """
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
     pm.responses = [_answers('ok')]
-
-    class DropPatientDocs(Middleware):
-        async def wrap_model(
-            self,
-            params: ModelHookParams,
-            ctx: MiddlewareContext,
-            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
-        ) -> ModelResponse:
-            return await next_fn(ModelHookParams(request=params.request.model_copy(update={'docs': None})), ctx)
 
     response = await ai.generate(
         prompt='summarize',
@@ -683,9 +689,105 @@ async def test_response_request_is_what_the_model_received() -> None:
 
     assert pm.last_request is not None
     assert pm.last_request.docs is None
+    assert _context_parts(pm.last_request) == []
+    assert all('123-45-6789' not in m.text for m in pm.last_request.messages)
     assert response.request is not None
     assert response.request.docs is None
     assert [m.text for m in response.request.messages] == ['summarize']
+
+
+@pytest.mark.asyncio
+async def test_docs_reach_the_model_through_a_wrap_model_that_leaves_them() -> None:
+    """wrap_model sees docs only on request.docs; the model gets them as a context part."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('Lentil soup is vegan.')]
+    seen_by_middleware: list[ModelRequest] = []
+
+    class Audit(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            seen_by_middleware.append(params.request)
+            return await next_fn(params, ctx)
+
+    response = await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[Audit()],
+    )
+
+    assert _context_parts(seen_by_middleware[0]) == []
+    assert seen_by_middleware[0].docs is not None
+    context = _context_parts(pm.last_request)
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
+    assert response.request is not None
+    assert response.request.docs is not None
+    assert [d.text for d in response.request.docs] == ['Lentil soup']
+
+
+@pytest.mark.asyncio
+async def test_docs_reach_a_model_middleware_calls_directly() -> None:
+    """A backup model run through _run (how Fallback calls it) still gets docs inlined, once."""
+    ai = Genkit(model='primary')
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    ai.define_model(name='primary', fn=primary)
+    backup, _ = define_scripted_model(ai, 'backup')
+    backup.responses = [_answers('Lentil soup is vegan.')]
+
+    class SwitchToBackup(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            try:
+                return await next_fn(params, ctx)
+            except GenkitError:
+                model = await ctx.ai.lookup_model('backup')
+                assert model is not None
+                return (await model._run(input=params.request, context=ctx.context)).response
+
+    await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[SwitchToBackup()],
+    )
+
+    context = _context_parts(backup.last_request)
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
+
+
+@pytest.mark.asyncio
+async def test_a_model_forwarding_its_request_does_not_inline_docs_twice() -> None:
+    """A model that hands its (already inlined) request to another model adds no second context part."""
+    ai = Genkit(model='router')
+    backup, backup_action = define_scripted_model(ai, 'backup')
+    backup.responses = [_answers('Lentil soup is vegan.')]
+
+    async def router(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        assert len(_context_parts(request)) == 1
+        return (await backup_action._run(input=request)).response
+
+    ai.define_model(name='router', fn=router)
+
+    await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+    )
+
+    assert len(_context_parts(backup.last_request)) == 1
 
 
 @pytest.mark.asyncio

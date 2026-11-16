@@ -69,6 +69,7 @@ from genkit._core._model import (
     ModelRequest,
     ModelResponse,
     ModelResponseChunk,
+    augment_with_context,
     config_type_path,
     declared_config_type,
     reject_config_api_key,
@@ -1324,6 +1325,17 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 reject_config_api_key(_request_config(input))
             input = self._layer_config_defaults(input)
             input = self._validate_input(input)
+            # docs= become a context part on the last user message here, in
+            # the model action, after every wrap_model has run. A middleware
+            # that clears request.docs keeps them from the model, and a model
+            # called directly (Fallback's backup, a judge) still gets them.
+            # No-op when the message already carries a rendered context part.
+            if (
+                self._kind in (ActionKind.MODEL, ActionKind.BACKGROUND_MODEL)
+                and isinstance(input, ModelRequest)
+                and input.docs
+            ):
+                input = cast(InputT, augment_with_context(input))
         init = self._validate_init(init)
 
         if context is None:

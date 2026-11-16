@@ -302,12 +302,10 @@ _SHUT_DOWN_SNAPSHOTS = frozenset({'gpt-4o-2024-05-13'})
 def _known_chat_model_info(name: str) -> ModelInfo | None:
     if info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
         return info
-    if name in _SHUT_DOWN_SNAPSHOTS:
+    alias = _undated(name)
+    if alias == name or name in _SHUT_DOWN_SNAPSHOTS:
         return None
-    base = _base_id(name)
-    if base == name:
-        base = _undated(name)
-    if base in (name, '') or (info := _known_chat_model_info(base)) is None:
+    if (info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias))) is None:
         return None
     return info.model_copy(update={'label': f'OpenAI - {name}'})
 
@@ -315,8 +313,7 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
 def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
-    A dated snapshot takes its alias's info and a fine-tune ``ft:<base>:...``
-    takes its base model's, stage included. A shut-down snapshot gets generic info.
+    A dated snapshot takes its alias's info, stage included, unless it is shut down.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 

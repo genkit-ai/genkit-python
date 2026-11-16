@@ -366,12 +366,10 @@ def test_responses_only_rosalind_ids_are_known_unsupported(model: str) -> None:
         ('gpt-5.4-mini-2026-03-17', 'gpt-5.4-mini'),
         ('gpt-5-search-api-2025-10-14', 'gpt-5-search-api'),
         ('o3-2025-04-16', 'o3'),
-        ('ft:gpt-4o-mini-2024-07-18:acme::abc123', 'gpt-4o-mini-2024-07-18'),
-        ('ft:gpt-5.5-2026-04-23:acme:support:x1', 'gpt-5.5'),
     ],
 )
-async def test_snapshots_and_fine_tunes_take_their_base_model_info(model: str, base: KnownGpt) -> None:
-    """Dated snapshots take their alias's supports and stage; fine-tunes take their base model's."""
+async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt) -> None:
+    """Dated snapshots take their alias's supports and stage."""
     expected = SUPPORTED_OPENAI_MODELS[base]
 
     action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, model)
@@ -393,9 +391,18 @@ def test_shut_down_dated_snapshot_does_not_take_its_alias_info() -> None:
     assert info.stage is None
 
 
-@pytest.mark.parametrize('model', ['acme-model-2025-01-01', 'ft:acme-model:org::x1', 'ft:'])
-def test_unknown_snapshots_and_fine_tunes_get_generic_info(model: str) -> None:
-    """A snapshot or fine-tune of an id the plugin does not know gets generic info."""
+@pytest.mark.parametrize(
+    'model',
+    [
+        'acme-model-2025-01-01',
+        'ft:acme-model:org::x1',
+        'ft:',
+        'ft:gpt-4o-mini-2024-07-18:acme::abc123',
+        'ft:gpt-5.5-2026-04-23:acme:support:x1',
+    ],
+)
+def test_unknown_snapshots_and_all_fine_tunes_get_generic_info(model: str) -> None:
+    """An unknown snapshot, and any fine-tune whatever its base model, gets generic info."""
     info = _chat_model_info(model)
     assert info.supports == ModelSupports(multiturn=True)
     assert info.stage is None
@@ -442,7 +449,6 @@ async def test_fine_tune_with_non_chat_suffix_resolves_as_chat(model: str) -> No
     assert action is not None
     model_meta = cast(dict[str, Any], action.metadata['model'])
     assert 'frequencyPenalty' in model_meta['customOptions']['properties']
-    assert model_meta['supports']['tools'] is True
     assert await plugin.resolve(ActionKind.EMBEDDER, model) is None
     assert OpenAI.gpt(model).name == f'openai/{model}'
 

@@ -32,8 +32,8 @@ _HIDDEN: list[str] = _FIXTURE['hidden']
 _OTHER: list[str] = _FIXTURE['other']
 _NO_TOOLS = set(_FIXTURE['tools']['never_on_chat_completions'])
 
-# Not in the catalog, so discovery gives it generic info with no tools flag.
-_UNCATALOGED_CHAT_IDS = {'gpt-6-cyber'}
+# Not in the catalog, so discovery gives them generic info with no tools flag.
+_UNCATALOGED_CHAT_IDS = {'gpt-6-cyber', 'ft:gpt-4o-mini-2024-07-18:acme::abc123'}
 
 
 async def _listed() -> dict[str, Action]:

@@ -34,6 +34,7 @@ from typing import (
     ClassVar,
     Generic,
     NamedTuple,
+    Protocol,
     Union,
     cast,
     get_args,
@@ -840,6 +841,35 @@ InputT = TypeVar('InputT', default=Any)
 OutputT = TypeVar('OutputT', default=Any)
 ChunkT = TypeVar('ChunkT', default=Any)
 InitT = TypeVar('InitT', default=Any)
+# Solves the T in Action[T | None, ...]: an action whose input has a default.
+_OptInputT = TypeVar('_OptInputT')
+_FnInputT_contra = TypeVar('_FnInputT_contra', contravariant=True)
+_FnCtxT_contra = TypeVar('_FnCtxT_contra', contravariant=True)
+_FnOutputT_co = TypeVar('_FnOutputT_co', covariant=True)
+
+
+class DefaultInputFn(Protocol[_FnInputT_contra, _FnOutputT_co]):
+    """An action function whose one input has a default: ``async def greet(name: str = 'world')``.
+
+    ``Callable`` can't say a parameter is optional, so the flow and tool
+    overloads match this first and type the action ``Flow[str | None, ...]``.
+    That's what lets ``await greet()`` type-check while ``await
+    create_invoice()`` on a required input doesn't.
+    """
+
+    def __call__(self, input: _FnInputT_contra = ..., /) -> Awaitable[_FnOutputT_co]: ...  # noqa: A002
+
+
+class CtxDefaultInputFn(Protocol[_FnCtxT_contra, _FnInputT_contra, _FnOutputT_co]):
+    """``DefaultInputFn`` with the context first: ``async def greet(ctx: FlowContext, name: str = 'world')``."""
+
+    def __call__(
+        self,
+        ctx: _FnCtxT_contra,
+        input: _FnInputT_contra = ...,  # noqa: A002
+        /,
+    ) -> Awaitable[_FnOutputT_co]: ...
+
 
 # Generic streaming callback - use Callable[[ChunkT], None] for typed chunks
 # This untyped version is for internal use where chunk type is unknown
@@ -1230,6 +1260,14 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
 
     @overload
     async def __call__(
+        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
+        input: _OptInputT | None = None,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> OutputT: ...
+
+    @overload
+    async def __call__(
         self,
         input: InputT,
         *,
@@ -1249,6 +1287,17 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     async def run(
         self: Action[None, OutputT, ChunkT, InitT],
         input: None = None,
+        *,
+        on_chunk: Callable[[ChunkT], None] | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> ActionResponse[OutputT]: ...
+
+    @overload
+    async def run(
+        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
+        input: _OptInputT | None = None,
         *,
         on_chunk: Callable[[ChunkT], None] | None = None,
         context: dict[str, Any] | None = None,
@@ -1279,9 +1328,10 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         """Run the action and return its result with trace ids.
 
         Args:
-            input: The input, validated against the input schema. Omit it to use
-                the function's own default. On a flow, an explicit None is a
-                value and is validated like any other.
+            input: The input, validated against the input schema. Required
+                unless the action takes no input or its function gives the
+                input a default; omit it to use that default. On a flow, an
+                explicit None is a value and is validated like any other.
             on_chunk: Called with each chunk the action streams.
             context: Request context (auth, headers, ...), read as ``ctx.context``.
             telemetry_labels: Custom labels set as span attributes.
@@ -1374,6 +1424,16 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     def stream(
         self: Action[None, OutputT, ChunkT, InitT],
         input: None = None,
+        *,
+        context: dict[str, Any] | None = None,
+        telemetry_labels: dict[str, object] | None = None,
+        init: InitT | None = None,
+    ) -> StreamResponse[ChunkT, OutputT]: ...
+
+    @overload
+    def stream(
+        self: Action[_OptInputT | None, OutputT, ChunkT, InitT],
+        input: _OptInputT | None = None,
         *,
         context: dict[str, Any] | None = None,
         telemetry_labels: dict[str, object] | None = None,

@@ -24,7 +24,7 @@ from typing import Any, TypeVar, overload
 from pydantic import BaseModel
 
 from genkit._ai._tools import define_tool
-from genkit._core._action import FlowContext
+from genkit._core._action import CtxDefaultInputFn, DefaultInputFn, FlowContext
 from genkit._core._flow import Flow, define_flow
 from genkit._core._registry import Registry
 from genkit._core._tool import Tool, ToolContext
@@ -67,6 +67,11 @@ class _FlowDecorator:
 
     @overload
     def __call__(
+        self, func: CtxDefaultInputFn[FlowContext[ChunkT], InputT, OutputT]
+    ) -> Flow[InputT | None, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
         self, func: Callable[[FlowContext[ChunkT], InputT], Awaitable[OutputT]]
     ) -> Flow[InputT, OutputT, ChunkT]: ...
 
@@ -75,6 +80,9 @@ class _FlowDecorator:
 
     @overload
     def __call__(self, func: Callable[[FlowContext[ChunkT]], Awaitable[OutputT]]) -> Flow[None, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(self, func: DefaultInputFn[InputT, OutputT]) -> Flow[InputT | None, OutputT]: ...
 
     @overload
     def __call__(self, func: Callable[[InputT], Awaitable[OutputT]]) -> Flow[InputT, OutputT]: ...
@@ -115,6 +123,11 @@ class _ToolDecorator:
 
     @overload
     def __call__(
+        self, func: CtxDefaultInputFn[ToolContext[ChunkT], InputT, OutputT]
+    ) -> Tool[InputT | None, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
         self, func: Callable[[ToolContext[ChunkT], InputT], Awaitable[OutputT]]
     ) -> Tool[InputT, OutputT, ChunkT]: ...
 
@@ -123,6 +136,9 @@ class _ToolDecorator:
 
     @overload
     def __call__(self, func: Callable[[ToolContext[ChunkT]], Awaitable[OutputT]]) -> Tool[None, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(self, func: DefaultInputFn[InputT, OutputT]) -> Tool[InputT | None, OutputT]: ...
 
     @overload
     def __call__(self, func: Callable[[InputT], Awaitable[OutputT]]) -> Tool[InputT, OutputT]: ...

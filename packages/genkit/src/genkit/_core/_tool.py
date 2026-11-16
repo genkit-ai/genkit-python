@@ -32,6 +32,8 @@ from genkit._core._action import (
     Action,
     ActionContext,
     ActionKind,
+    CtxDefaultInputFn,
+    DefaultInputFn,
     get_func_description,
     resolve_type_hints,
 )
@@ -371,6 +373,16 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
 
     @overload
     def __init__(
+        self: Tool[_I | None, _O, _C],
+        func: CtxDefaultInputFn[ToolContext[_C], _I, _O],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
         self: Tool[_I, _O, _C],
         func: Callable[[ToolContext[_C], _I], Awaitable[_O]],
         *,
@@ -393,6 +405,16 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
     def __init__(
         self: Tool[None, _O, _C],
         func: Callable[[ToolContext[_C]], Awaitable[_O]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Tool[_I | None, _O, Any],
+        func: DefaultInputFn[_I, _O],
         *,
         name: str | None = None,
         description: str | None = None,

@@ -28,6 +28,8 @@ from genkit._core._action import (
     Action,
     ActionKind,
     ChunkT,
+    CtxDefaultInputFn,
+    DefaultInputFn,
     FlowContext,
     InputT,
     OutputT,
@@ -67,6 +69,18 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
+    # A defaulted input types the flow Flow[T | None, ...] so a no-input call
+    # type-checks. These two are self-typed: the class TypeVars can't say
+    # `InputT | None`.
+    @overload
+    def __init__(
+        self: Flow[_FlowInputT | None, _FlowOutputT, _FlowChunkT],
+        func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
     @overload
     def __init__(
         self,
@@ -80,6 +94,15 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
     def __init__(
         self,
         func: Callable[[FlowContext[ChunkT]], Awaitable[OutputT]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Flow[_FlowInputT | None, _FlowOutputT, Any],
+        func: DefaultInputFn[_FlowInputT, _FlowOutputT],
         *,
         name: str | None = None,
         description: str | None = None,
@@ -155,6 +178,15 @@ def define_flow(
 @overload
 def define_flow(
     registry: Registry,
+    func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> Flow[_FlowInputT | None, _FlowOutputT, _FlowChunkT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
     func: Callable[[FlowContext[_FlowChunkT], _FlowInputT], Awaitable[_FlowOutputT]],
     name: str | None = None,
     description: str | None = None,
@@ -177,6 +209,15 @@ def define_flow(
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[None, _FlowOutputT, _FlowChunkT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
+    func: DefaultInputFn[_FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> Flow[_FlowInputT | None, _FlowOutputT]: ...
 
 
 @overload

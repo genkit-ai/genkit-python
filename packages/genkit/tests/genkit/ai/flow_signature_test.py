@@ -404,7 +404,7 @@ async def test_flow_input_type_inference_across_shapes() -> None:
     assert_type(ai.flow(stream_order), Flow[_Order, str, str])
     assert_type(ai.flow(stream_any), Flow[Any, str, str])  # ty: ignore[type-assertion-failure]
     assert_type(ai.flow(specials), Flow[None, str])
-    assert_type(ai.flow(with_default), Flow[str, str])
+    assert_type(ai.flow(with_default), Flow[str | None, str])
 
     # 2. Standalone Flow(fn). An __init__ overload can't pin InputT to None,
     # so ctx-only and no-arg flows leave it at its Any default.
@@ -416,7 +416,7 @@ async def test_flow_input_type_inference_across_shapes() -> None:
     assert_type(Flow(stream_order), Flow[_Order, str, str])
     assert_type(Flow(stream_any), Flow[Any, str, str])
     assert_type(Flow(specials), Flow[Any, str])
-    assert_type(Flow(with_default), Flow[str, str])
+    assert_type(Flow(with_default), Flow[str | None, str])  # ty: ignore[type-assertion-failure]
 
     # 3. An Any/object flow takes any input at the call site.
     echo = Flow(echo_object)

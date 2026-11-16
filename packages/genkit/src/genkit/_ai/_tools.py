@@ -21,7 +21,7 @@ from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
 
-from genkit._core._action import Action
+from genkit._core._action import Action, CtxDefaultInputFn, DefaultInputFn
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
@@ -313,6 +313,17 @@ def define_tool(
 @overload
 def define_tool(
     registry: Registry,
+    func: CtxDefaultInputFn[ToolContext[ToolChunkT], ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> _Tool[ToolInputT | None, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
     func: Callable[[ToolContext[ToolChunkT], ToolInputT], Awaitable[ToolOutputT]],
     name: str | None = None,
     description: str | None = None,
@@ -341,6 +352,17 @@ def define_tool(
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
 ) -> _Tool[None, ToolOutputT, ToolChunkT]: ...
+
+
+@overload
+def define_tool(
+    registry: Registry,
+    func: DefaultInputFn[ToolInputT, ToolOutputT],
+    name: str | None = None,
+    description: str | None = None,
+    *,
+    input_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> _Tool[ToolInputT | None, ToolOutputT]: ...
 
 
 @overload

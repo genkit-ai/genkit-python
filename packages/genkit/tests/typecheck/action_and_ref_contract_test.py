@@ -31,6 +31,7 @@ from typing_extensions import assert_type
 from genkit import (
     Document,
     Embedding,
+    Flow,
     FlowContext,
     Genkit,
     GenkitError,
@@ -39,6 +40,7 @@ from genkit import (
     Part,
     Role,
     StreamResponse,
+    Tool,
     ToolContext,
 )
 from genkit._core._action import ActionResponse
@@ -130,13 +132,45 @@ async def test_typed_actions_require_input_while_unit_actions_omit_it() -> None:
     assert_type(await list_specials(), list[str])
 
     with pytest.raises(GenkitError):
-        await create_invoice()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
+        await create_invoice()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
     with pytest.raises(GenkitError):
-        await create_invoice.run()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
+        await create_invoice.run()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
     with pytest.raises(GenkitError):
-        await lookup_allergens()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
+        await lookup_allergens()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+
+
+@pytest.mark.asyncio
+async def test_defaulted_inputs_can_be_omitted() -> None:
+    """A flow or tool whose input has a default types as ``[T | None, ...]`` and runs with no input."""
+    ai = Genkit()
+
+    @ai.flow
+    async def suggest_dish(cuisine: str = 'french') -> str:
+        return f'{cuisine}: tartine'
+
+    @ai.flow
+    async def reprint_receipt(order: OrderReq | None = None) -> str:
+        return order.dish if order else 'last order'
+
+    @ai.tool
+    async def todays_soup(day: str = 'monday') -> str:
+        return f'{day}: bouillabaisse'
+
+    assert_type(suggest_dish, Flow[str | None, str])
+    assert_type(reprint_receipt, Flow[OrderReq | None, str])
+    assert_type(todays_soup, Tool[str | None, str])
+
+    assert await suggest_dish() == 'french: tartine'
+    assert await suggest_dish('thai') == 'thai: tartine'
+    assert (await suggest_dish.run()).response == 'french: tartine'
+    assert await suggest_dish.stream().response == 'french: tartine'
+    assert await reprint_receipt() == 'last order'
+    assert await todays_soup() == 'monday: bouillabaisse'
+
+    with pytest.raises(GenkitError):
+        await suggest_dish(3)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
 @pytest.mark.asyncio

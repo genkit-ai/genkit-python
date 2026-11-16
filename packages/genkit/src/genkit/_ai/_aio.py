@@ -83,7 +83,14 @@ from genkit._ai._prompt import (
     to_generate_options,
 )
 from genkit._ai._tools import define_interrupt
-from genkit._core._action import Action, ActionKind, FlowContext, get_current_context
+from genkit._core._action import (
+    Action,
+    ActionKind,
+    CtxDefaultInputFn,
+    DefaultInputFn,
+    FlowContext,
+    get_current_context,
+)
 from genkit._core._background import missing_operation_error
 from genkit._core._channel import run_loop
 from genkit._core._config_check import layer_call_config
@@ -328,6 +335,13 @@ class Genkit:
     @overload
     def flow(
         self,
+        func: CtxDefaultInputFn[FlowContext[ChunkT], InputT, OutputT],
+        /,
+    ) -> Flow[InputT | None, OutputT, ChunkT]: ...
+
+    @overload
+    def flow(
+        self,
         func: Callable[[FlowContext[ChunkT], InputT], Awaitable[OutputT]],
         /,
     ) -> Flow[InputT, OutputT, ChunkT]: ...
@@ -345,6 +359,13 @@ class Genkit:
         func: Callable[[FlowContext[ChunkT]], Awaitable[OutputT]],
         /,
     ) -> Flow[None, OutputT, ChunkT]: ...
+
+    @overload
+    def flow(
+        self,
+        func: DefaultInputFn[InputT, OutputT],
+        /,
+    ) -> Flow[InputT | None, OutputT]: ...
 
     @overload
     def flow(
@@ -495,6 +516,13 @@ class Genkit:
     @overload
     def tool(
         self,
+        func: CtxDefaultInputFn[ToolContext[ChunkT], InputT, OutputT],
+        /,
+    ) -> Tool[InputT | None, OutputT, ChunkT]: ...
+
+    @overload
+    def tool(
+        self,
         func: Callable[[ToolContext[ChunkT], InputT], Awaitable[OutputT]],
         /,
     ) -> Tool[InputT, OutputT, ChunkT]: ...
@@ -512,6 +540,13 @@ class Genkit:
         func: Callable[[ToolContext[ChunkT]], Awaitable[OutputT]],
         /,
     ) -> Tool[None, OutputT, ChunkT]: ...
+
+    @overload
+    def tool(
+        self,
+        func: DefaultInputFn[InputT, OutputT],
+        /,
+    ) -> Tool[InputT | None, OutputT]: ...
 
     @overload
     def tool(

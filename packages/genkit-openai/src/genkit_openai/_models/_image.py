@@ -23,6 +23,7 @@ chatgpt-image-latest, gpt-image-2, gpt-image-2.5 and gpt-image-2.6).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from genkit_openai._models._utils import (
@@ -37,7 +38,7 @@ from openai import AsyncOpenAI
 from openai.types.images_response import ImagesResponse
 from pydantic import Field
 
-from genkit import FinishReason, Message, ModelResponse, Part, Role
+from genkit import FinishReason, GenkitError, Message, ModelResponse, Part, Role
 from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelStage, ModelSupports
 from genkit.plugin_api import GenkitConfig
 
@@ -78,6 +79,25 @@ class OpenAIGptImageConfig(GenkitConfig):
     output_compression: int | None = Field(default=None, ge=1, le=100)
     output_format: Literal['png', 'jpeg', 'webp'] | None = None
     extra: dict[str, Any] | None = Field(default=None, description=_IMAGE_EXTRA_DESCRIPTION)
+
+
+_MAX_QUALITY_GPT_IMAGE_MODEL = re.compile(r'^gpt-image-2\.[56]-(sunburst|flare)(-\d{4}-\d{2}-\d{2})?$')
+_MAX_QUALITY_VALUES = ('xhigh', 'max')
+
+
+def _takes_max_quality(model_name: str) -> bool:
+    """Whether a GPT Image model accepts quality ``xhigh`` and ``max``."""
+    return _MAX_QUALITY_GPT_IMAGE_MODEL.match(model_name) is not None
+
+
+def _limit_quality_options(model_name: str, custom_options: dict[str, Any]) -> None:
+    """Drop ``xhigh`` and ``max`` from a published GPT Image config schema when the model rejects them."""
+    if _takes_max_quality(model_name):
+        return
+    quality = custom_options['properties']['quality']
+    for node in (quality, *quality.get('anyOf', ())):
+        if 'enum' in node:
+            node['enum'] = [value for value in node['enum'] if value not in _MAX_QUALITY_VALUES]
 
 
 # Supported image generation models with their metadata. Other gpt-image
@@ -134,6 +154,13 @@ def _to_image_generate_params(
     config = extract_config_dict(request)
     extra_body = pop_extra_body(config, managed=('prompt', 'model'), label='openai image')
     reject_version(config, label='openai image')
+    quality = config.get('quality')
+    if quality in _MAX_QUALITY_VALUES and not _takes_max_quality(model_name):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'openai image: quality {quality!r} is not supported by {model_name}; '
+            'use low, medium, high or auto',
+        )
 
     # Start with required params.
     params: dict[str, Any] = {

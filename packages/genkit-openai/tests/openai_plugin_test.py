@@ -48,6 +48,7 @@ from genkit.model import ConstrainedSupport, ModelStage, ModelSupports
 from genkit.plugin_api import Action, ActionKind, loop_local_client
 
 _GPT_IMAGE_QUALITY = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_GPT_IMAGE_1_QUALITY = ['low', 'medium', 'high', 'auto']
 
 
 @pytest.mark.asyncio
@@ -523,7 +524,7 @@ async def test_openai_plugin_list_actions() -> None:
     image = next(a for a in actions if a.name == 'openai/gpt-image-1')
     assert image.metadata is not None
     image_model = cast(dict[str, Any], image.metadata['model'])
-    assert image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_QUALITY
+    assert image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_1_QUALITY
     assert 'configSchema' not in image_model
 
     embed = next(a for a in actions if a.name == 'openai/text-embedding-ada-002')

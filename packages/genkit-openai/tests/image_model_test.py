@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,8 +35,37 @@ from genkit_openai._models._image import (
 from genkit_openai._openai_plugin import _ModelType
 from pydantic import BaseModel, ValidationError
 
-from genkit import Genkit, GenkitError, Message, Part, Role
+from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 from genkit.model import ModelRequest, ModelStage
+from genkit.plugin_api import ActionKind
+
+_Quality = Literal['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_MAX_QUALITY = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_STANDARD_QUALITY = ['low', 'medium', 'high', 'auto']
+_MAX_QUALITY_MODELS = [
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-sunburst-2026-09-08',
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-flare-2026-09-08',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2.6-flare',
+]
+_STANDARD_QUALITY_MODELS = [
+    'gpt-image-2',
+    'gpt-image-2-2026-04-21',
+    'gpt-image-1.5',
+    'gpt-image-1-mini',
+    'gpt-image-1',
+    'chatgpt-image-latest',
+]
+
+
+def _genkit_with_image_client() -> tuple[Genkit, MagicMock]:
+    plugin = OpenAI(api_key='test-key')
+    client = MagicMock()
+    client.images.generate = AsyncMock(return_value=MagicMock(data=[]))
+    plugin._runtime_client = lambda: client
+    return Genkit(plugins=[plugin]), client
 
 
 class TestExtractPromptText:
@@ -290,6 +319,77 @@ class TestSupportedImageModels:
         assert err.value.status == 'INVALID_ARGUMENT'
         assert 'response_format' in str(err.value)
         generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('name', 'quality'),
+        [
+            *[(name, _MAX_QUALITY) for name in _MAX_QUALITY_MODELS],
+            *[(name, _STANDARD_QUALITY) for name in _STANDARD_QUALITY_MODELS],
+        ],
+    )
+    async def test_gpt_image_advertises_the_quality_values_its_model_takes(self, name: str, quality: list[str]) -> None:
+        """Only the 2.5 and 2.6 Sunburst and Flare models advertise xhigh and max quality."""
+        action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, name)
+
+        assert action is not None
+        schema = cast(dict[str, Any], action.metadata['model'])['customOptions']
+        assert schema['title'] == 'OpenAIGptImageConfig'
+        assert schema['properties']['quality']['enum'] == quality
+        assert schema['properties']['quality']['anyOf'][0]['enum'] == quality
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('name', _STANDARD_QUALITY_MODELS)
+    @pytest.mark.parametrize('quality', ['xhigh', 'max'])
+    @pytest.mark.parametrize('typed', [False, True], ids=['dict', 'typed'])
+    async def test_gpt_image_without_max_quality_fails_before_the_api_call(
+        self, name: str, quality: _Quality, typed: bool
+    ) -> None:
+        """xhigh and max fail with INVALID_ARGUMENT naming the field and model, and never reach the Images API."""
+        ai, client = _genkit_with_image_client()
+        config = OpenAIGptImageConfig(quality=quality) if typed else {'quality': quality}
+
+        response = await ai.generate(model=f'openai/{name}', prompt='a lighthouse at dusk', config=config)
+
+        assert response.finish_reason == FinishReason.FAILED
+        assert response.error is not None
+        assert response.error.status == 'INVALID_ARGUMENT'
+        assert f"quality '{quality}'" in response.error.message
+        assert name in response.error.message
+        client.images.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('name', 'quality'),
+        [
+            *[(name, quality) for name in _MAX_QUALITY_MODELS for quality in ('xhigh', 'max')],
+            ('gpt-image-2', 'auto'),
+            ('chatgpt-image-latest', 'high'),
+        ],
+    )
+    @pytest.mark.parametrize('typed', [False, True], ids=['dict', 'typed'])
+    async def test_gpt_image_quality_the_model_takes_reaches_the_endpoint(
+        self, name: str, quality: _Quality, typed: bool
+    ) -> None:
+        """A quality value the model takes reaches the Images API, as a dict or an OpenAIGptImageConfig."""
+        ai, client = _genkit_with_image_client()
+        config = OpenAIGptImageConfig(quality=quality) if typed else {'quality': quality}
+
+        await ai.generate(model=f'openai/{name}', prompt='a lighthouse at dusk', config=config)
+
+        assert client.images.generate.call_args.kwargs['quality'] == quality
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('name', _MAX_QUALITY_MODELS + _STANDARD_QUALITY_MODELS)
+    async def test_gpt_image_config_with_standard_quality_works_on_every_gpt_image_model(self, name: str) -> None:
+        """An OpenAIGptImageConfig instance is the config class of every GPT Image model."""
+        ai, client = _genkit_with_image_client()
+
+        await ai.generate(
+            model=f'openai/{name}', prompt='a lighthouse at dusk', config=OpenAIGptImageConfig(quality='high')
+        )
+
+        client.images.generate.assert_called_once()
 
 
 class TestOpenAIImageModel:

@@ -65,6 +65,7 @@ from genkit_openai._models._image import (
     OpenAIDalleConfig,
     OpenAIGptImageConfig,
     OpenAIImageModel,
+    _limit_quality_options,
 )
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
@@ -626,12 +627,15 @@ class OpenAI(Plugin):
             model_instance = model_class(name, self._client_for_call(request, ctx))
             return await model_instance.generate(request, ctx)
 
-        return Model(
+        action = Model(
             open_ai_name(name),
             _generate,
             config_schema=config_schema,
             info=info,
         )
+        if config_schema is OpenAIGptImageConfig:
+            _limit_quality_options(name, cast(dict[str, Any], action.metadata['model'])['customOptions'])
+        return action
 
     def _create_embedder_action(self, name: str) -> Action:
         """Create an Action object for an OpenAI embedder.

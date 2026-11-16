@@ -41,6 +41,7 @@ from genkit_google_genai._models._sdk_config import (
     attach_config_extra,
     attach_leftovers,
     dump_family_config,
+    new_request_client,
     request_client_kwargs,
     sdk_config_error,
     split_sdk_fields,
@@ -399,16 +400,7 @@ class VirtualTryOnModel:
             base_url_pinned=self._base_url_pinned,
             default_vertexai=True,
         )
-        try:
-            return genai.Client(**kwargs)
-        except GOOGLE_AUTH_ERRORS as e:
-            raise_auth_error(e)
-        except (ValueError, TypeError) as e:
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message='Failed to create google-genai client',
-                cause=e,
-            ) from e
+        return new_request_client(kwargs)
 
     async def generate(self, request: ModelRequest[VirtualTryOnConfig], ctx: ModelContext) -> ModelResponse:
         """Generate try-on images for the tagged person and product media.

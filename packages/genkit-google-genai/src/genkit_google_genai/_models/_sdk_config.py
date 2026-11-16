@@ -20,7 +20,9 @@ import math
 from collections.abc import Mapping
 from typing import Any, cast
 
+from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
 from genkit_google_genai._constants import is_multi_regional_location, multi_regional_base_url
+from google import genai
 from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
@@ -79,6 +81,71 @@ def request_client_kwargs(
         opts.base_url = base_url
     kwargs['http_options'] = opts
     return kwargs
+
+
+def missing_vertex_project_error(cause: BaseException | None = None) -> GenkitError:
+    """FAILED_PRECONDITION for a Vertex AI client with no project to bill."""
+    return GenkitError(
+        status='FAILED_PRECONDITION',
+        message=(
+            'VertexAI has no Google Cloud project. Pass VertexAI(project=...), set '
+            'GOOGLE_CLOUD_PROJECT, or run `gcloud auth application-default login` with a default project.'
+        ),
+        cause=cause,
+    )
+
+
+def check_vertex_project(client_kwargs: Mapping[str, Any]) -> None:
+    """Raise FAILED_PRECONDITION for a multi-region Vertex client with no project.
+
+    Multi-regions pin a rep ``base_url``, which makes google-genai skip its own
+    project check, so the request would go out with no project in the path.
+    """
+    if (
+        not client_kwargs.get('vertexai')
+        or client_kwargs.get('project')
+        or not is_multi_regional_location(client_kwargs.get('location'))
+    ):
+        return
+    if client_kwargs.get('api_key'):
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=(
+                'Multi-region locations are not available in Vertex AI express mode (api_key) '
+                'without a project. Pass VertexAI(project=...) or set GOOGLE_CLOUD_PROJECT.'
+            ),
+        )
+    raise missing_vertex_project_error()
+
+
+def is_missing_vertex_project(client_kwargs: Mapping[str, Any], error: BaseException) -> bool:
+    """Whether google-genai's ``error`` means a Vertex client found no project, API key or ADC project."""
+    return (
+        isinstance(error, ValueError)
+        and bool(client_kwargs.get('vertexai'))
+        and not client_kwargs.get('project')
+        and not client_kwargs.get('api_key')
+    )
+
+
+def new_request_client(client_kwargs: dict[str, Any]) -> genai.Client:
+    """Build a request-scoped google-genai client with Genkit error statuses.
+
+    A missing Vertex project is FAILED_PRECONDITION, a missing or rejected
+    credential is UNAUTHENTICATED, and any other construction error is
+    INVALID_ARGUMENT, since only the caller's overrides differ from the
+    plugin client that already built.
+    """
+    check_vertex_project(client_kwargs)
+    try:
+        return genai.Client(**client_kwargs)
+    except GOOGLE_AUTH_ERRORS as e:
+        # A Vertex override with no key or explicit credentials makes the SDK look up ADC.
+        raise_auth_error(e)
+    except (ValueError, TypeError) as e:
+        if is_missing_vertex_project(client_kwargs, e):
+            raise missing_vertex_project_error(e) from e
+        raise GenkitError(status='INVALID_ARGUMENT', message='Failed to create google-genai client', cause=e) from e
 
 
 def unexpected_config_error(*, action_name: str) -> GenkitError:

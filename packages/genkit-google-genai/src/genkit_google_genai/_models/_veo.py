@@ -28,6 +28,7 @@ from genkit_google_genai._models._sdk_config import (
     VEO_MANAGED_BODY_FIELDS,
     attach_config_extra,
     dump_family_config,
+    new_request_client,
     request_client_kwargs,
     sdk_config_error,
 )
@@ -38,7 +39,7 @@ from google.genai import types as genai_types
 from google.genai.errors import APIError
 from pydantic import Field, ValidationError, model_validator
 
-from genkit import Failure, FinishReason, GenkitError, Message, ModelResponse, Operation, Part, Role
+from genkit import Failure, FinishReason, Message, ModelResponse, Operation, Part, Role
 from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelSupports
 from genkit.plugin_api import GenkitConfig
 
@@ -325,17 +326,7 @@ class VeoModel:
             base_url=base_url,
             location=location,
         )
-        try:
-            return genai.Client(**kwargs)
-        except GOOGLE_AUTH_ERRORS as e:
-            raise_auth_error(e)
-        except (ValueError, TypeError) as e:
-            # The SDK rejects bad override combinations (api_key with project, say).
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message='Failed to create google-genai client',
-                cause=e,
-            ) from e
+        return new_request_client(kwargs)
 
     async def start(self, request: ModelRequest[VeoConfig], ctx: ModelContext) -> Operation:
         """Start a video generation operation.

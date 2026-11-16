@@ -20,12 +20,12 @@ import asyncio
 import json
 import math
 from collections.abc import Callable, Collection, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from typing import Annotated, Any, Any as JsonAny, Literal, TypeAlias, cast, get_args
 
 from genkit_google_genai._auth import GOOGLE_AUTH_ERRORS, raise_auth_error
-from genkit_google_genai._constants import is_multi_regional_location
 from genkit_google_genai._models._context_caching._constants import DEFAULT_TTL
 from genkit_google_genai._models._context_caching._utils import generate_cache_key, validate_context_cache_request
 from genkit_google_genai._models._sdk_config import (
@@ -36,6 +36,7 @@ from genkit_google_genai._models._sdk_config import (
     attach_leftovers,
     check_timeout_seconds,
     dump_family_config,
+    new_request_client,
     reject_bool_timeout,
     request_client_kwargs,
     sdk_config_error,
@@ -195,11 +196,247 @@ def _usage_from_metadata(usage_metadata: Any) -> GenerationUsage:  # noqa: ANN40
 
 def _custom_from_feedback(
     feedback: genai_types.GenerateContentResponsePromptFeedback | None,
+    candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """The response's ``custom`` payload: the prompt feedback the service sent, if any."""
-    if feedback is None:
+    """The response's ``custom`` payload: ``candidates`` metadata and ``promptFeedback``, if any."""
+    custom: dict[str, Any] = {}
+    if candidates:
+        custom['candidates'] = candidates
+    if feedback is not None:
+        custom['promptFeedback'] = feedback.model_dump(mode='json', by_alias=True, exclude_none=True)
+    return custom or None
+
+
+# Model-valued candidate fields copied onto custom['candidates'][i] under their wire (camelCase) names.
+_CANDIDATE_CUSTOM_FIELDS = ('grounding_metadata', 'url_context_metadata', 'citation_metadata', 'logprobs_result')
+
+
+def _candidate_metadata(candidate: genai_types.Candidate | None) -> dict[str, Any]:
+    """Candidate-level Gemini metadata on *candidate*, keyed by wire name."""
+    if candidate is None:
+        return {}
+    out: dict[str, Any] = {}
+    for field in _CANDIDATE_CUSTOM_FIELDS:
+        value = getattr(candidate, field, None)
+        if value is None:
+            continue
+        dumped = value.model_dump(mode='json', by_alias=True, exclude_none=True)
+        if dumped:
+            out[to_camel(field)] = dumped
+    if candidate.safety_ratings:
+        ratings = [
+            dumped
+            for rating in candidate.safety_ratings
+            if (dumped := rating.model_dump(mode='json', by_alias=True, exclude_none=True))
+        ]
+        if ratings:
+            out['safetyRatings'] = ratings
+    if candidate.avg_logprobs is not None:
+        out['avgLogprobs'] = candidate.avg_logprobs
+    if candidate.finish_message:
+        out['finishMessage'] = candidate.finish_message
+    if candidate.token_count is not None:
+        out['tokenCount'] = candidate.token_count
+    return out
+
+
+def _candidates_custom(candidates_by_index: Mapping[int, dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Build ``custom['candidates']`` indexed by candidate index, or ``None`` when all are empty."""
+    populated = [idx for idx, meta in candidates_by_index.items() if meta]
+    if not populated:
         return None
-    return {'promptFeedback': feedback.model_dump(mode='json', by_alias=True, exclude_none=True)}
+    return [dict(candidates_by_index.get(idx, {})) for idx in range(max(populated) + 1)]
+
+
+def _merge_safety_ratings(before: list[Any], incoming: list[Any]) -> list[Any]:
+    """Merge streamed ``safetyRatings`` by ``category`` (latest rating for a category wins)."""
+    merged = list(before)
+    by_category: dict[str, int] = {
+        cat: i
+        for i, item in enumerate(merged)
+        if isinstance(item, dict) and isinstance(cat := cast(dict[str, Any], item).get('category'), str)
+    }
+    for item in incoming:
+        cat = cast(dict[str, Any], item).get('category') if isinstance(item, dict) else None
+        if isinstance(cat, str) and cat in by_category:
+            merged[by_category[cat]] = item
+        else:
+            if isinstance(cat, str):
+                by_category[cat] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def _merge_metadata_block(before: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Merge a dict-valued block key by key: lists concatenate, dicts update, the rest is latest-wins."""
+    merged = dict(before)
+    for key, value in incoming.items():
+        if value is None:
+            continue
+        prev = merged.get(key)
+        if isinstance(prev, list) and isinstance(value, list):
+            merged[key] = [*prev, *value]
+        elif isinstance(prev, dict) and isinstance(value, dict):
+            merged[key] = {**prev, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def _chunk_token_weight(chunk: dict[str, Any]) -> int | None:
+    """Tokens one chunk's ``avgLogprobs`` averages over: ``tokenCount``, else its chosen logprobs, else unknown."""
+    count = chunk.get('tokenCount')
+    if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+        return count
+    logprobs = chunk.get('logprobsResult')
+    chosen = logprobs.get('chosenCandidates') if isinstance(logprobs, dict) else None
+    if isinstance(chosen, list) and chosen:
+        return len(cast(list[Any], chosen))
+    return None
+
+
+class _StreamCandidateMetadata:
+    """One candidate's metadata folded across stream chunks.
+
+    In a live gemini-2.5-flash stream ``groundingMetadata`` arrives whole on
+    the last chunk; the key-by-key merge only matters if Gemini ever splits
+    it. ``logprobsResult`` and ``citationMetadata`` are per-chunk deltas:
+    their lists concatenate and ``logprobsResult.logProbabilitySum`` adds up.
+    ``tokenCount`` is summed and ``avgLogprobs`` is the token-weighted mean,
+    so the merged values describe the whole reply. If a chunk's
+    ``avgLogprobs`` has no token count to weigh it by and more than one chunk
+    carried one, ``avgLogprobs`` is dropped rather than reported wrong.
+    ``safetyRatings`` updates per harm category; ``finishMessage`` is
+    latest-wins.
+    """
+
+    def __init__(self) -> None:
+        self._meta: dict[str, Any] = {}
+        self._token_count = 0
+        self._saw_token_count = False
+        self._weighted_logprobs = 0.0
+        self._avg_weight = 0
+        self._avg_chunks = 0
+        self._avg_unweighted = False
+        self._last_avg: float | None = None
+
+    def add(self, chunk: dict[str, Any]) -> None:
+        avg = chunk.get('avgLogprobs')
+        if isinstance(avg, int | float) and not isinstance(avg, bool):
+            self._avg_chunks += 1
+            self._last_avg = float(avg)
+            weight = _chunk_token_weight(chunk)
+            if weight is None:
+                self._avg_unweighted = True
+            else:
+                self._weighted_logprobs += float(avg) * weight
+                self._avg_weight += weight
+        count = chunk.get('tokenCount')
+        if isinstance(count, int) and not isinstance(count, bool):
+            self._token_count += count
+            self._saw_token_count = True
+        for key, value in chunk.items():
+            if value is None or key in ('avgLogprobs', 'tokenCount'):
+                continue
+            before = self._meta.get(key)
+            if key == 'safetyRatings' and isinstance(before, list) and isinstance(value, list):
+                self._meta[key] = _merge_safety_ratings(before, value)
+            elif key == 'logprobsResult' and isinstance(before, dict) and isinstance(value, dict):
+                merged = _merge_metadata_block(before, value)
+                prev_sum, new_sum = before.get('logProbabilitySum'), value.get('logProbabilitySum')
+                if isinstance(prev_sum, int | float) and isinstance(new_sum, int | float):
+                    merged['logProbabilitySum'] = prev_sum + new_sum
+                self._meta[key] = merged
+            elif isinstance(before, dict) and isinstance(value, dict):
+                self._meta[key] = _merge_metadata_block(before, value)
+            else:
+                self._meta[key] = value
+
+    def result(self) -> dict[str, Any]:
+        out = dict(self._meta)
+        if self._avg_chunks == 1 and self._last_avg is not None:
+            out['avgLogprobs'] = self._last_avg
+        elif self._avg_chunks > 1 and not self._avg_unweighted and self._avg_weight:
+            out['avgLogprobs'] = self._weighted_logprobs / self._avg_weight
+        if self._saw_token_count:
+            out['tokenCount'] = self._token_count
+        return out
+
+
+@dataclass
+class _StreamRun:
+    """A run of adjacent same-kind stream fragments, joined once at the end."""
+
+    kind: str | None
+    fragments: list[str]
+    metadata: dict[str, Any] | None
+    part: Part
+    merged: bool = False
+
+
+def _coalesce_stream_parts(parts: list[Part]) -> list[Part]:
+    """Join the text and reasoning fragments a stream delivers into whole parts.
+
+    Adjacent parts of the same kind merge while the earlier one carries no
+    metadata; the merged part takes the later part's metadata, so a
+    thought signature that closes a block stays on it. A trailing contentless
+    signature part attaches its metadata to the preceding unsigned text or
+    reasoning part. Empty text with no metadata is dropped. Other parts pass
+    through in order. Fragments are collected per run and joined once, so the
+    cost is linear in reply length.
+    """
+    runs: list[_StreamRun] = []
+    for part in parts:
+        kind = 'text' if part.text is not None else 'reasoning' if part.reasoning is not None else None
+        if kind == 'text' and not part.text and not part.metadata:
+            continue
+        prev = runs[-1] if runs else None
+        if prev is not None and not prev.metadata:
+            if kind == 'text' and not part.text and part.metadata and prev.kind == 'reasoning':
+                prev.metadata = part.metadata
+                prev.merged = True
+                continue
+            if kind is not None and prev.kind == kind:
+                prev.fragments.append((part.text if kind == 'text' else part.reasoning) or '')
+                prev.metadata = part.metadata
+                prev.merged = True
+                continue
+        text = (part.text if kind == 'text' else part.reasoning) if kind is not None else None
+        runs.append(_StreamRun(kind=kind, fragments=[text or ''], metadata=part.metadata, part=part))
+
+    out: list[Part] = []
+    for run in runs:
+        if not run.merged:
+            out.append(run.part)
+        elif run.kind == 'text':
+            out.append(Part.from_text(''.join(run.fragments), metadata=run.metadata))
+        else:
+            out.append(Part.from_reasoning(''.join(run.fragments), metadata=run.metadata))
+    return out or [Part.from_text('')]
+
+
+def _config_value(config: object, snake: str, camel: str | None = None) -> Any:  # noqa: ANN401
+    """Read *snake* (or *camel* on a Mapping) from a typed or dict config, preserving ``False``."""
+    if isinstance(config, Mapping):
+        mapping = cast(Mapping[str, Any], config)
+        if snake in mapping:
+            return mapping[snake]
+        if camel and camel in mapping:
+            return mapping[camel]
+        return None
+    return getattr(config, snake, None)
+
+
+def _strip_gemma_part(part: Part) -> Part | None:
+    """Drop reasoning parts and thoughtSignature metadata when replaying history to Gemma."""
+    if part.reasoning is not None:
+        return None
+    if not part.metadata or 'thoughtSignature' not in part.metadata:
+        return part
+    if part.text == '':
+        return None
+    clean_meta = {k: v for k, v in part.metadata.items() if k != 'thoughtSignature'} or None
+    return part.model_copy(update={'metadata': clean_meta})
 
 
 def _no_candidates_response(
@@ -1888,15 +2125,8 @@ class GeminiModel:
         Returns:
             The model's response to the generation request.
         """
-        model_name = self._version
-        if request.config:
-            version = (
-                cast(Mapping[str, Any], request.config).get('version')
-                if isinstance(request.config, Mapping)
-                else getattr(request.config, 'version', None)
-            )
-            if isinstance(version, str) and version:
-                model_name = version
+        version = _config_value(request.config, 'version')
+        model_name = version if isinstance(version, str) and version else self._version
 
         declared_tools, tool_table = self._declare_tools(request)
 
@@ -2045,33 +2275,7 @@ class GeminiModel:
         # the SDK rejects the two together -- so the probe is skipped there.
         if self._is_vertex() and not kwargs.get('project') and not kwargs.get('api_key'):
             kwargs['project'] = getattr(kwargs.get('credentials'), 'project_id', None) or await _adc_project()
-        if self._is_vertex() and not kwargs.get('project') and is_multi_regional_location(kwargs.get('location')):
-            if kwargs.get('api_key'):
-                raise GenkitError(
-                    status='FAILED_PRECONDITION',
-                    message='Multi-region locations are not available in Vertex AI express '
-                    'mode (api_key). Configure the plugin with a project and credentials '
-                    'to use multi-region locations.',
-                )
-            raise GenkitError(
-                status='FAILED_PRECONDITION',
-                message='A project is required when overriding the location with a '
-                'multi-region. Set the project parameter or GOOGLE_CLOUD_PROJECT '
-                'environment variable.',
-            )
-
-        try:
-            return genai.Client(**kwargs)
-        except GOOGLE_AUTH_ERRORS as e:
-            # A Vertex override with no key or explicit credentials makes the SDK look up ADC.
-            raise_auth_error(e)
-        except (ValueError, TypeError) as e:
-            # The SDK rejects bad override combinations (api_key with project, say).
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message='Failed to create google-genai client',
-                cause=e,
-            ) from e
+        return new_request_client(kwargs)
 
     async def _generate(
         self,
@@ -2121,8 +2325,15 @@ class GeminiModel:
 
         # The reply is candidate 0, the same one _contents_from_response reads.
         finish_reason = FinishReason.OTHER
-        if response.candidates:
+        finish_message: str | None = None
+        if response.candidates and response.candidates[0] is not None:
             finish_reason = _to_finish_reason(response.candidates[0].finish_reason)
+            finish_message = response.candidates[0].finish_message or None
+        candidates_custom = _candidates_custom({
+            (cand.index if cand.index is not None else pos): _candidate_metadata(cand)
+            for pos, cand in enumerate(response.candidates)
+            if cand is not None
+        })
 
         return ModelResponse(
             message=Message(
@@ -2130,8 +2341,9 @@ class GeminiModel:
                 role=Role.MODEL,
             ),
             finish_reason=finish_reason,
+            finish_message=finish_message,
             usage=_usage_from_metadata(response.usage_metadata),
-            custom=_custom_from_feedback(response.prompt_feedback),
+            custom=_custom_from_feedback(response.prompt_feedback, candidates_custom),
         )
 
     async def _streaming_generate(
@@ -2161,8 +2373,11 @@ class GeminiModel:
             raise missing_api_key_error()
         accumulated_content: list[Part] = []
         finish_reason = FinishReason.UNKNOWN
+        finish_message: str | None = None
         usage_metadata: Any = None
         prompt_feedback: genai_types.GenerateContentResponsePromptFeedback | None = None
+        # Grounding rides on the last chunk; logprobs and citations are per-chunk deltas.
+        candidates_metadata: dict[int, _StreamCandidateMetadata] = {}
         saw_chunk = False
         saw_candidates = False
         try:
@@ -2188,11 +2403,18 @@ class GeminiModel:
                 # The terminating reason and cumulative token usage ride on the trailing
                 # chunks, so hold onto the latest values we see as the stream drains —
                 # otherwise a streamed turn reports no finish reason and no usage at all.
-                if response_chunk.candidates and response_chunk.candidates[0] is not None:
-                    saw_candidates = True
-                    fr = response_chunk.candidates[0].finish_reason
-                    if fr:
-                        finish_reason = _to_finish_reason(fr)
+                if response_chunk.candidates:
+                    for pos, cand in enumerate(response_chunk.candidates):
+                        if cand is None:
+                            continue
+                        idx = cand.index if cand.index is not None else pos
+                        if pos == 0:
+                            saw_candidates = True
+                            if cand.finish_reason:
+                                finish_reason = _to_finish_reason(cand.finish_reason)
+                            if cand.finish_message:
+                                finish_message = cand.finish_message
+                        candidates_metadata.setdefault(idx, _StreamCandidateMetadata()).add(_candidate_metadata(cand))
                 if response_chunk.usage_metadata is not None:
                     usage_metadata = response_chunk.usage_metadata
                 if response_chunk.prompt_feedback is not None:
@@ -2213,11 +2435,14 @@ class GeminiModel:
         return ModelResponse(
             message=Message(
                 role=Role.MODEL,
-                content=accumulated_content,
+                content=_coalesce_stream_parts(accumulated_content),
             ),
             finish_reason=finish_reason,
+            finish_message=finish_message,
             usage=_usage_from_metadata(usage_metadata),
-            custom=_custom_from_feedback(prompt_feedback),
+            custom=_custom_from_feedback(
+                prompt_feedback, _candidates_custom({idx: acc.result() for idx, acc in candidates_metadata.items()})
+            ),
         )
 
     @cached_property
@@ -2260,19 +2485,26 @@ class GeminiModel:
         """
         request_contents: list[genai_types.Content] = []
         cache = None
+        gemma = is_gemma_model(model_name)
 
         for msg in request.messages:
             if msg.role == Role.SYSTEM:
                 continue
             content_parts: list[genai_types.Part] = []
             for p in msg.content:
+                if gemma:
+                    stripped = _strip_gemma_part(p)
+                    if stripped is None:
+                        continue
+                    p = stripped
                 converted = await PartConverter.to_gemini(p, tools=tools)
                 if isinstance(converted, list):
                     content_parts.extend(converted)
                 else:
                     content_parts.append(converted)
             role = 'model' if msg.role in (Role.MODEL, 'model') else 'user'
-            request_contents.append(genai_types.Content(parts=content_parts, role=role))
+            if content_parts:
+                request_contents.append(genai_types.Content(parts=content_parts, role=role))
 
             if msg.metadata and msg.metadata.get('cache'):
                 cache = await self._retrieve_cached_content(
@@ -2331,6 +2563,9 @@ class GeminiModel:
         5. Build GenerateContentConfig from known fields; leftovers ride on extra_body,
            and ``config.extra`` is merged over the top of the request body
         """
+        version = _config_value(request.config, 'version')
+        model_name = version if isinstance(version, str) and version else self._version
+        gemma = is_gemma_model(model_name)
         system_instruction: list[genai.types.Part] = []
 
         # 1. System messages
@@ -2338,6 +2573,11 @@ class GeminiModel:
         for m in system_messages:
             if m.content:
                 for p in m.content:
+                    if gemma:
+                        stripped = _strip_gemma_part(p)
+                        if stripped is None:
+                            continue
+                        p = stripped
                     converted = await PartConverter.to_gemini(p)
                     if isinstance(converted, list):
                         system_instruction.extend(converted)
@@ -2394,16 +2634,6 @@ class GeminiModel:
                 cfg = genai_types.GenerateContentConfig()
 
             if has_output:
-                model_name = self._version
-                if request.config:
-                    version = (
-                        cast(Mapping[str, Any], request.config).get('version')
-                        if isinstance(request.config, Mapping)
-                        else getattr(request.config, 'version', None)
-                    )
-                    if isinstance(version, str) and version:
-                        model_name = version
-
                 # Check if the model supports constrained generation with this configuration
                 model_info = google_model_info(model_name)
                 model_supports_constrained = (

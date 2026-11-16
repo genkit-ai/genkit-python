@@ -215,8 +215,8 @@ def _is_listed(name: str, model_type: _ModelType) -> bool:
     """Report whether discovery lists a model id."""
     if _is_known_unsupported(name):
         return False
-    # DALL-E ids are shut down.
-    return model_type != _ModelType.IMAGE or _is_gpt_image(name)
+    # DALL-E and gpt-image-1 are shut down.
+    return model_type != _ModelType.IMAGE or (_is_gpt_image(name) and _undated(name) != 'gpt-image-1')
 
 
 # Default ModelSupports for each multimodal model type, used as fallback when

@@ -47,7 +47,7 @@ from genkit.model import ConstrainedSupport, ModelStage, ModelSupports
 from genkit.plugin_api import Action, ActionKind, loop_local_client
 
 _GPT_IMAGE_QUALITY = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
-_GPT_IMAGE_1_QUALITY = ['low', 'medium', 'high', 'auto']
+_GPT_IMAGE_2_QUALITY = ['low', 'medium', 'high', 'auto']
 
 
 @pytest.mark.asyncio
@@ -471,7 +471,7 @@ async def test_openai_plugin_list_actions() -> None:
         Model(id='gpt-4-0613', created=1686588896, object='model', owned_by='openai'),
         Model(id='gpt-4', created=1687882411, object='model', owned_by='openai'),
         Model(id='gpt-3.5-turbo', created=1677610602, object='model', owned_by='openai'),
-        Model(id='gpt-image-1', created=1744060800, object='model', owned_by='openai'),
+        Model(id='gpt-image-2', created=1744060800, object='model', owned_by='openai'),
         Model(id='o4-mini-deep-research-2025-06-26', created=1750866121, object='model', owned_by='system'),
         Model(id='codex-mini-latest', created=1746673257, object='model', owned_by='system'),
         Model(id='babbage-002', created=1692634615, object='model', owned_by='system'),
@@ -513,10 +513,10 @@ async def test_openai_plugin_list_actions() -> None:
     assert 'maxOutputTokens' in chat_props
     assert 'maxTokens' not in chat_props
 
-    image = next(a for a in actions if a.name == 'openai/gpt-image-1')
+    image = next(a for a in actions if a.name == 'openai/gpt-image-2')
     assert image.metadata is not None
     image_model = cast(dict[str, Any], image.metadata['model'])
-    assert image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_1_QUALITY
+    assert image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_2_QUALITY
     assert 'configSchema' not in image_model
 
     embed = next(a for a in actions if a.name == 'openai/text-embedding-ada-002')

@@ -43,7 +43,8 @@ from genkit._core._schema import to_json_schema
 from genkit._core._telemetry._instrumentation import set_custom_metadata_attributes
 from genkit._core._typing import MultipartToolResponse as MultipartToolResponseData, ToolDefinition
 
-InputT = TypeVar('InputT', default=Any)
+# Contravariant, like Action's InputT.
+InputT = TypeVar('InputT', default=Any, contravariant=True)
 OutputT = TypeVar('OutputT', default=Any)
 ChunkT = TypeVar('ChunkT', default=Any)
 
@@ -523,7 +524,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         Shares the action's function and metadata; there is no ``tool.v2`` companion.
         """
         if isinstance(action, Tool):
-            return action
+            return cast(Tool[InputT, OutputT, ChunkT], action)  # pyrefly: ignore[redundant-cast] - ty needs it
         return _ActionTool(action)
 
     @property

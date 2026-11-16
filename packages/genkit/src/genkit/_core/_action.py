@@ -837,7 +837,10 @@ def create_action_key(kind: ActionKind | str, name: str) -> str:
 # Action core
 # =============================================================================
 
-InputT = TypeVar('InputT', default=Any)
+# Contravariant: an action that accepts more inputs can stand in where fewer
+# are expected, so Flow[str | None, str] (a defaulted input) still fits a
+# Flow[str, str] or Flow[None, str] annotation.
+InputT = TypeVar('InputT', default=Any, contravariant=True)
 OutputT = TypeVar('OutputT', default=Any)
 ChunkT = TypeVar('ChunkT', default=Any)
 InitT = TypeVar('InitT', default=Any)
@@ -1206,7 +1209,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         )
 
     @property
-    def input_type(self) -> TypeAdapter[InputT] | None:
+    def input_type(self) -> TypeAdapter[Any] | None:
         return self._input_type
 
     @property
@@ -1676,7 +1679,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 )
             ) from e
 
-    def _layer_config_defaults(self, input: InputT | None) -> InputT | None:
+    def _layer_config_defaults(self, input: InputT | None) -> Any:  # noqa: ANN401 - InputT is contravariant
         """Normalize the request's config against the definition-time class.
 
         Every caller (ai.* by name or ref, the Dev UI, the CLI) reaches the fn
@@ -1755,7 +1758,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         validate_whole_config(config=merged, schema=schema, model=self.name)
         return merged
 
-    def _validate_input(self, input: InputT | None) -> InputT | None:
+    def _validate_input(self, input: InputT | None) -> Any:  # noqa: ANN401 - InputT is contravariant
         """Validate caller input against the action schema when one is registered."""
         omitted = input is NO_INPUT
         # Skip validation when the caller passed nothing AND the wrapped

@@ -173,6 +173,38 @@ async def test_defaulted_inputs_can_be_omitted() -> None:
         await suggest_dish(3)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
+def test_input_is_contravariant() -> None:
+    """A flow or tool with a defaulted input fits a required-input or no-input annotation."""
+    ai = Genkit()
+
+    @ai.flow
+    async def suggest_dish(cuisine: str = 'french') -> str:
+        return f'{cuisine}: tartine'
+
+    @ai.tool
+    async def todays_soup(day: str = 'monday') -> str:
+        return f'{day}: bouillabaisse'
+
+    @ai.flow
+    async def kitchen_status() -> str:
+        return 'open'
+
+    # 1. Flow[str | None, str] accepts everything Flow[str, str] and Flow[None, str] do
+    by_cuisine: Flow[str, str] = suggest_dish
+    house_pick: Flow[None, str] = suggest_dish
+
+    # 2. Same for tools
+    soup_for_day: Tool[str, str] = todays_soup
+    soup_today: Tool[None, str] = todays_soup
+
+    # 3. A no-input flow can't stand in for one that needs an order
+    needs_order: Flow[OrderReq, str] = kitchen_status  # pyright: ignore[reportAssignmentType]  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
+
+    assert by_cuisine is house_pick
+    assert soup_for_day is soup_today
+    assert needs_order is kitchen_status
+
+
 @pytest.mark.asyncio
 async def test_model_and_embedder_refs_are_invariant_and_default_to_any() -> None:
     """Typed refs reject mismatched configs while bare ``ModelRef`` / ``EmbedderRef`` accept any ref."""

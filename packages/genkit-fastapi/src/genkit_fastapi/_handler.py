@@ -309,7 +309,7 @@ def genkit_fastapi_handler(
 
             return await handle_genkit_request(
                 request,
-                action=cast(Action[InputT, OutputT, ChunkT, InitT], action),  # ty: ignore[redundant-cast]
+                action=cast(Action[InputT, OutputT, ChunkT, InitT], action),
                 context=action_context,
             )
 

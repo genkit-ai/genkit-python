@@ -222,6 +222,9 @@ class TestSupportedImageModels:
     def test_registry_lists_current_gpt_image_models(self) -> None:
         """The registry holds the served GPT Image models, not the retired dall-e-3 or gpt-image-1."""
         assert set(SUPPORTED_IMAGE_MODELS) == {
+            'gpt-image-1-mini',
+            'gpt-image-1.5',
+            'chatgpt-image-latest',
             'gpt-image-2',
             'gpt-image-2.5-sunburst',
             'gpt-image-2.5-flare',
@@ -229,9 +232,13 @@ class TestSupportedImageModels:
             'gpt-image-2.6-flare',
         }
 
-    def test_gpt_image_2_is_deprecated(self) -> None:
-        """gpt-image-2 has an announced shutdown date, so it carries stage=deprecated."""
-        assert SUPPORTED_IMAGE_MODELS['gpt-image-2'].stage == ModelStage.DEPRECATED
+    @pytest.mark.parametrize('name', ['gpt-image-1-mini', 'gpt-image-1.5', 'chatgpt-image-latest', 'gpt-image-2'])
+    def test_models_with_announced_shutdown_are_deprecated(self, name: str) -> None:
+        """Ids with an announced shutdown date carry stage=deprecated."""
+        assert SUPPORTED_IMAGE_MODELS[name].stage == ModelStage.DEPRECATED
+
+    def test_current_gpt_image_models_have_no_stage(self) -> None:
+        """The 2.5 and 2.6 models have no announced shutdown."""
         for name in ('gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'):
             assert SUPPORTED_IMAGE_MODELS[name].stage is None
 

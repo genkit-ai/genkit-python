@@ -117,6 +117,13 @@ async def test_chatgpt_image_latest_takes_the_gpt_image_config() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('model_id', ['gpt-image-1-mini', 'gpt-image-1.5', 'chatgpt-image-latest'])
+async def test_image_ids_with_announced_shutdown_are_listed_as_deprecated(model_id: str) -> None:
+    """GPT Image ids with an announced shutdown carry stage 'deprecated' in discovery."""
+    assert _model_meta((await _listed())[model_id]).get('stage') == 'deprecated'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('model_id', sorted(set(_CHAT) - _UNCATALOGED_CHAT_IDS))
 async def test_listed_chat_models_declare_tool_support(model_id: str) -> None:
     """supports.tools is false only where Chat Completions rejects function tools."""

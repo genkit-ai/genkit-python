@@ -17,7 +17,8 @@
 """OpenAI-compatible image generation model for Genkit.
 
 Provides image generation capabilities via the OpenAI Images API,
-supporting the GPT Image models (gpt-image-2, gpt-image-2.5 and gpt-image-2.6).
+supporting the GPT Image models (gpt-image-1-mini, gpt-image-1.5,
+chatgpt-image-latest, gpt-image-2, gpt-image-2.5 and gpt-image-2.6).
 """
 
 from __future__ import annotations
@@ -90,6 +91,16 @@ _GPT_IMAGE_SUPPORTS = ModelSupports(
 )
 
 SUPPORTED_IMAGE_MODELS: dict[str, ModelInfo] = {
+    # Shutdown 2026-12-01.
+    'gpt-image-1-mini': ModelInfo(
+        label='OpenAI - GPT Image 1 Mini', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
+    ),
+    'gpt-image-1.5': ModelInfo(
+        label='OpenAI - GPT Image 1.5', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
+    ),
+    'chatgpt-image-latest': ModelInfo(
+        label='OpenAI - ChatGPT Image Latest', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
+    ),
     # Shutdown 2027-02-10.
     'gpt-image-2': ModelInfo(label='OpenAI - GPT Image 2', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED),
     'gpt-image-2.5-sunburst': ModelInfo(label='OpenAI - GPT Image 2.5 Sunburst', supports=_GPT_IMAGE_SUPPORTS),

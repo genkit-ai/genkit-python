@@ -439,6 +439,26 @@ def test_chunk_media_is_first_media_part() -> None:
     assert ModelResponseChunk(content=[Part.from_text('b')]).media is None
 
 
+def test_reasoning_accessors_stay_out_of_text() -> None:
+    """.reasoning joins thinking parts on a message, response, and chunk; .text leaves them out."""
+    message = Message(
+        role='model',
+        content=[
+            Part.from_reasoning('Check allergens first. '),
+            Part.from_reasoning('Nuts: none.'),
+            Part.from_text('Safe.'),
+        ],
+    )
+    response = ModelResponse(message=message)
+    chunk = ModelResponseChunk(role='model', content=[Part.from_reasoning('Thinking')])
+
+    assert message.reasoning == 'Check allergens first. Nuts: none.'
+    assert response.reasoning == message.reasoning
+    assert response.text == 'Safe.'
+    assert chunk.reasoning == 'Thinking'
+    assert ModelResponse().reasoning == ''
+
+
 def test_model_action_metadata() -> None:
     """Test for Model(...)._action_metadata()."""
 

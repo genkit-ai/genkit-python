@@ -273,6 +273,17 @@ PLUGIN_DISPLAY_NAME: dict[str, str] = {
 }
 
 
+def _missing_vertex_project_error(cause: BaseException | None = None) -> GenkitError:
+    return GenkitError(
+        status='FAILED_PRECONDITION',
+        message=(
+            'VertexAI has no Google Cloud project. Pass VertexAI(project=...), set '
+            'GOOGLE_CLOUD_PROJECT, or run `gcloud auth application-default login` with a default project.'
+        ),
+        cause=cause,
+    )
+
+
 def _plugin_client(client_kwargs: dict[str, Any]) -> genai.Client:
     """Build the plugin's client on first use in a loop.
 
@@ -280,10 +291,32 @@ def _plugin_client(client_kwargs: dict[str, Any]) -> genai.Client:
     no project resolves ADC here; a missing or rejected credential becomes
     UNAUTHENTICATED instead of a bare google.auth error.
     """
+    if (
+        client_kwargs.get('vertexai')
+        and const.is_multi_regional_location(client_kwargs.get('location'))
+        and not client_kwargs.get('project')
+    ):
+        # Multi-regions pin a rep base_url, which makes google-genai skip its
+        # own project check; fail here with FAILED_PRECONDITION to match regional.
+        if client_kwargs.get('api_key'):
+            raise GenkitError(
+                status='FAILED_PRECONDITION',
+                message=(
+                    'Multi-region locations are not available in Vertex AI express mode (api_key). '
+                    'Configure the plugin with a project and credentials to use multi-region locations.'
+                ),
+            )
+        raise _missing_vertex_project_error()
     try:
         return genai.client.Client(**client_kwargs)
     except GOOGLE_AUTH_ERRORS as e:
         raise_auth_error(e)
+    except ValueError as e:
+        # Vertex AI with no project, API key or ADC project: google-genai
+        # raises a bare ValueError naming its own arguments.
+        if client_kwargs.get('vertexai') and not client_kwargs.get('project') and not client_kwargs.get('api_key'):
+            raise _missing_vertex_project_error(e) from e
+        raise
 
 
 def _call_client(plugin: GoogleAI | VertexAI, context: dict[str, Any] | None) -> genai.Client:
@@ -1221,9 +1254,9 @@ class VertexAI(GoogleFamilyRefs, Plugin):
 
         # Resolve the project here rather than leaving it to the SDK: with any
         # base_url set the SDK skips its own ADC lookup, and doing it now keeps
-        # the blocking ADC IO off the event loop. Express mode (api_key) needs no project, so it
-        # only pays for the probe where a multi-region demands one.
-        if not self._project and (api_key is None or multi_region):
+        # the blocking ADC IO off the event loop. Express mode (api_key) needs
+        # no project; missing projects fail lazily at call time in _plugin_client.
+        if not self._project and api_key is None:
             if credentials is not None:
                 self._project = getattr(credentials, 'project_id', None)
             if not self._project:
@@ -1231,12 +1264,6 @@ class VertexAI(GoogleFamilyRefs, Plugin):
                     _, self._project = google_auth_default()
                 except DefaultCredentialsError:
                     self._project = None
-
-        if multi_region and not self._project:
-            raise ValueError(
-                'VertexAI plugin requires a project when using a multi-region location. '
-                'Set the project parameter or GOOGLE_CLOUD_PROJECT environment variable.'
-            )
 
         self._client_kwargs: dict[str, Any] = {
             'vertexai': self._vertexai,

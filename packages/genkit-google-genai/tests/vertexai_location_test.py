@@ -220,25 +220,32 @@ class TestVertexAIPluginProject:
         assert plugin._project == 'adc-p'
         assert plugin._client_kwargs['project'] == 'adc-p'
 
-    def test_multi_region_without_project_raises(self) -> None:
-        """A multi-region plugin with no resolvable project fails fast."""
+    @pytest.mark.asyncio
+    async def test_multi_region_without_project_fails_at_call_time(self) -> None:
+        """A multi-region plugin with no resolvable project constructs lazily and fails at call time."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch('genkit_google_genai._google.genai.client.Client'):
-                with patch('genkit_google_genai._google.google_auth_default', return_value=(None, None)):
-                    with pytest.raises(ValueError, match='multi-region'):
-                        VertexAI(location='eu')
+            with patch('genkit_google_genai._google.google_auth_default', return_value=(None, None)):
+                plugin = VertexAI(location='eu')
+                assert plugin._project is None
+                with pytest.raises(GenkitError) as raised:
+                    plugin._runtime_client()
+        assert raised.value.status == 'FAILED_PRECONDITION'
+        assert 'VertexAI(project=...)' in raised.value.message
 
-    def test_multi_region_no_adc_raises_friendly_error(self) -> None:
-        """A missing ADC setup surfaces as the friendly ValueError, not a raw auth error."""
+    @pytest.mark.asyncio
+    async def test_multi_region_no_adc_fails_at_call_time(self) -> None:
+        """A missing ADC setup constructs lazily and surfaces FAILED_PRECONDITION at call time."""
         from google.auth.exceptions import DefaultCredentialsError
 
         with patch.dict(os.environ, {}, clear=True):
-            with patch('genkit_google_genai._google.genai.client.Client'):
-                with patch(
-                    'genkit_google_genai._google.google_auth_default', side_effect=DefaultCredentialsError('no adc')
-                ):
-                    with pytest.raises(ValueError, match='multi-region'):
-                        VertexAI(location='eu')
+            with patch(
+                'genkit_google_genai._google.google_auth_default', side_effect=DefaultCredentialsError('no adc')
+            ):
+                plugin = VertexAI(location='eu')
+                assert plugin._project is None
+                with pytest.raises(GenkitError) as raised:
+                    plugin._runtime_client()
+        assert raised.value.status == 'FAILED_PRECONDITION'
 
     def test_multi_region_uses_credentials_project_id(self) -> None:
         """Explicit credentials carrying project_id avoid the ADC probe."""
@@ -266,13 +273,16 @@ class TestVertexAIPluginProject:
         assert plugin._client_kwargs['project'] == 'adc-p'
         assert plugin._client_kwargs['http_options'].base_url == 'https://example.com/'
 
-    def test_multi_region_with_pinned_base_url_without_project_raises(self) -> None:
-        """A pinned base_url plus multi-region still fails fast without a project."""
+    @pytest.mark.asyncio
+    async def test_multi_region_with_pinned_base_url_without_project_fails_at_call_time(self) -> None:
+        """A pinned base_url plus multi-region constructs lazily and fails at call time without a project."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch('genkit_google_genai._google.genai.client.Client'):
-                with patch('genkit_google_genai._google.google_auth_default', return_value=(None, None)):
-                    with pytest.raises(ValueError, match='multi-region'):
-                        VertexAI(location='eu', base_url='https://example.com/')
+            with patch('genkit_google_genai._google.google_auth_default', return_value=(None, None)):
+                plugin = VertexAI(location='eu', base_url='https://example.com/')
+                assert plugin._project is None
+                with pytest.raises(GenkitError) as raised:
+                    plugin._runtime_client()
+        assert raised.value.status == 'FAILED_PRECONDITION'
 
 
 class TestRealClientHonorsPinnedBaseUrl:

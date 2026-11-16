@@ -412,3 +412,15 @@ class TestDownloadMediaErrors:
         with patch('genkit_google_genai._models._utils._media_client', return_value=client):
             with pytest.raises(httpx.ConnectError):
                 await PartConverter.to_gemini(part)
+
+
+class TestPartValidationEdges:
+    """A malformed thought signature raises INVALID_ARGUMENT."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_thought_signature_is_invalid_argument(self) -> None:
+        part = Part.from_text('hello', metadata={'thoughtSignature': '%%%not-valid-base64!'})
+        with pytest.raises(GenkitError) as raised:
+            await PartConverter.to_gemini(part)
+        assert raised.value.status == 'INVALID_ARGUMENT'
+        assert '%%%not-valid-base64!' not in raised.value.message

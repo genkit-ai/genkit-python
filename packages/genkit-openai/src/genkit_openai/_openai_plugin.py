@@ -37,7 +37,6 @@ from genkit.embedder import (
     EmbedResponse,
 )
 from genkit.model import (
-    ConstrainedSupport,
     Model,
     ModelContext,
     ModelInfo,
@@ -69,9 +68,6 @@ from genkit_openai._models._image import (
 )
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
-    GPT_REASONING_MODEL_SUPPORTS,
-    MULTIMODAL_MODEL_SUPPORTS,
-    O_SERIES_MODEL_SUPPORTS,
     SUPPORTED_EMBEDDING_MODELS,
     SUPPORTED_OPENAI_MODELS,
     KnownGpt,
@@ -299,49 +295,15 @@ def multimodal_config_class(*, name: str, model_type: _ModelType) -> type[BaseMo
     return OpenAIDalleConfig
 
 
-_GPT_4_TURBO_SUPPORTS = ModelSupports(multiturn=True, media=True, tools=True, system_role=True, output=['json', 'text'])
-_GPT_4_SUPPORTS = ModelSupports(multiturn=True, media=False, tools=True, system_role=True, output=['text'])
-_GPT_TEXT_JSON_SUPPORTS = ModelSupports(
-    multiturn=True, media=False, tools=True, system_role=True, output=['json', 'text']
-)
-
-# Shut-down chat ids keep their last supports for compatible hosts that still
-# serve them, but init() does not list them.
-_RETIRED_CHAT_MODEL_SUPPORTS: dict[str, ModelSupports] = {
-    'gpt-4o-2024-05-13': MULTIMODAL_MODEL_SUPPORTS,
-    'gpt-4.5-preview': MULTIMODAL_MODEL_SUPPORTS,
-    'gpt-4-turbo': _GPT_4_TURBO_SUPPORTS,
-    'gpt-4-turbo-2024-04-09': _GPT_4_TURBO_SUPPORTS,
-    'gpt-4-turbo-preview': _GPT_4_TURBO_SUPPORTS,
-    'gpt-4-0125-preview': _GPT_4_TURBO_SUPPORTS,
-    'gpt-4-1106-preview': _GPT_4_TURBO_SUPPORTS,
-    'gpt-4': _GPT_4_SUPPORTS,
-    'gpt-4-0613': _GPT_4_SUPPORTS,
-    'gpt-3.5-turbo': _GPT_TEXT_JSON_SUPPORTS,
-    'gpt-3.5-turbo-0125': _GPT_TEXT_JSON_SUPPORTS,
-    'gpt-3.5-turbo-1106': _GPT_TEXT_JSON_SUPPORTS,
-    'o1': O_SERIES_MODEL_SUPPORTS,
-    'o3-mini': ModelSupports(
-        multiturn=True,
-        media=False,
-        tools=True,
-        system_role=False,
-        output=['json', 'text'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-    'o4-mini': O_SERIES_MODEL_SUPPORTS,
-    'gpt-5-chat-latest': ModelSupports(multiturn=True, media=True, tools=False, system_role=True, output=['text']),
-    'gpt-5.2-chat': GPT_REASONING_MODEL_SUPPORTS,
-    'gpt-oss-120b': _GPT_TEXT_JSON_SUPPORTS,
-    'gpt-oss-20b': _GPT_TEXT_JSON_SUPPORTS,
-}
+# Dated snapshots OpenAI has shut down while their alias is still served.
+_SHUT_DOWN_SNAPSHOTS = frozenset({'gpt-4o-2024-05-13'})
 
 
 def _known_chat_model_info(name: str) -> ModelInfo | None:
     if info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
         return info
-    if supports := _RETIRED_CHAT_MODEL_SUPPORTS.get(name):
-        return ModelInfo(label=f'OpenAI - {name}', supports=supports)
+    if name in _SHUT_DOWN_SNAPSHOTS:
+        return None
     base = _base_id(name)
     if base == name:
         base = _undated(name)
@@ -354,8 +316,7 @@ def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
     A dated snapshot takes its alias's info and a fine-tune ``ft:<base>:...``
-    takes its base model's, stage included. Shut-down snapshots keep their
-    retired supports instead.
+    takes its base model's, stage included. A shut-down snapshot gets generic info.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 

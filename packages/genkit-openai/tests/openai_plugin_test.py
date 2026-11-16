@@ -28,9 +28,8 @@ import pytest
 from genkit_openai._models._audio import SUPPORTED_STT_MODELS, SUPPORTED_TTS_MODELS
 from genkit_openai._models._handler import OpenAIModelHandler
 from genkit_openai._models._image import SUPPORTED_IMAGE_MODELS
-from genkit_openai._models._model_info import MULTIMODAL_MODEL_SUPPORTS, SUPPORTED_OPENAI_MODELS, KnownGpt
+from genkit_openai._models._model_info import SUPPORTED_OPENAI_MODELS, KnownGpt
 from genkit_openai._openai_plugin import (
-    _RETIRED_CHAT_MODEL_SUPPORTS,
     OpenAI,
     _chat_model_info,
     _classify_model,
@@ -159,33 +158,21 @@ def test_catalog_drops_retired_and_non_chat_ids() -> None:
     assert not set(_RETIRED_CHAT_IDS) & set(SUPPORTED_OPENAI_MODELS)
 
 
-def test_retired_supports_cover_every_dropped_chat_id() -> None:
-    """Each id dropped from the catalog has retired supports, and none is still in the catalog."""
-    assert set(_RETIRED_CHAT_MODEL_SUPPORTS) == set(_RETIRED_CHAT_IDS)
-
-
 @pytest.mark.asyncio
-async def test_retired_chat_id_keeps_its_supports_but_is_not_listed() -> None:
-    """o4-mini still resolves with tools and constrained output, for compatible hosts that serve it."""
+@pytest.mark.parametrize('model', _RETIRED_CHAT_IDS)
+async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) -> None:
+    """A shut-down id is not registered at startup and resolves by name with generic info and no stage."""
     plugin = OpenAI(api_key='test-key', base_url='https://compat.example/v1')
 
-    assert 'openai/o4-mini' not in {a.name for a in await plugin.init()}
-    action = await plugin.resolve(ActionKind.MODEL, 'o4-mini')
+    assert f'openai/{model}' not in {a.name for a in await plugin.init()}
+    action = await plugin.resolve(ActionKind.MODEL, model)
 
     assert action is not None
     assert action.metadata is not None
     model_meta = cast(dict[str, Any], action.metadata['model'])
-    assert model_meta['label'] == 'OpenAI - o4-mini'
-    assert model_meta['supports'] == {
-        'multiturn': True,
-        'media': True,
-        'tools': True,
-        'systemRole': False,
-        'output': ['json', 'text'],
-        'constrained': 'all',
-    }
+    assert model_meta['label'] == f'OpenAI - {model}'
+    assert model_meta['supports'] == {'multiturn': True}
     assert 'stage' not in model_meta
-    assert plugin.get_model_info('o4-mini') == {'label': model_meta['label'], 'supports': model_meta['supports']}
 
 
 @pytest.mark.parametrize(
@@ -397,15 +384,13 @@ async def test_snapshots_and_fine_tunes_take_their_base_model_info(model: str, b
     assert model_meta.get('stage') == (expected.stage.value if expected.stage else None)
 
 
-def test_shut_down_snapshot_keeps_its_retired_supports() -> None:
-    """gpt-4o-2024-05-13 is shut down, so it does not take the gpt-4o alias's stage."""
-    info = OpenAI(api_key='test-key').get_model_info('gpt-4o-2024-05-13')
+def test_shut_down_dated_snapshot_does_not_take_its_alias_info() -> None:
+    """gpt-4o-2024-05-13 is shut down, so it gets generic info instead of the gpt-4o alias's supports and stage."""
+    info = _chat_model_info('gpt-4o-2024-05-13')
 
-    assert info == {
-        'label': 'OpenAI - gpt-4o-2024-05-13',
-        'supports': MULTIMODAL_MODEL_SUPPORTS.model_dump(by_alias=True, exclude_none=True),
-    }
-    assert _chat_model_info('gpt-4o-2024-05-13').stage is None
+    assert info.label == 'OpenAI - gpt-4o-2024-05-13'
+    assert info.supports == ModelSupports(multiturn=True)
+    assert info.stage is None
 
 
 @pytest.mark.parametrize('model', ['acme-model-2025-01-01', 'ft:acme-model:org::x1', 'ft:'])

@@ -78,7 +78,7 @@ async def test_chat_ids_are_listed_as_chat_models(model_id: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model_id', _HIDDEN)
 async def test_hidden_ids_are_not_listed(model_id: str) -> None:
-    """Realtime, live, audio, moderation, Responses-only and legacy base ids are not listed."""
+    """Realtime, live, audio, moderation, diarize, Responses-only, legacy base and DALL-E ids are not listed."""
     assert model_id not in await _listed()
 
 

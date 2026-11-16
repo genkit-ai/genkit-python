@@ -38,7 +38,7 @@ from genkit_openai._models._audio import (
 from pydantic import ValidationError
 
 from genkit import GenkitError, Message, Part, Role
-from genkit.model import ModelRequest
+from genkit.model import ModelRequest, ModelStage
 
 
 class TestExtractText:
@@ -276,6 +276,20 @@ class TestModelRegistries:
         """Verify all expected STT models are registered."""
         for name in ('gpt-4o-transcribe', 'gpt-4o-mini-transcribe', 'whisper-1'):
             assert name in SUPPORTED_STT_MODELS, f'{name!r} not in SUPPORTED_STT_MODELS'
+
+    def test_audio_model_stages(self) -> None:
+        """Ids with an announced shutdown are deprecated; gpt-transcribe has no stage."""
+        stages = {name: info.stage for name, info in {**SUPPORTED_TTS_MODELS, **SUPPORTED_STT_MODELS}.items()}
+
+        assert stages == {
+            'tts-1': ModelStage.DEPRECATED,
+            'tts-1-hd': ModelStage.DEPRECATED,
+            'gpt-4o-mini-tts': ModelStage.DEPRECATED,
+            'gpt-transcribe': None,
+            'gpt-4o-transcribe': ModelStage.DEPRECATED,
+            'gpt-4o-mini-transcribe': ModelStage.DEPRECATED,
+            'whisper-1': ModelStage.DEPRECATED,
+        }
 
     def test_tts_models_support_media_output(self) -> None:
         """Verify all TTS models declare media output support."""

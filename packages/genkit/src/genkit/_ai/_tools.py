@@ -304,8 +304,6 @@ def _define_tool(
 #   Any arguments makes it ambiguous, and no order fixes that.
 # - A defaulted input returns ``DefaultedTool``. ``(x = ..., ctx = None)``
 #   also fits ``[InputT, ToolContext]``, so its shape comes before that one.
-# - The ``Callable[..., ...]`` catch-all is last, for shapes no overload
-#   models, like a keyword-only context.
 @overload
 def define_tool(
     registry: Registry,
@@ -414,19 +412,6 @@ def define_tool(
     *,
     input_schema: type[BaseModel] | dict[str, object] | None = None,
 ) -> _Tool[None, ToolOutputT]: ...
-
-
-# Last: a shape the overloads above can't model, like a keyword-only
-# context. The output stays typed; the input is Any.
-@overload
-def define_tool(
-    registry: Registry,
-    func: Callable[..., Awaitable[ToolOutputT]],
-    name: str | None = None,
-    description: str | None = None,
-    *,
-    input_schema: type[BaseModel] | dict[str, object] | None = None,
-) -> _Tool[Any, ToolOutputT]: ...
 
 
 def define_tool(

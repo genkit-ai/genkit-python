@@ -465,6 +465,15 @@ def find_input_and_context(
                 f"{owner} parameter '{p.name}' is positional-only, but Genkit passes the input "
                 "and context by name. Remove the '/' from the signature."
             )
+        # Genkit could pass it by name, but the flow and tool overloads only
+        # model one input and one context as regular parameters, so a
+        # keyword-only one fails the type check at the decorator. Raise here
+        # too, so runtime agrees.
+        if p.kind is inspect.Parameter.KEYWORD_ONLY:
+            raise TypeError(
+                f"{owner} parameter '{p.name}' is keyword-only. Take the input and context as "
+                "regular parameters: remove the '*' from the signature."
+            )
 
     contexts: list[inspect.Parameter] = []
     inputs: list[inspect.Parameter] = []

@@ -18,13 +18,13 @@
 
 """Type-checker contract for every flow and tool handler shape.
 
-Each ``@ai.flow`` / ``@ai.tool`` / ``define_flow`` / ``define_tool`` overload
-set ends in a ``Callable[..., Awaitable[O]]`` catch-all that types the input
-as ``Any``. Every shape the specific overloads cover is pinned here with its
-exact type, so a shape that falls through to the catch-all fails as
-``Flow[Any, ...]`` instead of passing quietly. The runtime checks assert the
-built object is a ``DefaultedFlow`` / ``DefaultedTool`` exactly when the
-input has a default, so ``isinstance`` agrees with the static type.
+Every shape the ``@ai.flow`` / ``@ai.tool`` / ``define_flow`` /
+``define_tool`` overloads cover is pinned here with its exact type, so a
+shape that resolves to the wrong overload fails CI. Shapes Genkit doesn't
+support (a keyword-only parameter, two inputs) fail at the decorator in all
+three checkers and raise ``TypeError`` at definition. The runtime checks
+assert the built object is a ``DefaultedFlow`` / ``DefaultedTool`` exactly
+when the input has a default, so ``isinstance`` agrees with the static type.
 """
 
 import copy
@@ -109,9 +109,16 @@ async def echo_order(order: Any) -> str:  # noqa: ANN401 - pins the Any-input sh
     return str(order)
 
 
+# Unsupported: a keyword-only context, and two inputs.
+
+
 async def kwonly_special(cuisine: str = 'thai', *, ctx: FlowContext) -> str:
     del ctx
     return cuisine
+
+
+async def pair_dishes(main: str, side: str) -> str:
+    return f'{main} with {side}'
 
 
 # Tool handlers, one per shape.
@@ -162,9 +169,16 @@ async def echo_ticket(ticket: Any) -> str:  # noqa: ANN401 - pins the Any-input 
     return str(ticket)
 
 
+# Unsupported tool shapes.
+
+
 async def kwonly_soup(day: str = 'monday', *, ctx: ToolContext) -> str:
     del ctx
     return day
+
+
+async def split_bill(total: str, guests: str) -> str:
+    return f'{total} / {guests}'
 
 
 def test_ai_flow_shapes() -> None:
@@ -191,9 +205,6 @@ def test_ai_flow_shapes() -> None:
     # 4. Any input; ty types it Unknown (see _FlowDecorator)
     assert_type(ai.flow(echo_order), Flow[Any, str])  # ty: ignore[type-assertion-failure]
 
-    # 5. Keyword-only context: no overload models it, so the catch-all types the input Any
-    assert_type(ai.flow(kwonly_special), Flow[Any, str])
-
 
 def test_ai_flow_called_shapes() -> None:
     """``@ai.flow()`` (the decorator object) types the same shapes the same way."""
@@ -212,7 +223,6 @@ def test_ai_flow_called_shapes() -> None:
     assert_type(flow(special), DefaultedFlow[str, str])
     assert_type(flow(streamed_special), DefaultedFlow[str, str, str])
     assert_type(flow(echo_order), Flow[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(flow(kwonly_special), Flow[Any, str])
 
 
 def test_define_flow_shapes() -> None:
@@ -231,7 +241,6 @@ def test_define_flow_shapes() -> None:
     assert_type(define_flow(registry, special), DefaultedFlow[str, str])
     assert_type(define_flow(registry, streamed_special), DefaultedFlow[str, str, str])
     assert_type(define_flow(registry, echo_order), Flow[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(define_flow(registry, kwonly_special), Flow[Any, str])
 
 
 def test_ai_tool_shapes() -> None:
@@ -248,7 +257,6 @@ def test_ai_tool_shapes() -> None:
     assert_type(ai.tool(suggest_wine), DefaultedTool[str, str])
     assert_type(ai.tool(soup_of_day), DefaultedTool[str, str])
     assert_type(ai.tool(echo_ticket), Tool[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(ai.tool(kwonly_soup), Tool[Any, str])
 
 
 def test_ai_tool_called_shapes() -> None:
@@ -266,7 +274,6 @@ def test_ai_tool_called_shapes() -> None:
     assert_type(tool(suggest_wine), DefaultedTool[str, str])
     assert_type(tool(soup_of_day), DefaultedTool[str, str])
     assert_type(tool(echo_ticket), Tool[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(tool(kwonly_soup), Tool[Any, str])
 
 
 def test_define_tool_shapes() -> None:
@@ -283,7 +290,23 @@ def test_define_tool_shapes() -> None:
     assert_type(define_tool(registry, suggest_wine), DefaultedTool[str, str])
     assert_type(define_tool(registry, soup_of_day), DefaultedTool[str, str])
     assert_type(define_tool(registry, echo_ticket), Tool[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(define_tool(registry, kwonly_soup), Tool[Any, str])
+
+
+def test_unsupported_shapes_fail_at_the_decorator() -> None:
+    """A keyword-only parameter or a second input fails every checker at the decorator, and raises at definition."""
+    ai = Genkit()
+
+    # 1. Keyword-only context
+    with pytest.raises(TypeError, match="flow 'kwonly_special' parameter 'ctx' is keyword-only"):
+        ai.flow(kwonly_special)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+    with pytest.raises(TypeError, match="tool 'kwonly_soup' parameter 'ctx' is keyword-only"):
+        ai.tool()(kwonly_soup)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+
+    # 2. Two inputs
+    with pytest.raises(TypeError, match="flow 'pair_dishes' takes one input, but 'side' is a second parameter"):
+        ai.flow(pair_dishes)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+    with pytest.raises(TypeError, match="tool 'split_bill' takes one input, but 'guests' is a second parameter"):
+        ai.tool()(split_bill)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
 def test_runtime_class_matches_the_static_type() -> None:
@@ -292,7 +315,7 @@ def test_runtime_class_matches_the_static_type() -> None:
     registry = Registry()
 
     # 1. Flows: a defaulted input, with or without a context, in any position
-    for fn in (todays_special, lookup_reservation, chef_pick, special, streamed_special, kwonly_special):
+    for fn in (todays_special, lookup_reservation, chef_pick, special, streamed_special):
         assert isinstance(ai.flow(fn), DefaultedFlow), fn.__name__
         assert isinstance(define_flow(registry, fn), DefaultedFlow), fn.__name__
     for fn in (recommend_dish, staff_on_shift, kitchen_status, open_tables, plan_menu, plate_dish, echo_order):
@@ -301,7 +324,7 @@ def test_runtime_class_matches_the_static_type() -> None:
         assert not isinstance(built, DefaultedFlow), fn.__name__
 
     # 2. Tools, the same way
-    for fn in (check_allergens, find_table, suggest_wine, soup_of_day, kwonly_soup):
+    for fn in (check_allergens, find_table, suggest_wine, soup_of_day):
         assert isinstance(ai.tool(fn), DefaultedTool), fn.__name__
         assert isinstance(define_tool(registry, fn), DefaultedTool), fn.__name__
     for fn in (place_order, whoami, list_specials, fire_order, void_order, echo_ticket):
@@ -340,11 +363,6 @@ async def test_defaulted_flow_calls() -> None:
         del ctx
         return cuisine
 
-    @ai.flow
-    async def kwonly_special(cuisine: str = 'thai', *, ctx: FlowContext) -> str:
-        del ctx
-        return cuisine
-
     # 1. Omit the input to use the default, or pass a str
     assert_type(await todays_special(), str)
     assert await todays_special() == 'italian: risotto'
@@ -357,11 +375,10 @@ async def test_defaulted_flow_calls() -> None:
     assert await lookup_reservation(None) == 'walk-in'
     assert await lookup_reservation() == 'walk-in'
 
-    # 3. No-input flows, defaulted input before a context, and the keyword-only catch-all
+    # 3. No-input flows, and a defaulted input before a context
     assert await kitchen_status() == 'open'
     assert await special() == 'thai'
     assert await special('isan') == 'isan'
-    assert await kwonly_special() == 'thai'
 
     # 4. None isn't a str; neither is 3
     with pytest.raises(GenkitError):

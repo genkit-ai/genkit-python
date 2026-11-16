@@ -60,7 +60,7 @@ GPT_SEARCH_MODEL_SUPPORTS = ModelSupports(
     constrained=ConstrainedSupport.ALL,
 )
 
-# Chat Completions has no function tools for gpt-6-astra, gpt-6.1-sol and gpt-6.1-terra; they need Responses.
+# Chat Completions has no function tools for gpt-6-astra and gpt-6.1-sol; they need Responses.
 GPT_6_NO_TOOLS_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
@@ -132,7 +132,7 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     # --- GPT-5.1 to GPT-5.6 (gpt-5.1 and gpt-5.4-nano: shutdown 2027-04-01) ---
     'gpt-5.1': _info('gpt-5.1', GPT_REASONING_MODEL_SUPPORTS, deprecated=True),
     'gpt-5.2': _info('gpt-5.2', GPT_REASONING_MODEL_SUPPORTS),
-    # gpt-5.4*, gpt-5.5, gpt-5.6-* and gpt-6-sol/luna take function tools on Chat
+    # gpt-5.4*, gpt-5.5, gpt-5.6-*, gpt-6-sol/luna and gpt-6.1-terra take function tools on Chat
     # Completions only at reasoning_effort='none'.
     'gpt-5.4': _info('gpt-5.4', GPT_REASONING_MODEL_SUPPORTS),
     'gpt-5.4-mini': _info('gpt-5.4-mini', GPT_REASONING_MODEL_SUPPORTS),
@@ -149,7 +149,7 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     'gpt-6-sol': _info('gpt-6-sol', GPT_REASONING_MODEL_SUPPORTS),
     'gpt-6-luna': _info('gpt-6-luna', GPT_REASONING_MODEL_SUPPORTS),
     'gpt-6.1-sol': _info('gpt-6.1-sol', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
-    'gpt-6.1-terra': _info('gpt-6.1-terra', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
+    'gpt-6.1-terra': _info('gpt-6.1-terra', GPT_REASONING_MODEL_SUPPORTS),
 }
 
 SUPPORTED_EMBEDDING_MODELS: dict[str, dict] = {

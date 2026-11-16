@@ -56,11 +56,12 @@ OpenAI(
 ```
 
 On Chat Completions, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-sol` and `gpt-6-luna`
-accept function tools only with `reasoning_effort='none'`. The `gpt-5.4`
-models and `gpt-5.5` default to `none`. The others do not, so set
-`reasoning_effort='none'` in `config` when you pass them tools. `gpt-6-astra`, `gpt-6.1-sol` and `gpt-6.1-terra` do not advertise
-tool support, because they take function tools only through the Responses API.
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-sol`, `gpt-6-luna` and
+`gpt-6.1-terra` accept function tools only with `reasoning_effort='none'`. The
+`gpt-5.4` models and `gpt-5.5` default to `none`. The others do not, so set
+`reasoning_effort='none'` in `config` when you pass them tools. `gpt-6-astra`
+and `gpt-6.1-sol` do not advertise tool support, because they take function
+tools only through the Responses API.
 `gpt-5-search-api` does not take function tools either.
 
 The Dev UI lists the models your key can see on `/v1/models`, but only the ones

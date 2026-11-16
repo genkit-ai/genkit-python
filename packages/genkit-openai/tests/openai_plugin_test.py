@@ -188,10 +188,10 @@ async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) 
         ('gpt-5.6-luna', True),
         ('gpt-6-sol', True),
         ('gpt-6-luna', True),
+        ('gpt-6.1-terra', True),
         # Chat Completions has no function tools for these; they need Responses.
         ('gpt-6-astra', False),
         ('gpt-6.1-sol', False),
-        ('gpt-6.1-terra', False),
     ],
 )
 def test_new_chat_models_declare_chat_completions_tool_support(model: KnownGpt, tools: bool) -> None:

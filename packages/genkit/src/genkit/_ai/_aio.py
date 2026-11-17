@@ -80,6 +80,7 @@ from genkit._ai._prompt import (
     load_prompt_folder,
     parts_from_prompt,
     register_prompt_actions,
+    registry_definition_key,
     to_generate_options,
 )
 from genkit._ai._tools import define_interrupt
@@ -744,6 +745,40 @@ class Genkit:
         if action is None:
             return None
         return Tool.from_action(action)
+
+    async def list_prompts(self) -> list[Prompt[Any, Any]]:
+        """Return every prompt registered on this app, sorted by registered name.
+
+        Each entry is the handle ``ai.prompt(name, variant=...)`` returns:
+        calling it generates, and ``render()`` builds the request without
+        calling the model. A variant is its own entry (``'greet.formal'``), a
+        prompt from a ``.prompt`` subfolder keeps its folder (``'myns/a'``), and
+        partials aren't listed. Plugins are started first, and ``.prompt`` files
+        are loaded, so ``describe()`` on each entry is ready to read.
+
+        Example:
+            ```python
+            ai.define_prompt(name='greet', prompt='Hello {{name}}')
+            ai.define_prompt(name='greet', variant='formal', prompt='Good day {{name}}')
+
+            [p.name for p in await ai.list_prompts()]
+            # => ['greet', 'greet.formal']
+            ```
+        """
+        await self._registry.initialize_all_plugins()
+        actions = await self._registry.resolve_actions_by_kind(ActionKind.PROMPT)
+        prompts: list[Prompt[Any, Any]] = []
+        for key in sorted(actions):
+            block = actions[key].metadata.get('prompt')
+            block = cast(dict[str, object], block) if isinstance(block, dict) else {}
+            name = block.get('name')
+            variant = block.get('variant')
+            variant = variant if isinstance(variant, str) and variant else None
+            if isinstance(name, str) and registry_definition_key(name, variant) == key:
+                prompts.append(self.prompt(name, variant=variant))
+            else:
+                prompts.append(self.prompt(key))
+        return prompts
 
     def lookup_value(self, *, kind: str, name: str) -> object | None:
         """Return the value defined under ``kind`` and ``name``, or None."""

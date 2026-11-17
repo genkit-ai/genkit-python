@@ -69,7 +69,14 @@ _HIDDEN_ON_OPENAI = [
     'dall-e-3',
     'gpt-image-1',
 ]
-_LISTED_ON_EVERY_HOST = ['my-chat-model', 'text-embedding-3-small', 'tts-1', 'whisper-1']
+_LISTED_ON_EVERY_HOST = [
+    'my-chat-model',
+    'my-realtime-llama',
+    'llama-guard-moderation',
+    'text-embedding-3-small',
+    'tts-1',
+    'whisper-1',
+]
 
 
 @pytest.mark.asyncio

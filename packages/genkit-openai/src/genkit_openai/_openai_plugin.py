@@ -199,7 +199,7 @@ def _undated(name: str) -> str:
 
 # Ids no host serves through Chat Completions or this plugin's other endpoints.
 _NON_CHAT_COMPLETIONS_PATTERN = re.compile(
-    r'realtime|moderation|^gpt-live-|^sora'
+    r'^gpt-[\w.-]*realtime|^(omni|text)-moderation|^gpt-live-|^sora'
     r'|^((text|code)-)?(ada|babbage|curie|davinci)(-\d{3}$|:)|^gpt-3\.5-turbo-instruct'
 )
 # Ids OpenAI serves only on other APIs; compatible hosts may serve the same names on Chat Completions.

@@ -16,6 +16,8 @@
 
 """Tests for genkitEval evaluators (matching Go evaluators_test.go)."""
 
+import warnings
+
 import pytest
 from genkit_evaluators import register_genkit_evaluators
 
@@ -126,3 +128,17 @@ async def test_built_in_evaluators_return_one_score(ai: Genkit, evaluator: str, 
     assert isinstance(evaluation, list)
     assert len(evaluation) == 1
     assert evaluation[0].status == 'PASS'
+
+
+def test_register_genkit_evaluators_warns_once_at_caller() -> None:
+    """register_genkit_evaluators emits a single FutureWarning attributed to the caller's line."""
+    instance = Genkit()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        register_genkit_evaluators(instance)
+
+    assert len(caught) == 1
+    assert caught[0].category is FutureWarning
+    assert 'deprecated in 0.14' in str(caught[0].message)
+    assert 'removed in the next release' in str(caught[0].message)
+    assert caught[0].filename == __file__

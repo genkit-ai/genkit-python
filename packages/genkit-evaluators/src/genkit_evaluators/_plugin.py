@@ -18,6 +18,7 @@
 
 import json
 import re
+import warnings
 from typing import Any
 
 from genkit import Genkit
@@ -34,6 +35,7 @@ except ImportError:
     Jsonata = None  # type: ignore[misc, assignment]
 
 PROVIDER = 'genkitEval'
+_DEPRECATION_MESSAGE = 'Genkit evaluators are deprecated in 0.14 and will be removed in the next release.'
 
 
 def genkit_eval_name(local: str) -> str:
@@ -121,12 +123,26 @@ def register_genkit_evaluators(ai: Genkit, metrics: list[str] | None = None) -> 
         },
     }
     selected = metrics if metrics is not None else list(_all.keys())
-    for key in selected:
+    if not selected:
+        warnings.warn(_DEPRECATION_MESSAGE, FutureWarning, stacklevel=2)
+        return
+    for idx, key in enumerate(selected):
         cfg = _all[key]
-        ai.define_evaluator(
-            name=genkit_eval_name(key),
-            display_name=cfg['display_name'],
-            definition=cfg['definition'],
-            is_billed=False,
-            fn=cfg['fn'],
-        )
+        if idx == 0:
+            ai.define_evaluator(
+                name=genkit_eval_name(key),
+                display_name=cfg['display_name'],
+                definition=cfg['definition'],
+                is_billed=False,
+                fn=cfg['fn'],
+            )
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FutureWarning)
+                ai.define_evaluator(
+                    name=genkit_eval_name(key),
+                    display_name=cfg['display_name'],
+                    definition=cfg['definition'],
+                    is_billed=False,
+                    fn=cfg['fn'],
+                )

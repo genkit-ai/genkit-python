@@ -19,7 +19,10 @@
 import inspect
 import traceback
 import uuid
-from collections.abc import Callable, Coroutine
+import warnings
+from collections.abc import Callable, Coroutine, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict
@@ -46,6 +49,48 @@ logger = get_logger(__name__)
 EVALUATOR_METADATA_KEY_DISPLAY_NAME = 'evaluatorDisplayName'
 EVALUATOR_METADATA_KEY_DEFINITION = 'evaluatorDefinition'
 EVALUATOR_METADATA_KEY_IS_BILLED = 'evaluatorIsBilled'
+
+EVALUATORS_DEPRECATION_MESSAGE = 'Genkit evaluators are deprecated in 0.14 and will be removed in the next release.'
+_INTERNAL_MODULES = frozenset({'genkit', 'genkit_evaluators', 'genkit_google_genai'})
+_INTERNAL_MODULE_PREFIXES = ('genkit.', 'genkit_evaluators.', 'genkit_google_genai.')
+_suppress_evaluator_warning: ContextVar[bool] = ContextVar('_suppress_evaluator_warning', default=False)
+
+
+@contextmanager
+def suppress_evaluator_warning() -> Iterator[None]:
+    """Suppress duplicate evaluator deprecation warnings within a nested internal call."""
+    token = _suppress_evaluator_warning.set(True)
+    try:
+        yield
+    finally:
+        _suppress_evaluator_warning.reset(token)
+
+
+def warn_evaluators_deprecated() -> None:
+    """Emit a user-visible deprecation warning attributed to the caller outside Genkit.
+
+    Uses FutureWarning rather than DeprecationWarning because Python's default
+    warning filters hide non-__main__ DeprecationWarnings (PEP 565), which
+    would silence the warning in web servers, imported modules, and `genkit eval:run`.
+    """
+    if _suppress_evaluator_warning.get():
+        return
+    stacklevel = 2
+    frame = inspect.currentframe()
+    try:
+        if frame is not None:
+            frame = frame.f_back
+            while frame is not None:
+                mod = frame.f_globals.get('__name__', '')
+                if isinstance(mod, str) and (mod in _INTERNAL_MODULES or mod.startswith(_INTERNAL_MODULE_PREFIXES)):
+                    stacklevel += 1
+                    frame = frame.f_back
+                else:
+                    break
+    finally:
+        del frame
+    warnings.warn(EVALUATORS_DEPRECATION_MESSAGE, FutureWarning, stacklevel=stacklevel)
+
 
 T = TypeVar('T')
 
@@ -125,6 +170,7 @@ class Evaluator(Action[EvaluatorRequest, EvalResponse, Never]):
         evaluator_description = _get_func_description(fn, description)
 
         async def eval_stepper_fn(req: EvaluatorRequest) -> EvalResponse:
+            warn_evaluators_deprecated()
             eval_responses: list[EvaluatorResponse] = []
             for index in range(len(req.dataset)):
                 datapoint = req.dataset[index]
@@ -191,6 +237,7 @@ def define_evaluator(
     description: str | None = None,
 ) -> Evaluator:
     """Register an evaluator that runs the callback on each dataset sample."""
+    warn_evaluators_deprecated()
     action = Evaluator(
         name,
         fn,
@@ -236,6 +283,7 @@ class BatchEvaluator(Action[EvaluatorRequest, EvalResponse, Never]):
         # `genkit eval:run` get a JSON array, the same as a per-row evaluator.
         # fn stays the metadata_fn, so its signature is still checked when built.
         async def batch_fn(req: EvaluatorRequest, ctx: ActionContext) -> EvalResponse:
+            warn_evaluators_deprecated()
             return EvalResponse(await self.params.call(fn, req, ctx))
 
         super().__init__(
@@ -260,6 +308,7 @@ def define_batch_evaluator(
     description: str | None = None,
 ) -> BatchEvaluator:
     """Register a batch evaluator that runs ``fn`` once on the whole ``EvaluatorRequest``."""
+    warn_evaluators_deprecated()
     action = BatchEvaluator(
         name,
         fn,

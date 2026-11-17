@@ -16,6 +16,10 @@
 
 """Plugin authors build evaluators with Evaluator / BatchEvaluator and list them in list_actions()."""
 
+import subprocess  # noqa: S404
+import sys
+import warnings
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -233,3 +237,73 @@ async def test_plugin_returning_batch_evaluator_registers_it_on_app() -> None:
     assert [row.test_case_id for row in results] == ['case1', 'case2']
     assert [score.score for score in results[0].evaluation] == [True]
     assert [score.score for score in results[1].evaluation] == [False]
+
+
+@pytest.mark.asyncio
+async def test_evaluator_surfaces_emit_single_future_warning_at_caller() -> None:
+    """Defining or running evaluators warns once per call at the caller's line; plugin construction stays silent."""
+    ai = Genkit()
+
+    with warnings.catch_warnings(record=True) as build_caught:
+        warnings.simplefilter('always')
+        per_row = Evaluator('t/e', _exact_match, display_name='Exact match', definition='output equals reference')
+        batch = BatchEvaluator(
+            't/b', _exact_match_batch, display_name='Exact match', definition='output equals reference'
+        )
+    assert build_caught == []
+
+    with warnings.catch_warnings(record=True) as def_caught:
+        warnings.simplefilter('always')
+        ai.define_evaluator('custom/e', _exact_match, display_name='Exact match', definition='output equals reference')
+    assert len(def_caught) == 1
+    assert def_caught[0].category is FutureWarning
+    assert def_caught[0].filename == __file__
+    assert 'deprecated in 0.14' in str(def_caught[0].message)
+
+    with warnings.catch_warnings(record=True) as batch_def_caught:
+        warnings.simplefilter('always')
+        ai.define_batch_evaluator(
+            'custom/b', _exact_match_batch, display_name='Exact match', definition='output equals reference'
+        )
+    assert len(batch_def_caught) == 1
+    assert batch_def_caught[0].category is FutureWarning
+    assert batch_def_caught[0].filename == __file__
+
+    with warnings.catch_warnings(record=True) as eval_caught:
+        warnings.simplefilter('always')
+        await ai.evaluate(evaluator='custom/e', dataset=_two_rows())
+    assert len(eval_caught) == 1
+    assert eval_caught[0].category is FutureWarning
+    assert eval_caught[0].filename == __file__
+
+    with warnings.catch_warnings(record=True) as run_caught:
+        warnings.simplefilter('always')
+        await per_row.run(EvaluatorRequest(dataset=_two_rows(), eval_run_id='run-1'))
+        await batch.run(EvaluatorRequest(dataset=_two_rows(), eval_run_id='run-2'))
+    assert len(run_caught) == 2
+    assert all(w.category is FutureWarning and w.filename == __file__ for w in run_caught)
+
+
+def test_evaluator_warning_visible_by_default_outside_main(tmp_path: Path) -> None:
+    """A non-__main__ module still prints the warning under default Python filters (no -W flags)."""
+    mod_file = tmp_path / 'tutorial_mod.py'
+    mod_file.write_text(
+        'from genkit import Genkit\n'
+        'from genkit.evaluator import BaseDataPoint, EvaluatorResponse, Score\n'
+        'async def fn(dp: BaseDataPoint, _opts: object = None) -> EvaluatorResponse:\n'
+        "    return EvaluatorResponse(test_case_id='', evaluation=[Score(score=True)])\n"
+        'def setup() -> None:\n'
+        '    ai = Genkit()\n'
+        "    ai.define_evaluator('t/e', fn, display_name='T', definition='D')\n",
+        encoding='utf-8',
+    )
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, '-c', 'import tutorial_mod; tutorial_mod.setup()'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    expected = 'FutureWarning: Genkit evaluators are deprecated in 0.14 and will be removed in the next release.'
+    assert expected in proc.stderr
+    assert 'tutorial_mod.py:7' in proc.stderr

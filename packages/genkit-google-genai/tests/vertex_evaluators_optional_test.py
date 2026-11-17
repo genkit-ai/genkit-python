@@ -24,6 +24,7 @@ genkit.evaluator. Each test re-imports ``_google`` against a patched
 import importlib
 import sys
 import traceback
+import warnings
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
@@ -61,15 +62,18 @@ def _offline(monkeypatch: pytest.MonkeyPatch, google: ModuleType) -> None:
 
 @pytest.mark.asyncio
 async def test_vertexai_registers_evaluators_when_genkit_evaluator_exists(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With genkit.evaluator importable, VertexAI registers and resolves its evaluators as before."""
-    google = _reimport_google(monkeypatch)
-    _offline(monkeypatch, google)
-    assert google._HAS_VERTEX_EVALUATORS
+    """With genkit.evaluator importable, VertexAI registers and resolves its evaluators without warning model users."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always', FutureWarning)
+        google = _reimport_google(monkeypatch)
+        _offline(monkeypatch, google)
+        assert google._HAS_VERTEX_EVALUATORS
 
-    plugin = google.VertexAI(project='p', location='us-central1')
-    actions = await plugin.init()
-    resolved = await plugin.resolve(ActionKind.EVALUATOR, 'fluency')
+        plugin = google.VertexAI(project='p', location='us-central1')
+        actions = await plugin.init()
+        resolved = await plugin.resolve(ActionKind.EVALUATOR, 'fluency')
 
+    assert caught == []
     evaluators = {a.name for a in actions if a.kind == ActionKind.EVALUATOR}
     assert 'vertexai/fluency' in evaluators
     assert resolved is not None

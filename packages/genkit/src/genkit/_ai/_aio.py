@@ -53,6 +53,8 @@ from genkit._ai._evaluator import (
     EvaluatorRef,
     define_batch_evaluator,
     define_evaluator,
+    suppress_evaluator_warning,
+    warn_evaluators_deprecated,
 )
 from genkit._ai._formats._builtin import built_in_formats
 from genkit._ai._formats._types import Formatter
@@ -2179,6 +2181,7 @@ class Genkit:
                 for score in row.evaluation:
                     print(row.test_case_id, score.score)
         """
+        warn_evaluators_deprecated()
         if isinstance(evaluator, EvaluatorRef):
             evaluator_name = evaluator.name
             ref_config = evaluator.config
@@ -2203,13 +2206,14 @@ class Genkit:
         if not eval_run_id:
             eval_run_id = str(uuid.uuid4())
 
-        response = await eval_action.run(
-            EvaluatorRequest(
-                dataset=dataset,
-                options=final_options,
-                eval_run_id=eval_run_id,
-            ),
-        )
+        with suppress_evaluator_warning():
+            response = await eval_action.run(
+                EvaluatorRequest(
+                    dataset=dataset,
+                    options=final_options,
+                    eval_run_id=eval_run_id,
+                ),
+            )
         return response.response.root
 
     @staticmethod

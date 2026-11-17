@@ -28,6 +28,7 @@ from genkit_openai._models._utils import (
     MessageConverter,
     check_extra_body,
     extract_response_metadata,
+    merge_streamed_reasoning,
     reraise_openai_error,
     split_reply_content,
     strip_markdown_fences,
@@ -615,9 +616,8 @@ class OpenAIModel:
 
             # Text content; Mistral's reasoning models stream reasoning in it too.
             thinking, text = split_reply_content(delta.content)
-            if thinking is not None:
-                reasoning_parts.append(thinking)
-                parts.append(thinking)
+            reasoning_parts.extend(thinking)
+            parts.extend(thinking)
             if text:
                 text_part = MessageConverter.text_part_to_genkit(text)
                 text_parts.append(text_part)
@@ -648,7 +648,7 @@ class OpenAIModel:
                 details={'usage': _usage_from_completion(usage).model_dump(exclude_none=True)},
             )
 
-        accumulated_content: list[Part] = [*reasoning_parts, *text_parts]
+        accumulated_content: list[Part] = [*merge_streamed_reasoning(reasoning_parts), *text_parts]
         if tool_calls:
             message = MessageConverter.to_genkit(
                 DictMessageAdapter({'tool_calls': tool_calls.values(), 'role': Role.MODEL})

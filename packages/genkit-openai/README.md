@@ -107,11 +107,13 @@ that differ:
   out as `random_seed` and `max_tokens`, and `stream_options` is dropped.
 
 With `reasoning_effort` set, replies carry their reasoning in `thinking`
-chunks. Those come back as reasoning parts, ahead of the text, streamed or not,
-and go back to Mistral as a `thinking` chunk on the next turn, as Mistral asks.
-Only reasoning that came from Mistral goes back: each such part is marked
-`metadata['reasoningSource'] == 'mistral'`, which survives saving the history
-as JSON. Reasoning another model left in a mixed history is dropped.
+chunks. Each comes back as its own reasoning part, ahead of the text, with its
+own signature in `metadata['thoughtSignature']`; a streamed reply's final
+message joins each chunk's fragments back into one part. On the next turn each part goes back to Mistral as its own
+`thinking` chunk, in order, as Mistral asks, so a signature stays with the text
+it signs. Only reasoning that came from Mistral goes back: each such part is
+marked `metadata['reasoningSource'] == 'mistral'`, which survives saving the
+history as JSON. Reasoning another model left in a mixed history is dropped.
 
 Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
 and Mistral fails the call naming them. Mistral-only fields like `min_tokens`

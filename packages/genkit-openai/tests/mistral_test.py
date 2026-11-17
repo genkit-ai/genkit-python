@@ -893,3 +893,88 @@ async def test_mistral_without_any_key_does_not_send_openai_api_key(
     assert response.error.status == 'FAILED_PRECONDITION'
     assert 'MISTRAL_API_KEY' in str(response.finish_message)
     assert server.requests == []
+
+
+def _signed_thinking(text: str, signature: str) -> dict[str, Any]:
+    return {'type': 'thinking', 'thinking': [{'type': 'text', 'text': text}], 'signature': signature}
+
+
+@pytest.mark.asyncio
+async def test_mistral_replays_each_reasoning_part_as_its_own_thinking_chunk(mistral: Genkit, server: _Server) -> None:
+    """Each Mistral reasoning part goes back as its own chunk with its own signature; others are left out."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Bread for two?')]),
+        Message(
+            role=Role.MODEL,
+            content=[
+                _mistral_reasoning('First, count.', signature='sig-1'),
+                Part.from_reasoning('Gemini thinks.', metadata={'thoughtSignature': 'gemini-sig'}),
+                Part.from_reasoning('Unmarked.'),
+                _mistral_reasoning('', signature=None),
+                _mistral_reasoning('Unsigned middle.', signature=None),
+                _mistral_reasoning('Then, answer.', signature='sig-2'),
+                Part.from_text('Two loaves.'),
+            ],
+        ),
+    ]
+
+    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+
+    [assistant] = _assistant_messages(server.bodies()[0])
+    assert assistant['content'] == [
+        _signed_thinking('First, count.', 'sig-1'),
+        {'type': 'thinking', 'thinking': [{'type': 'text', 'text': 'Unsigned middle.'}]},
+        _signed_thinking('Then, answer.', 'sig-2'),
+        {'type': 'text', 'text': 'Two loaves.'},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mistral_sends_no_thinking_chunk_when_reasoning_parts_are_empty(mistral: Genkit, server: _Server) -> None:
+    """Mistral reasoning parts with neither text nor a signature leave the turn as plain text."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Bread for two?')]),
+        Message(role=Role.MODEL, content=[_mistral_reasoning('', signature=None), Part.from_text('Two loaves.')]),
+    ]
+
+    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+
+    [assistant] = _assistant_messages(server.bodies()[0])
+    assert assistant['content'] == 'Two loaves.'
+
+
+@pytest.mark.asyncio
+async def test_mistral_reply_with_two_thinking_chunks_gives_two_reasoning_parts(
+    mistral: Genkit, server: _Server
+) -> None:
+    """Two thinking chunks in a reply come back as two reasoning parts, each with its own signature, and replay so."""
+    server.content = [
+        _signed_thinking('First, count.', 'sig-1'),
+        _signed_thinking('Then, answer.', 'sig-2'),
+        {'type': 'text', 'text': 'Two loaves.'},
+    ]
+
+    first = await mistral.generate(model='openai/mistral-small-latest', prompt='Bread for two?')
+    await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+
+    assert first.message is not None
+    assert [(p.reasoning, p.metadata) for p in first.message.content if p.reasoning is not None] == [
+        ('First, count.', {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-1'}),
+        ('Then, answer.', {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-2'}),
+    ]
+    [assistant] = _assistant_messages(server.bodies()[-1])
+    assert assistant['content'] == server.content
+
+
+@pytest.mark.asyncio
+async def test_mistral_stream_joins_a_thinking_chunks_fragments_into_one_part(mistral: Genkit, server: _Server) -> None:
+    """A streamed thinking chunk's fragments end up as one reasoning part, with the signature, in the final message."""
+    stream = mistral.generate_stream(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+    )
+    response = await stream.response
+
+    assert response.message is not None
+    assert [(p.reasoning, p.metadata) for p in response.message.content if p.reasoning is not None] == [
+        (REASONING, {'reasoningSource': 'mistral', 'thoughtSignature': SIGNATURE})
+    ]

@@ -324,13 +324,14 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
     info = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias)) or _LEGACY_CHAT_MODELS.get(alias)
     if info is None:
         return None
-    return info.model_copy(update={'label': f'OpenAI - {name}'})
+    supports = info.supports.model_copy(update={'constrained': None}) if info.supports else None
+    return info.model_copy(update={'label': f'OpenAI - {name}', 'supports': supports})
 
 
 def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
-    A dated snapshot takes its alias's info and stage, unless it has an entry of its own.
+    A dated snapshot takes its alias's info and stage, without constrained output, unless it has an entry of its own.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 

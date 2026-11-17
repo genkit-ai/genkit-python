@@ -429,7 +429,7 @@ def test_responses_only_ids_are_known_unsupported(model: str) -> None:
     ],
 )
 async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt) -> None:
-    """Dated snapshots take their alias's supports and stage."""
+    """Dated snapshots take their alias's supports, without constrained output, and stage."""
     expected = SUPPORTED_OPENAI_MODELS[base]
 
     action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, model)
@@ -438,7 +438,9 @@ async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt)
     model_meta = cast(dict[str, Any], action.metadata['model'])
     assert model_meta['label'] == f'OpenAI - {model}'
     assert expected.supports is not None
-    assert model_meta['supports'] == expected.supports.model_dump(by_alias=True, exclude_none=True)
+    assert model_meta['supports'] == expected.supports.model_dump(
+        by_alias=True, exclude_none=True, exclude={'constrained'}
+    )
     assert model_meta.get('stage') == (expected.stage.value if expected.stage else None)
 
 
@@ -453,11 +455,11 @@ async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt)
     ],
 )
 def test_dated_snapshots_of_retired_aliases_take_their_alias_supports(model: str, alias: str) -> None:
-    """A snapshot of a retired alias resolves with the alias's supports, not generic info."""
+    """A snapshot of a retired alias resolves with the alias's supports, without constrained output."""
     info = _chat_model_info(model)
 
     assert info.label == f'OpenAI - {model}'
-    assert info.supports == _RETIRED_CHAT_SUPPORTS[alias]
+    assert info.supports == _RETIRED_CHAT_SUPPORTS[alias].model_copy(update={'constrained': None})
     assert info.stage is None
 
 

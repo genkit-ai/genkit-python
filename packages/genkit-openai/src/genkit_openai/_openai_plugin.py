@@ -567,7 +567,7 @@ class OpenAI(Plugin):
 
         async def _generate(request: ModelRequest[OpenAIConfig], ctx: ModelContext) -> ModelResponse:
             openai_model = OpenAIModelHandler(
-                OpenAIModel(name, self._client_for_call(request, ctx), supports=info.supports)
+                OpenAIModel(name, self._client_for_call(request, ctx), supports=info.supports), info
             )
             return await openai_model.generate(request, ctx)
 

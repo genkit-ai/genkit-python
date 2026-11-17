@@ -731,3 +731,30 @@ async def test_openai_client_options_reach_the_client(server: _OpenAIServer) -> 
     await ai.generate(model='openai/gpt-4o', prompt='hi')
 
     assert server.requests[-1].headers['x-team'] == 'search'
+
+
+# Model override and structured output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'gpt-4',
+        'o4-mini',
+        'gpt-oss-120b',
+        'gpt-4o-2024-08-06',
+        'ft:gpt-4o-mini-2024-07-18:acme::abc123',
+        'my-chat-model',
+    ],
+)
+async def test_config_model_override_sends_retired_and_uncataloged_ids(
+    ai: Genkit, server: _OpenAIServer, model: str
+) -> None:
+    """config={'model': id} sends the request for an id outside the active catalog."""
+    response = await ai.generate(model=f'openai/{model}', prompt='hi', config={'model': model})
+
+    assert response.finish_reason == FinishReason.STOP
+    assert response.text == 'hi back'
+    assert server.bodies()[-1]['model'] == model
+

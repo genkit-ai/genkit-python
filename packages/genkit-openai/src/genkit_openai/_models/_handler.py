@@ -32,13 +32,15 @@ _SUPPORTED_MODELS = cast(Mapping[str, ModelInfo], SUPPORTED_OPENAI_MODELS)
 class OpenAIModelHandler:
     """Handles OpenAI API interactions for the Genkit plugin."""
 
-    def __init__(self, model: OpenAIModel) -> None:
+    def __init__(self, model: OpenAIModel, info: ModelInfo | None = None) -> None:
         """Initializes the OpenAIModelHandler with a specified model.
 
         Args:
             model: An instance of a Model subclass representing the OpenAI model.
+            info: The model's resolved info. Defaults to its catalog entry, if any.
         """
         self._model = model
+        self._info = info if info is not None else _SUPPORTED_MODELS.get(model.name)
 
     @classmethod
     def get_model_handler(
@@ -67,7 +69,7 @@ class OpenAIModelHandler:
 
         info = _SUPPORTED_MODELS[model]
         openai_model = OpenAIModel(model, client, supports=info.supports)
-        return cls(openai_model).generate
+        return cls(openai_model, info).generate
 
     def _validate_version(self, version: str) -> None:
         """Validates whether the specified model version is supported.
@@ -78,8 +80,8 @@ class OpenAIModelHandler:
         Raises:
             ValueError: If the specified model version is not supported.
         """
-        model_info = _SUPPORTED_MODELS[self._model.name]
-        if model_info.versions is not None and version not in model_info.versions:
+        versions = self._info.versions if self._info is not None else None
+        if versions is not None and version not in versions:
             raise ValueError(f"Model version '{version}' is not supported.")
 
     async def generate(self, request: ModelRequest, ctx: ModelContext) -> ModelResponse:

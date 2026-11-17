@@ -1,4 +1,4 @@
-# Proposal: One `GoogleGenAI` plugin with a required `enterprise=` flag
+# Proposal: One `GoogleGenAI` plugin with an `enterprise=` flag
 
 **Author:** Jeff Huang · **Status:** Proposed · **Applies to:** `genkit-google-genai` (Python), before 1.0
 
@@ -9,10 +9,8 @@
 This proposal replaces both with one plugin, named after the package, before Python 1.0:
 
 ```python
-GoogleGenAI(enterprise=False)                                                # AI Studio key
+GoogleGenAI()                                                                # AI Studio key
 GoogleGenAI(enterprise=True, project='bistro-prod', location='us-central1')  # Google Cloud
-GoogleGenAI()
-# => TypeError: missing required keyword argument 'enterprise'
 ```
 
 `GoogleAI` and `VertexAI` are removed, not deprecated. Python 1.0 ships with `GoogleGenAI` only, so there's no deprecation path to carry and no alias machinery to build.
@@ -31,7 +29,7 @@ GoogleGenAI()
 
 ```python
 # 1. Prototype on an AI Studio key
-ai = Genkit(plugins=[GoogleGenAI(enterprise=False)])
+ai = Genkit(plugins=[GoogleGenAI()])
 
 # 2. Production on a Cloud project: same refs, same .prompt files
 ai = Genkit(plugins=[GoogleGenAI(enterprise=True, project='bistro-prod', location='us-central1')])
@@ -41,11 +39,11 @@ response = await ai.generate(model=GoogleGenAI.gemini('gemini-2.5-flash'), promp
 # => runs on whichever backend the plugin was configured for
 
 # 4. A model the configured backend doesn't serve fails at lookup
-await ai.generate(model=GoogleGenAI.virtual_try_on('virtual-try-on-001'), ...)  # with enterprise=False
+await ai.generate(model=GoogleGenAI.virtual_try_on('virtual-try-on-001'), ...)  # on the default backend
 # => GenkitError: NOT_FOUND, 'googlegenai/virtual-try-on-001' needs GoogleGenAI(enterprise=True)
 ```
 
-- **`enterprise=` is required, keyword-only, with no default.** Picking a billing account is a deliberate choice. Leaving it out is a `TypeError` on the user's own line.
+- **`enterprise=` is keyword-only and defaults to `False`.** `GoogleGenAI()` behaves like `GoogleAI()` today, and matches `genai.Client()`, which also defaults to the Developer API. The default can't bill a Cloud project by accident: Cloud needs an explicit `enterprise=True`, and without a Gemini API key the default fails at setup with an error naming the key.
 - **The backend is set on the plugin only.** It isn't in `GeminiConfig` or any model config. Config is merged from the ref, the `.prompt` file and the call, and middleware can rewrite it, so a config field would let any of those move an app to a different billing account. It also couldn't work: `resolve()` and the Dev UI model list run before any request exists, and need to know the backend to know which models exist.
 - **One namespace: `googlegenai/`.** Typed refs are classmethods (`GoogleGenAI.gemini('x')`). They run without a plugin instance, so they can't know the backend and need one fixed prefix. The ref names the model; the plugin picks the backend.
 - **Traces record the backend.** The ref no longer shows which account paid, so the backend goes in span metadata.
@@ -73,7 +71,7 @@ VertexAI(project='bistro-prod', location='us-central1')
 VertexAI(api_key=key)                                      # Cloud express mode
 
 # after
-GoogleGenAI(enterprise=False, api_key=key)
+GoogleGenAI(api_key=key)
 GoogleGenAI(enterprise=True, project='bistro-prod', location='us-central1')
 GoogleGenAI(enterprise=True, api_key=key)                  # Cloud express mode
 ```
@@ -82,7 +80,7 @@ GoogleGenAI(enterprise=True, api_key=key)                  # Cloud express mode
   - `project`: the argument, then `GCLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT`, then `credentials.project_id`, then the ADC project.
   - `location`: the argument, then `GOOGLE_CLOUD_LOCATION` / `GCLOUD_LOCATION`, then `us-central1`. Multi-regions keep their dedicated endpoints.
   - Express mode only with an explicit `api_key=`. Environment keys stay ignored, as they are today, so an AI Studio `GEMINI_API_KEY` never quietly becomes a Cloud key.
-- **`enterprise=False`:** the key comes from `api_key`, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. Passing `project` or `location` raises a `ValueError` at setup.
+- **`enterprise=False` (default):** the key comes from `api_key`, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. Passing `project` or `location` raises a `ValueError` at setup.
 - **Only `enterprise=` picks the backend.** The SDK reads `GOOGLE_GENAI_USE_ENTERPRISE` and `GOOGLE_GENAI_USE_VERTEXAI` only when no flag is passed. The plugin always passes one, so both variables stay ignored, as they are today.
 
 ## What differs between backends
@@ -117,7 +115,7 @@ await ai.generate(model='googleai/gemini-2.5-flash', prompt='...')
 
 # after
 from genkit_google_genai import GoogleGenAI
-ai = Genkit(plugins=[GoogleGenAI(enterprise=False)])
+ai = Genkit(plugins=[GoogleGenAI()])
 await ai.generate(model=GoogleGenAI.gemini('gemini-2.5-flash'), prompt='...')
 await ai.generate(model='googlegenai/gemini-2.5-flash', prompt='...')
 ```
@@ -126,7 +124,7 @@ In this repo, that's about 100 references to `GoogleAI`/`VertexAI` outside the p
 
 ## Other SDKs
 
-This proposal covers Python. JS agreed on the same shape for JS 2.0: one `googleGenAI` plugin with a required `enterprise` flag. In JS, the parent can hold the existing `googleAI` or `vertexAI` plugin internally and delegate to it, so the change there is a layer on top rather than a rewrite.
+This proposal covers Python. JS agreed on the same shape for JS 2.0: one `googleGenAI` plugin with an `enterprise` flag. JS discussed making the flag required; Python defaults it to `False`, and the two SDKs should land on the same answer. In JS, the parent can hold the existing `googleAI` or `vertexAI` plugin internally and delegate to it, so the change there is a layer on top rather than a rewrite.
 
 One thing to keep in step: `.prompt` files are shared across SDKs, so the namespace string has to match. If Python registers `googlegenai/`, JS 2.0 and Go should too. A JS parent that delegates to its inner plugin should still register its models under `googlegenai/`, not `googleai/` or `vertexai/`.
 
@@ -134,7 +132,7 @@ One thing to keep in step: `.prompt` files are shared across SDKs, so the namesp
 
 1. **Now:** sign-off on this proposal from Python and JS owners.
 2. **Before Python 1.0, one PR:**
-   - `GoogleGenAI` with required `enterprise`, `project` and `location`;
+   - `GoogleGenAI` with `enterprise` (default `False`), `project` and `location`;
    - catalog and `resolve()` keyed on `enterprise`, with backend-named `NOT_FOUND`;
    - the backend in span metadata;
    - remove `GoogleAI` and `VertexAI` exports;

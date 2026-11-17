@@ -186,6 +186,7 @@ _LEGACY_CHAT_MODELS: dict[str, ModelInfo] = {
         MULTIMODAL_MODEL_SUPPORTS.model_copy(update={'tools': False, 'output': ['text'], 'constrained': None}),
     ),
     'gpt-5.2-chat': _info('gpt-5.2-chat', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-5.2-chat-latest': _info('gpt-5.2-chat-latest', GPT_REASONING_MODEL_SUPPORTS),
     'gpt-oss-120b': _info('gpt-oss-120b', _LEGACY_TEXT_SUPPORTS),
     'gpt-oss-20b': _info('gpt-oss-20b', _LEGACY_TEXT_SUPPORTS),
 }

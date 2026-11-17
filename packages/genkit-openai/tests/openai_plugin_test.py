@@ -189,6 +189,7 @@ _RETIRED_CHAT_SUPPORTS: dict[str, ModelSupports] = {
     'o4-mini': _LEGACY_O_SERIES,
     'gpt-5-chat-latest': ModelSupports(multiturn=True, media=True, tools=False, system_role=True, output=['text']),
     'gpt-5.2-chat': _LEGACY_MULTIMODAL_CONSTRAINED,
+    'gpt-5.2-chat-latest': _LEGACY_MULTIMODAL_CONSTRAINED,
     'gpt-oss-120b': _LEGACY_TEXT,
     'gpt-oss-20b': _LEGACY_TEXT,
 }

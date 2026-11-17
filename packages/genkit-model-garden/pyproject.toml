@@ -47,7 +47,7 @@ dependencies = [
   "genkit>=0.13.0,<2",
   "google-auth[requests]>=2.14.1",
 ]
-description = "Claude, Llama, and Mistral on Genkit through Google Cloud Model Garden"
+description = "Claude, Llama, and other Google Cloud Model Garden models on Genkit"
 keywords = [
   "genkit",
   "model-garden",

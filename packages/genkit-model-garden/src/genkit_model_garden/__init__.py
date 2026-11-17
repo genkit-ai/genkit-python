@@ -16,9 +16,10 @@
 
 """Model Garden plugin for Genkit.
 
-Calls third-party models hosted in Google Cloud Model Garden (Claude, Llama,
-Mistral) on your Google Cloud project's credentials and billing. Gemini is not
-in this package; it's ``VertexAI`` in ``genkit-google-genai``.
+Calls third-party models hosted in Google Cloud Model Garden (Claude, Llama and
+other OpenAI-compatible models) on your Google Cloud project's credentials and
+billing. Gemini is not in this package; it's ``VertexAI`` in
+``genkit-google-genai``.
 
 Example:
     ```python

@@ -205,11 +205,11 @@ class ModelGardenModel:
 class ModelGarden(Plugin):
     """Model Garden plugin for Genkit.
 
-    Serves third-party models (Claude, Llama, Mistral) hosted in Google Cloud
-    Model Garden, billed to your Google Cloud project. It handles
-    initialization of the Model Garden client and registration of model
-    actions. Gemini is not served here; use ``VertexAI`` from
-    ``genkit-google-genai``.
+    Serves third-party models (Claude, Llama and other OpenAI-compatible
+    models) hosted in Google Cloud Model Garden, billed to your Google Cloud
+    project. It handles initialization of the Model Garden client and
+    registration of model actions. Gemini is not served here; use
+    ``VertexAI`` from ``genkit-google-genai``.
     """
 
     name = MODELGARDEN_PLUGIN_NAME

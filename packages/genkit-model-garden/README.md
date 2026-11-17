@@ -1,6 +1,6 @@
 # Genkit Model Garden Plugin
 
-Call Claude, Llama, Mistral and other third-party models hosted in Google Cloud
+Call Claude, Llama and other third-party models hosted in Google Cloud
 [Model Garden](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-garden/explore-models).
 Requests run on your Google Cloud project's credentials and billing, so you
 don't need a separate Anthropic or Meta account.

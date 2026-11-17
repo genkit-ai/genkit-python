@@ -51,32 +51,47 @@ async def _listed() -> dict[str, Action]:
     return {action.name.removeprefix('openai/'): action for action in await plugin.list_actions()}
 
 
+_HIDDEN_ON_EVERY_HOST = [
+    'gpt-4o-realtime-preview',
+    'gpt-live-1',
+    'omni-moderation-latest',
+    'sora-2',
+    'babbage-002',
+    'davinci-002',
+    'gpt-3.5-turbo-instruct',
+]
+_HIDDEN_ON_OPENAI = [
+    'gpt-oss-120b',
+    'gpt-5-codex',
+    'o3-pro',
+    'qwen-audio-turbo',
+    'perplexity/sonar-deep-research',
+    'dall-e-3',
+    'gpt-image-1',
+]
+_LISTED_ON_EVERY_HOST = ['my-chat-model', 'text-embedding-3-small', 'tts-1', 'whisper-1']
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('source', ['constructor', 'environment', 'client_options'])
 @pytest.mark.parametrize(
-    ('base_url', 'filtered'),
+    ('base_url', 'on_openai'),
     [
         ('https://api.openai.com/v1', True),
         ('https://API.OPENAI.COM/v1', True),
+        ('https://us.api.openai.com/v1', True),
+        ('https://eu.api.openai.com/v1', True),
         ('https://compatible.example/v1', False),
         ('http://localhost:8000/v1', False),
         ('https://api.openai.com.proxy.example/v1', False),
+        ('https://notapi.openai.com/v1', False),
     ],
 )
-async def test_discovery_filters_only_the_effective_openai_host(
-    monkeypatch: pytest.MonkeyPatch, source: str, base_url: str, filtered: bool
+async def test_discovery_filters_by_the_effective_host(
+    monkeypatch: pytest.MonkeyPatch, source: str, base_url: str, on_openai: bool
 ) -> None:
-    """Compatible hosts retain their listing regardless of how the base URL is configured."""
-    ids = [
-        'gpt-oss-120b',
-        'perplexity/sonar-deep-research',
-        'dall-e-3',
-        'gpt-image-1',
-        'my-chat-model',
-        'text-embedding-3-small',
-        'tts-1',
-        'whisper-1',
-    ]
+    """Every host hides non-chat ids; only OpenAI's hosts also hide ids OpenAI serves on other APIs."""
+    ids = _HIDDEN_ON_EVERY_HOST + _HIDDEN_ON_OPENAI + _LISTED_ON_EVERY_HOST
 
     def list_models(request: httpx.Request) -> httpx.Response:
         assert request.method == 'GET'
@@ -102,12 +117,13 @@ async def test_discovery_filters_only_the_effective_openai_host(
         plugin = OpenAI(api_key='test-key', client_options=options, **kwargs)
         actions = {action.name.removeprefix('openai/'): action for action in await plugin.list_actions()}
 
-    assert set(actions) == set(ids[4:] if filtered else ids)
+    expected = _LISTED_ON_EVERY_HOST if on_openai else _HIDDEN_ON_OPENAI + _LISTED_ON_EVERY_HOST
+    assert set(actions) == set(expected)
     assert _is_chat(actions['my-chat-model'])
     assert actions['text-embedding-3-small'].kind == ActionKind.EMBEDDER
     assert _model_meta(actions['tts-1'])['customOptions']['title'] == 'OpenAITtsConfig'
     assert _model_meta(actions['whisper-1'])['customOptions']['title'] == 'OpenAISttConfig'
-    if not filtered:
+    if not on_openai:
         assert _is_chat(actions['gpt-oss-120b'])
         assert _is_chat(actions['perplexity/sonar-deep-research'])
         assert _model_meta(actions['dall-e-3'])['customOptions']['title'] == 'OpenAIDalleConfig'

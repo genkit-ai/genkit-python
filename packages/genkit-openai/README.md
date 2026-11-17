@@ -64,16 +64,18 @@ and `gpt-6.1-sol` do not advertise tool support, because they take function
 tools only through the Responses API.
 `gpt-5-search-api` does not take function tools either.
 
-On `api.openai.com`, discovery filters the `/v1/models` listing to exclude ids
-that OpenAI cannot serve through this plugin's endpoints, such as realtime,
-moderation and Responses-only models. A hidden id still resolves by name.
-For custom hosts, discovery keeps the host's model listing and classifies each
-id as chat, image, speech, transcription or embedding. This includes models
-such as `gpt-oss-120b` that another host can serve through Chat Completions.
+On every host, discovery hides realtime, live, moderation, Sora and legacy
+completion ids from the `/v1/models` listing, because no host serves them
+through this plugin's endpoints. On `api.openai.com` and its regional hosts
+(such as `eu.api.openai.com`), discovery also hides ids that OpenAI serves only
+on other APIs, such as Responses-only, `-audio`, DALL-E and gpt-image-1 models.
+Other hosts keep those ids and classify each one as chat, image, speech,
+transcription or embedding, so a host can list `gpt-oss-120b` as a chat model.
 The filter uses the client's effective base URL, including URLs configured
-through `client_options` or `OPENAI_BASE_URL`.
-A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and stage of
-its alias, unless the plugin retains a legacy entry for that exact snapshot.
+through `client_options` or `OPENAI_BASE_URL`. A hidden id still resolves by name.
+A dated snapshot such as `gpt-5-2025-08-07` or `o4-mini-2025-04-16` takes the
+capabilities and stage of its alias, unless the plugin has an entry for that
+exact snapshot.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and

@@ -197,27 +197,43 @@ def _undated(name: str) -> str:
     return _DATED_SUFFIX.sub('', name)
 
 
-_UNSUPPORTED_MODEL_PATTERN = re.compile(
-    r'realtime|moderation|codex|-pro\b|-cyber\b|daybreak|rosalind'
-    r'|^gpt-live-|^gpt-oss-|(^|-)audio(-|$)|^computer-use|deep-research|^sora'
+# Ids no host serves through Chat Completions or this plugin's other endpoints.
+_NON_CHAT_COMPLETIONS_PATTERN = re.compile(
+    r'realtime|moderation|^gpt-live-|^sora'
     r'|^((text|code)-)?(ada|babbage|curie|davinci)(-\d{3}$|:)|^gpt-3\.5-turbo-instruct'
 )
+# Ids OpenAI serves only on other APIs; compatible hosts may serve the same names on Chat Completions.
+_OPENAI_UNSUPPORTED_MODEL_PATTERN = re.compile(
+    r'codex|-pro\b|-cyber\b|daybreak|rosalind'
+    r'|^gpt-oss-|(^|-)audio(-|$)|^computer-use|deep-research'
+)
 _LISTED_EXCEPTIONS = frozenset({'gpt-6-cyber'})
+_OPENAI_HOST = 'api.openai.com'
 
 
-def _is_known_unsupported(name: str) -> bool:
-    """Report whether OpenAI's service cannot serve an id through this plugin's endpoints."""
+def _is_openai_host(host: str) -> bool:
+    """Report whether a base URL host is OpenAI's API, including regional hosts such as ``eu.api.openai.com``."""
+    host = host.rstrip('.')
+    return host == _OPENAI_HOST or host.endswith(f'.{_OPENAI_HOST}')
+
+
+def _is_known_unsupported(name: str, *, on_openai: bool) -> bool:
+    """Report whether the host cannot serve an id through this plugin's endpoints."""
     name = _base_id(name)
-    if _undated(name) in _LISTED_EXCEPTIONS:
+    if _NON_CHAT_COMPLETIONS_PATTERN.search(name):
+        return True
+    if not on_openai or _undated(name) in _LISTED_EXCEPTIONS:
         return False
-    return _UNSUPPORTED_MODEL_PATTERN.search(name) is not None
+    return _OPENAI_UNSUPPORTED_MODEL_PATTERN.search(name) is not None
 
 
-def _is_listed(name: str, model_type: _ModelType) -> bool:
+def _is_listed(name: str, model_type: _ModelType, *, on_openai: bool) -> bool:
     """Report whether discovery lists a model id."""
-    if _is_known_unsupported(name):
+    if _is_known_unsupported(name, on_openai=on_openai):
         return False
-    # DALL-E and gpt-image-1 are shut down.
+    if not on_openai:
+        return True
+    # OpenAI has shut down DALL-E and gpt-image-1.
     return model_type != _ModelType.IMAGE or (_is_gpt_image(name) and _undated(name) != 'gpt-image-1')
 
 
@@ -305,7 +321,8 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
     alias = _undated(name)
     if alias == name:
         return None
-    if (info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias))) is None:
+    info = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias)) or _LEGACY_CHAT_MODELS.get(alias)
+    if info is None:
         return None
     return info.model_copy(update={'label': f'OpenAI - {name}'})
 
@@ -313,7 +330,7 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
 def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
-    Legacy ids keep their previous info. Other dated snapshots take their active alias's info and stage.
+    A dated snapshot takes its alias's info and stage, unless it has an entry of its own.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 
@@ -702,6 +719,7 @@ class OpenAI(Plugin):
 
         actions: list[Action] = []
         client = self._runtime_client()
+        on_openai = _is_openai_host(client.base_url.host)
         try:
             models_ = await client.models.list()
         except APIError as e:
@@ -710,7 +728,7 @@ class OpenAI(Plugin):
         for model in models:
             name = model.id
             model_type = _classify_model(name)
-            if client.base_url.host == 'api.openai.com' and not _is_listed(name, model_type):
+            if not _is_listed(name, model_type, on_openai=on_openai):
                 continue
             if model_type == _ModelType.EMBEDDER:
                 actions.append(self._create_embedder_action(name))

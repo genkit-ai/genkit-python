@@ -415,6 +415,13 @@ def _extract_media(request: ModelRequest) -> tuple[str, str]:
 # under the same key the Anthropic and Google plugins use for theirs.
 THOUGHT_SIGNATURE = 'thoughtSignature'
 
+# Marks a reasoning part read from a Mistral thinking chunk, so only those go
+# back to Mistral: a history can hold reasoning from other models, whose text
+# and signatures Mistral can't use. Part metadata, unlike the response that
+# carried it, stays with the part through a JSON round trip of the history.
+REASONING_SOURCE = 'reasoningSource'
+MISTRAL_SOURCE = 'mistral'
+
 
 def split_reply_content(content: object) -> tuple[Part | None, str]:
     """The reasoning and the text in a reply's ``content``.
@@ -430,9 +437,10 @@ def split_reply_content(content: object) -> tuple[Part | None, str]:
         content: A message's or delta's ``content`` as the SDK parsed it.
 
     Returns:
-        A reasoning part, with the chunk's signature in
-        ``metadata['thoughtSignature']`` when it has one, or None when there is
-        no reasoning; and the reply text, empty when absent.
+        A reasoning part, marked ``metadata['reasoningSource'] = 'mistral'``
+        and with the chunk's signature in ``metadata['thoughtSignature']`` when
+        it has one, or None when there is no reasoning; and the reply text,
+        empty when absent.
     """
     if isinstance(content, str):
         return None, content
@@ -457,7 +465,9 @@ def split_reply_content(content: object) -> tuple[Part | None, str]:
                         reasoning.append(cast(str, item['text']))
     if not reasoning and signature is None:
         return None, ''.join(text)
-    metadata = {THOUGHT_SIGNATURE: signature} if signature is not None else None
+    metadata: dict[str, Any] = {REASONING_SOURCE: MISTRAL_SOURCE}
+    if signature is not None:
+        metadata[THOUGHT_SIGNATURE] = signature
     return Part.from_reasoning(''.join(reasoning), metadata=metadata), ''.join(text)
 
 
@@ -467,7 +477,9 @@ def thinking_chunk(parts: list[Part]) -> dict[str, Any] | None:
     Mistral asks for the whole assistant message, reasoning included, on later
     turns; stripping it degrades the answer. A streamed reply arrives as many
     reasoning parts, so their text is joined into one chunk, carrying the last
-    signature seen.
+    signature seen. Only parts read from Mistral's thinking chunks (marked
+    ``reasoningSource: 'mistral'``) go back; reasoning another model left in
+    the history is dropped, as it is for OpenAI.
 
     Args:
         parts: The message's parts.
@@ -478,10 +490,11 @@ def thinking_chunk(parts: list[Part]) -> dict[str, Any] | None:
     texts: list[str] = []
     signature: str | None = None
     for part in parts:
-        if part.reasoning is None:
+        metadata = part.metadata or {}
+        if part.reasoning is None or metadata.get(REASONING_SOURCE) != MISTRAL_SOURCE:
             continue
         texts.append(part.reasoning)
-        value = (part.metadata or {}).get(THOUGHT_SIGNATURE)
+        value = metadata.get(THOUGHT_SIGNATURE)
         if isinstance(value, str):
             signature = value
     if not texts:

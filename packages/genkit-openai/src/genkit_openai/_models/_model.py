@@ -252,7 +252,14 @@ def _finish_state(
 class OpenAIModel:
     """Handles OpenAI API interactions for the Genkit plugin."""
 
-    def __init__(self, model: str, client: AsyncOpenAI, *, supports: ModelSupports | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        client: AsyncOpenAI,
+        *,
+        supports: ModelSupports | None = None,
+        mistral: bool | None = None,
+    ) -> None:
         """Initializes the OpenAIModel instance with the specified model and OpenAI client parameters.
 
         Args:
@@ -262,11 +269,13 @@ class OpenAIModel:
                 ``supports.output`` means the endpoint accepts schema-less JSON
                 mode. ``None`` (or an entry that omits ``output``) still sends
                 ``json_object`` so a fine-tune keeps working.
+            mistral: Send Mistral's field names (see ``_mistral.py``).
+                ``None`` decides from the client's host.
         """
         self._model = model
         self._openai_client = client
         self._supports = supports
-        self._mistral = is_mistral(client)
+        self._mistral = is_mistral(client) if mistral is None else mistral
 
     @property
     def name(self) -> str:

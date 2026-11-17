@@ -57,18 +57,16 @@ OpenAI(
 
 ## Mistral
 
-Point `base_url` at Mistral's API and pass a Mistral key. Models keep the
-`openai/` prefix:
+Point `base_url` at Mistral's API. Models keep the `openai/` prefix here; the
+JS and Dart SDKs register them as `mistral/...`, so a model id written for one
+SDK (in a `.prompt` file, say) doesn't resolve in the other:
 
 ```python
-import os
-
 from genkit import Genkit
 from genkit_openai import OpenAI
 
-ai = Genkit(
-    plugins=[OpenAI(api_key=os.environ['MISTRAL_API_KEY'], base_url='https://api.mistral.ai/v1')]
-)
+# The key comes from MISTRAL_API_KEY.
+ai = Genkit(plugins=[OpenAI(base_url='https://api.mistral.ai/v1')])
 
 res = await ai.generate(
     model='openai/mistral-small-latest',
@@ -79,13 +77,23 @@ res = await ai.generate(
 embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant')
 ```
 
-Pass `api_key=` explicitly. Without it the plugin falls back to
-`OPENAI_API_KEY` and sends that key to Mistral. The EU and US endpoints,
+With a Mistral target the plugin key comes from `api_key=` or
+`MISTRAL_API_KEY`, never `OPENAI_API_KEY`. The EU and US endpoints,
 `https://api.eu.mistral.ai/v1` and `https://api.us.mistral.ai/v1`, work the
 same way.
 
+A gateway in front of Mistral on another host needs `provider='mistral'`;
+without it the plugin can't tell the API behind it is Mistral's and sends
+OpenAI's field names, which Mistral rejects. Pass the gateway's own key as
+`api_key=`, or the plugin reads `MISTRAL_API_KEY`:
+
+```python
+OpenAI(base_url='https://llm-gateway.example.com/v1', api_key=gateway_key, provider='mistral')
+```
+
 Mistral rejects any request field it doesn't declare, so with a Mistral host
-the plugin sends Mistral's names for the settings that differ:
+(or `provider='mistral'`) the plugin sends Mistral's names for the settings
+that differ:
 
 - `max_output_tokens` goes out as `max_tokens`, never `max_completion_tokens`,
   even with `reasoning_effort` set.
@@ -95,15 +103,19 @@ the plugin sends Mistral's names for the settings that differ:
 - Streaming sends no `stream_options`; Mistral reports usage on the last chunk
   without it.
 - An embedder's `dimensions` goes out as `output_dimension`.
+- `extra` gets the same renames: `seed` and `max_completion_tokens` there go
+  out as `random_seed` and `max_tokens`, and `stream_options` is dropped.
 
 With `reasoning_effort` set, replies carry their reasoning in `thinking`
 chunks. Those come back as reasoning parts, ahead of the text, streamed or not,
 and go back to Mistral as a `thinking` chunk on the next turn, as Mistral asks.
+Only reasoning that came from Mistral goes back: each such part is marked
+`metadata['reasoningSource'] == 'mistral'`, which survives saving the history
+as JSON. Reasoning another model left in a mixed history is dropped.
 
 Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
 and Mistral fails the call naming them. Mistral-only fields like `min_tokens`
-go in `extra`. A gateway in front of Mistral on any other host gets the OpenAI
-field names.
+go in `extra`.
 
 The plugin doesn't know Mistral's embedders, so their info reports the default
 1536 dimensions; `mistral-embed` returns 1024.

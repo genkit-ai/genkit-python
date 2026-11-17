@@ -19,7 +19,7 @@
 import base64
 import json
 import struct
-from typing import Any
+from typing import Any, Literal, cast
 
 import httpx
 import pytest
@@ -31,6 +31,8 @@ from genkit import FinishReason, Genkit, Message, Part, Role
 
 MISTRAL_URL = 'https://api.mistral.ai/v1'
 CODESTRAL_URL = 'https://codestral.mistral.ai/v1'
+# A gateway that forwards to Mistral, so the fake enforces Mistral's schema on it too.
+GATEWAY_URL = 'https://llm-gateway.example.com/v1'
 PLUGIN_KEY = 'mistral-key'
 
 # The fields Mistral's ChatCompletionRequest and EmbeddingRequest declare
@@ -69,7 +71,13 @@ _CHAT_FIELDS = frozenset({
     'safe_prompt',
 })
 _EMBEDDING_FIELDS = frozenset({'model', 'input', 'metadata', 'output_dimension', 'output_dtype', 'encoding_format'})
-_MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai', 'codestral.mistral.ai'})
+_MISTRAL_HOSTS = frozenset({
+    'api.mistral.ai',
+    'api.eu.mistral.ai',
+    'api.us.mistral.ai',
+    'codestral.mistral.ai',
+    'llm-gateway.example.com',
+})
 # Chunk types a message's content list may hold, and the keys a thinking chunk
 # may carry (ContentChunk and ThinkChunk in the mistralai SDK).
 _CHUNK_TYPES = frozenset({
@@ -96,12 +104,13 @@ def _thinking(text: str, *, signature: str | None = None) -> dict[str, Any]:
     return chunk
 
 
-def _completion(body: dict[str, Any], finish_reason: str) -> dict[str, Any]:
+def _completion(body: dict[str, Any], finish_reason: str, content: Any = None) -> dict[str, Any]:  # noqa: ANN401
     # With reasoning_effort set, Mistral puts the reasoning in a thinking chunk
     # ahead of the answer, in a content list.
-    content: Any = 'bonjour'
-    if body.get('reasoning_effort'):
+    if content is None and body.get('reasoning_effort'):
         content = [_thinking(REASONING, signature=SIGNATURE), {'type': 'text', 'text': 'bonjour'}]
+    elif content is None:
+        content = 'bonjour'
     return {
         'id': 'cmpl-1',
         'object': 'chat.completion',
@@ -112,12 +121,13 @@ def _completion(body: dict[str, Any], finish_reason: str) -> dict[str, Any]:
     }
 
 
-def _stream_body(body: dict[str, Any]) -> bytes:
+def _stream_body(body: dict[str, Any], deltas: list[Any] | None = None) -> bytes:
     # Mistral sends usage on the last chunk, beside finish_reason, without stream_options.
     # With reasoning_effort set, deltas go: a list with a thinking chunk, a list
     # with the closing thinking chunk and the first text chunk, then strings.
-    deltas: list[Any] = ['bon', 'jour']
-    if body.get('reasoning_effort'):
+    if deltas is None and not body.get('reasoning_effort'):
+        deltas = ['bon', 'jour']
+    elif deltas is None:
         deltas = [
             [_thinking('Two loaves,')],
             [_thinking(' one each.', signature=SIGNATURE), {'type': 'text', 'text': 'bon'}],
@@ -180,6 +190,9 @@ class _Server:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self.finish_reason = 'stop'
+        # Replaces the reply's content, or the streamed deltas, when set.
+        self.content: Any = None
+        self.deltas: list[Any] | None = None
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -192,8 +205,9 @@ class _Server:
         if embeddings:
             return httpx.Response(200, json=_embeddings(body))
         if body.get('stream'):
-            return httpx.Response(200, content=_stream_body(body), headers={'content-type': 'text/event-stream'})
-        return httpx.Response(200, json=_completion(body, self.finish_reason))
+            stream = _stream_body(body, self.deltas)
+            return httpx.Response(200, content=stream, headers={'content-type': 'text/event-stream'})
+        return httpx.Response(200, json=_completion(body, self.finish_reason, self.content))
 
     def bodies(self) -> list[dict[str, Any]]:
         return [json.loads(r.content) for r in self.requests]
@@ -204,14 +218,21 @@ def server() -> _Server:
     return _Server()
 
 
-def _ai(server: _Server, base_url: str | None) -> Genkit:
+def _ai(
+    server: _Server,
+    base_url: str | None,
+    *,
+    api_key: str | None = PLUGIN_KEY,
+    provider: Literal['mistral'] | None = None,
+) -> Genkit:
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(server.handler))
     return Genkit(
         plugins=[
             OpenAI(
-                api_key=PLUGIN_KEY,
+                api_key=api_key,
                 base_url=base_url,
                 client_options={'http_client': http_client, 'max_retries': 0},
+                provider=provider,
             )
         ]
     )
@@ -450,7 +471,7 @@ async def test_mistral_reasoning_reply_splits_reasoning_from_text(mistral: Genki
     assert response.message is not None
     [reasoning] = [p for p in response.message.content if p.reasoning]
     assert reasoning.reasoning == REASONING
-    assert reasoning.metadata == {'thoughtSignature': SIGNATURE}
+    assert reasoning.metadata == {'reasoningSource': 'mistral', 'thoughtSignature': SIGNATURE}
 
 
 @pytest.mark.asyncio
@@ -624,3 +645,251 @@ def test_mistral_chat_body_leaves_its_input_alone() -> None:
         'max_tokens': 50,
         'extra_body': {'random_seed': 7, 'min_tokens': 5},
     }
+
+
+def _mistral_reasoning(text: str, signature: str | None = SIGNATURE) -> Part:
+    """A reasoning part as the plugin reads it from a Mistral thinking chunk."""
+    metadata: dict[str, Any] = {'reasoningSource': 'mistral'}
+    if signature is not None:
+        metadata['thoughtSignature'] = signature
+    return Part.from_reasoning(text, metadata=metadata)
+
+
+def _assistant_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
+    return [m for m in body['messages'] if m['role'] == 'assistant']
+
+
+@pytest.mark.asyncio
+async def test_mistral_replays_only_mistral_reasoning_from_a_mixed_history(mistral: Genkit, server: _Server) -> None:
+    """Reasoning another model left in the history, signed or not, is not sent to Mistral; Mistral's own is."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Bread for two?')]),
+        # A Gemini or Claude turn: its reasoning carries a signature under the same key.
+        Message(
+            role=Role.MODEL,
+            content=[
+                Part.from_reasoning('Gemini thinks.', metadata={'thoughtSignature': 'gemini-sig'}),
+                Part.from_text('Two loaves.'),
+            ],
+        ),
+        Message(role=Role.USER, content=[Part.from_text('And three?')]),
+        Message(role=Role.MODEL, content=[Part.from_reasoning('Unsigned, unmarked.'), Part.from_text('Three.')]),
+        Message(role=Role.USER, content=[Part.from_text('And four?')]),
+        Message(role=Role.MODEL, content=[_mistral_reasoning(REASONING), Part.from_text('Four.')]),
+    ]
+
+    response = await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And five?')
+
+    assert response.finish_reason == FinishReason.STOP
+    [body] = server.bodies()
+    gemini, unmarked, own = _assistant_messages(body)
+    assert gemini['content'] == 'Two loaves.'
+    assert unmarked['content'] == 'Three.'
+    assert own['content'] == [
+        {'type': 'thinking', 'thinking': [{'type': 'text', 'text': REASONING}], 'signature': SIGNATURE},
+        {'type': 'text', 'text': 'Four.'},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mistral_reasoning_replays_after_a_json_round_trip(mistral: Genkit, server: _Server) -> None:
+    """A history saved as JSON and loaded back still replays Mistral's reasoning, signature included."""
+    first = await mistral.generate(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+    )
+    saved = json.dumps([m.model_dump(mode='json', by_alias=True, exclude_none=True) for m in first.messages])
+    history = [Message.model_validate(m) for m in json.loads(saved)]
+
+    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+
+    [assistant] = _assistant_messages(server.bodies()[-1])
+    assert assistant['content'][0] == {
+        'type': 'thinking',
+        'thinking': [{'type': 'text', 'text': REASONING}],
+        'signature': SIGNATURE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mistral_replays_reasoning_onto_a_tool_call_message_with_no_content(
+    mistral: Genkit, server: _Server
+) -> None:
+    """A turn with reasoning and only tool calls goes back as one assistant message: thinking chunk and calls."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Is the baguette in stock?')]),
+        Message(
+            role=Role.MODEL,
+            content=[
+                _mistral_reasoning(REASONING),
+                Part.from_tool_request(name='lookup_menu', input={'dish': 'baguette'}, ref='call-1'),
+            ],
+        ),
+        Message(
+            role=Role.TOOL,
+            content=[Part.from_tool_response(name='lookup_menu', output='baguette: in stock', ref='call-1')],
+        ),
+    ]
+
+    response = await mistral.generate(model='openai/mistral-small-latest', messages=history)
+
+    assert response.finish_reason == FinishReason.STOP
+    [body] = server.bodies()
+    [assistant] = _assistant_messages(body)
+    assert assistant['content'] == [
+        {'type': 'thinking', 'thinking': [{'type': 'text', 'text': REASONING}], 'signature': SIGNATURE}
+    ]
+    assert [c['id'] for c in assistant['tool_calls']] == ['call-1']
+
+
+@pytest.mark.asyncio
+async def test_mistral_replays_a_reasoning_only_turn(mistral: Genkit, server: _Server) -> None:
+    """A turn that is only reasoning goes back as an assistant message holding just the thinking chunk."""
+    history = [
+        Message(role=Role.USER, content=[Part.from_text('Bread for two?')]),
+        Message(role=Role.MODEL, content=[_mistral_reasoning(REASONING, signature=None)]),
+    ]
+
+    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='Well?')
+
+    [assistant] = _assistant_messages(server.bodies()[0])
+    assert assistant['content'] == [{'type': 'thinking', 'thinking': [{'type': 'text', 'text': REASONING}]}]
+
+
+@pytest.mark.parametrize('streamed', [False, True], ids=['generate', 'stream'])
+@pytest.mark.asyncio
+async def test_openai_host_reads_list_content(openai: Genkit, server: _Server, streamed: bool) -> None:
+    """A non-Mistral host that answers with a list of text chunks gives back their text, with no reasoning part."""
+    server.content = [{'type': 'text', 'text': 'bon'}, {'type': 'text', 'text': 'jour'}]
+    server.deltas = [[{'type': 'text', 'text': 'bon'}], 'jour']
+
+    if streamed:
+        stream = openai.generate_stream(model='openai/gpt-4o', prompt='hi')
+        chunks = [chunk.text async for chunk in stream.stream]
+        response = await stream.response
+        assert chunks == ['bon', 'jour']
+    else:
+        response = await openai.generate(model='openai/gpt-4o', prompt='hi')
+
+    assert response.text == 'bonjour'
+    assert response.message is not None
+    assert [p for p in response.message.content if p.reasoning is not None] == []
+
+
+@pytest.mark.parametrize('streamed', [False, True], ids=['generate', 'stream'])
+@pytest.mark.asyncio
+async def test_mistral_renames_openai_fields_in_extra(mistral: Genkit, server: _Server, streamed: bool) -> None:
+    """`extra` with `seed`, `max_completion_tokens` or `stream_options` goes out under Mistral's names, not as a 422."""
+    config = {'extra': {'seed': 1, 'max_completion_tokens': 50, 'stream_options': {'include_usage': True}}}
+    if streamed:
+        stream = mistral.generate_stream(model='openai/mistral-small-latest', prompt='salut', config=config)
+        response = await stream.response
+    else:
+        response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+
+    assert response.finish_reason == FinishReason.STOP
+    [body] = server.bodies()
+    assert body['random_seed'] == 1
+    assert body['max_tokens'] == 50
+    assert not {'seed', 'max_completion_tokens', 'stream_options'} & set(body)
+
+
+def test_mistral_chat_body_prefers_mistral_names_in_extra() -> None:
+    """With both names in `extra`, Mistral's own one is kept; `extra` still beats the config's `seed`."""
+    out = mistral_chat_body({
+        'seed': 7,
+        'extra_body': {'seed': 1, 'random_seed': 2, 'max_completion_tokens': 50, 'max_tokens': 60},
+    })
+
+    assert out == {'extra_body': {'random_seed': 2, 'max_tokens': 60}}
+
+
+@pytest.mark.asyncio
+async def test_provider_mistral_sends_mistral_names_through_a_gateway(server: _Server) -> None:
+    """`OpenAI(base_url=<gateway>, provider='mistral')` sends Mistral's names to a host that isn't Mistral's."""
+    ai = _ai(server, GATEWAY_URL, provider='mistral')
+
+    stream = ai.generate_stream(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config={'seed': 7, **_REASONING_CONFIG}
+    )
+    first = await stream.response
+    await ai.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+    await ai.embed(embedder='openai/mistral-embed', content='croissant', config={'dimensions': 256})
+
+    streamed, replay, embed = server.requests
+    assert {r.url.host for r in server.requests} == {'llm-gateway.example.com'}
+    streamed_body = json.loads(streamed.content)
+    assert 'stream_options' not in streamed_body
+    assert streamed_body['random_seed'] == 7
+    [assistant] = _assistant_messages(json.loads(replay.content))
+    assert assistant['content'][0]['type'] == 'thinking'
+    assert json.loads(embed.content)['output_dimension'] == 256
+
+
+@pytest.mark.asyncio
+async def test_gateway_without_provider_keeps_openai_names(server: _Server) -> None:
+    """Without `provider='mistral'` a gateway host gets OpenAI's names (and the fake Mistral behind it 422s)."""
+    ai = _ai(server, GATEWAY_URL)
+
+    response = await ai.generate(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert server.bodies()[0]['seed'] == 7
+
+
+def test_unknown_provider_is_refused() -> None:
+    """`provider=` takes only `'mistral'`."""
+    with pytest.raises(ValueError, match='mistral'):
+        OpenAI(api_key=PLUGIN_KEY, provider=cast(Any, 'cohere'))
+
+
+@pytest.mark.parametrize(
+    ('base_url', 'provider'),
+    [
+        pytest.param(MISTRAL_URL, None, id='mistral-host'),
+        pytest.param(GATEWAY_URL, 'mistral', id='provider'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_mistral_without_api_key_uses_mistral_api_key_env(
+    server: _Server, monkeypatch: pytest.MonkeyPatch, base_url: str, provider: Literal['mistral'] | None
+) -> None:
+    """With no `api_key=`, a Mistral target sends MISTRAL_API_KEY, never OPENAI_API_KEY."""
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-openai')
+    monkeypatch.setenv('MISTRAL_API_KEY', 'mistral-env')
+    ai = _ai(server, base_url, api_key=None, provider=provider)
+
+    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+    await ai.embed(embedder='openai/mistral-embed', content='croissant')
+
+    assert [r.headers['authorization'] for r in server.requests] == ['Bearer mistral-env'] * 2
+
+
+@pytest.mark.asyncio
+async def test_mistral_explicit_api_key_beats_mistral_api_key_env(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`api_key=` wins over MISTRAL_API_KEY."""
+    monkeypatch.setenv('MISTRAL_API_KEY', 'mistral-env')
+    ai = _ai(server, MISTRAL_URL)
+
+    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+
+    assert server.requests[0].headers['authorization'] == f'Bearer {PLUGIN_KEY}'
+
+
+@pytest.mark.asyncio
+async def test_mistral_without_any_key_does_not_send_openai_api_key(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With only OPENAI_API_KEY set, a Mistral call fails naming MISTRAL_API_KEY and sends nothing."""
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-openai')
+    monkeypatch.delenv('MISTRAL_API_KEY', raising=False)
+    ai = _ai(server, MISTRAL_URL, api_key=None)
+
+    response = await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert response.error is not None
+    assert response.error.status == 'FAILED_PRECONDITION'
+    assert 'MISTRAL_API_KEY' in str(response.finish_message)
+    assert server.requests == []

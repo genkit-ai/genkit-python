@@ -48,7 +48,8 @@ Example:
     ```
 
 Credentials:
-    The plugin key comes from ``api_key=`` or ``OPENAI_API_KEY``. A
+    The plugin key comes from ``api_key=`` or ``OPENAI_API_KEY``
+    (``MISTRAL_API_KEY`` when the target is Mistral). A
     ``generate()`` or ``embed()`` call can bring its own key as
     ``context={'secrets': {'api_key': ...}}``; a plugin with no key of its
     own serves only those calls.

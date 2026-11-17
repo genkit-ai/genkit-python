@@ -23,7 +23,8 @@ fails with a 422. The plugin rewrites the few fields that differ; everything
 else goes out unchanged.
 
 The target is read from the client's base URL, not the model id as DeepSeek's
-JSON handling is. Mistral's ids share no prefix (``mistral-``, ``magistral-``,
+JSON handling is, or set with ``OpenAI(provider='mistral')`` for a gateway in
+front of Mistral on another host. Mistral's ids share no prefix (``mistral-``, ``magistral-``,
 ``codestral-``, ``pixtral-``, ...), and the same ids are served through other
 OpenAI-compatible hosts that take OpenAI's names: Vertex Model Garden reuses
 ``OpenAIModel`` for ``mistralai/...`` models with a Vertex client, so it never
@@ -35,6 +36,7 @@ Source: https://docs.mistral.ai/openapi.yaml (``ChatCompletionRequest``,
 
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 
 from genkit import GenkitError
@@ -45,9 +47,25 @@ from genkit import GenkitError
 MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai', 'codestral.mistral.ai'})
 
 
+# The key Mistral's own SDKs, and Genkit's JS and Dart plugins, read.
+MISTRAL_API_KEY_ENV = 'MISTRAL_API_KEY'
+
+
+def is_mistral_url(url: str | httpx.URL) -> bool:
+    """Whether ``url`` is on one of Mistral's API hosts."""
+    return httpx.URL(str(url)).host in MISTRAL_HOSTS
+
+
 def is_mistral(client: AsyncOpenAI) -> bool:
     """Whether ``client`` sends its requests to one of Mistral's API hosts."""
-    return client.base_url.host in MISTRAL_HOSTS
+    return is_mistral_url(client.base_url)
+
+
+def _rename(body: dict[str, Any], old: str, new: str) -> None:
+    """Move ``body[old]`` to ``body[new]``, unless ``new`` is already set there."""
+    if old in body:
+        value = body.pop(old)
+        body.setdefault(new, value)
 
 
 def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict[str, Any]:
@@ -63,6 +81,9 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
 
     The SDK has no ``random_seed`` kwarg, so it rides in ``extra_body``; the
     same key in the caller's ``extra`` wins, as every ``extra`` key does.
+    ``extra`` gets the same renames: its ``seed``, ``max_completion_tokens``
+    and ``stream_options`` would otherwise reach Mistral as given and fail
+    with a 422. Where ``extra`` has both names, Mistral's wins.
 
     Args:
         body: The kwargs the plugin built for OpenAI. Not modified.
@@ -86,6 +107,10 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
     renamed: dict[str, Any] = {}
     if 'seed' in out:
         renamed['random_seed'] = out.pop('seed')
-    if renamed:
-        out['extra_body'] = {**renamed, **(out.get('extra_body') or {})}
+    extra = dict(out.pop('extra_body', None) or {})
+    extra.pop('stream_options', None)
+    _rename(extra, 'max_completion_tokens', 'max_tokens')
+    _rename(extra, 'seed', 'random_seed')
+    if renamed or extra:
+        out['extra_body'] = {**renamed, **extra}
     return out

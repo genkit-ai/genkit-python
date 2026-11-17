@@ -64,7 +64,7 @@ from genkit_openai._models._image import (
     OpenAIGptImageConfig,
     OpenAIImageModel,
 )
-from genkit_openai._models._mistral import is_mistral
+from genkit_openai._models._mistral import MISTRAL_API_KEY_ENV, is_mistral, is_mistral_url
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
     SUPPORTED_EMBEDDING_MODELS,
@@ -108,11 +108,11 @@ def _client_kwargs(
     return options
 
 
-def _missing_key_error() -> GenkitError:
+def _missing_key_error(env: str) -> GenkitError:
     return GenkitError(
         status='FAILED_PRECONDITION',
         message=(
-            'OpenAI needs an API key: set OPENAI_API_KEY or pass OpenAI(api_key=...), '
+            f'OpenAI needs an API key: set {env} or pass OpenAI(api_key=...), '
             "or send a per-request key as context={'secrets': {'api_key': ...}}."
         ),
     )
@@ -317,11 +317,13 @@ class OpenAI(Plugin):
         api_key: str | None = None,
         base_url: str | None = None,
         client_options: Mapping[str, Any] | None = None,
+        provider: Literal['mistral'] | None = None,
     ) -> None:
         """Initializes the OpenAI plugin.
 
         Args:
-            api_key: OpenAI API key. Defaults to ``OPENAI_API_KEY``.
+            api_key: OpenAI API key. Defaults to ``OPENAI_API_KEY``, or
+                ``MISTRAL_API_KEY`` when the target is Mistral.
             base_url: OpenAI API base URL up to and including ``/v1``, e.g.
                 ``https://openrouter.ai/api/v1``; the SDK appends
                 ``/chat/completions``. Defaults to ``OPENAI_BASE_URL``, then the
@@ -329,11 +331,18 @@ class OpenAI(Plugin):
             client_options: Other ``AsyncOpenAI`` settings, such as
                 ``organization``, ``project``, ``timeout``, ``max_retries``,
                 ``default_headers``, or ``http_client``.
+            provider: ``'mistral'`` sends Mistral's field names whatever the
+                host, for a gateway in front of Mistral. Without it they go
+                out only when ``base_url`` is one of Mistral's own hosts.
 
         Raises:
             TypeError: If ``client_options`` has a key ``AsyncOpenAI`` doesn't
                 take, or repeats ``api_key`` or ``base_url``.
+            ValueError: If ``provider`` is not ``'mistral'`` or None.
         """
+        if provider not in (None, 'mistral'):
+            raise ValueError(f"OpenAI got provider={provider!r}; the only provider it knows is 'mistral'")
+        self._provider = provider
         options = _client_kwargs(api_key=api_key, base_url=base_url, client_options=client_options)
         self._options = options
         self._plugin_api_key: str | None = options.get('api_key')
@@ -342,9 +351,28 @@ class OpenAI(Plugin):
         self._pins_authorization = any(k.lower() == 'authorization' for k in plugin_headers)
         self._list_actions_cache: list[Action] | None = None
 
+    def _targets_mistral(self) -> bool:
+        """Whether calls go to Mistral's API: ``provider='mistral'`` or a Mistral base URL."""
+        if self._provider == 'mistral':
+            return True
+        # The SDK's own fallback when base_url isn't given.
+        base_url = self._options.get('base_url') or os.environ.get('OPENAI_BASE_URL')
+        return bool(base_url) and is_mistral_url(base_url)
+
+    def _key_env(self) -> str:
+        """The variable the plugin key falls back to. Mistral's, so an OpenAI key never goes to Mistral."""
+        return MISTRAL_API_KEY_ENV if self._targets_mistral() else 'OPENAI_API_KEY'
+
+    def _uses_mistral_names(self, client: AsyncOpenAI) -> bool:
+        return self._provider == 'mistral' or is_mistral(client)
+
     @loop_local_client
     def _runtime_client(self) -> AsyncOpenAI:
-        return AsyncOpenAI(**self._options)
+        options: dict[str, Any] = self._options
+        if self._plugin_api_key is None and self._targets_mistral():
+            # Otherwise the SDK reads OPENAI_API_KEY and sends it to Mistral.
+            options = {**options, 'api_key': os.environ.get(MISTRAL_API_KEY_ENV)}
+        return AsyncOpenAI(**options)
 
     @loop_local_client
     def _tenant_only_client(self) -> AsyncOpenAI:
@@ -354,7 +382,7 @@ class OpenAI(Plugin):
         return AsyncOpenAI(**params)
 
     def _has_plugin_key(self) -> bool:
-        return bool(self._plugin_api_key or os.environ.get('OPENAI_API_KEY'))
+        return bool(self._plugin_api_key or os.environ.get(self._key_env()))
 
     async def init(self) -> list[Action]:
         """Initialize plugin.
@@ -461,7 +489,7 @@ class OpenAI(Plugin):
             client = self._runtime_client()
             return self._with_tenant_key(client, key) if key else client
         if key is None:
-            raise _missing_key_error()
+            raise _missing_key_error(self._key_env())
         return self._with_tenant_key(self._tenant_only_client(), key)
 
     def _with_tenant_key(self, client: AsyncOpenAI, key: str) -> AsyncOpenAI:
@@ -508,7 +536,10 @@ class OpenAI(Plugin):
         async def _generate(request: ModelRequest[OpenAIConfig], ctx: ModelContext) -> ModelResponse:
             catalog = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name))
             supports = catalog.supports if catalog is not None else get_default_openai_model_info(name).supports
-            openai_model = OpenAIModelHandler(OpenAIModel(name, self._client_for_call(request, ctx), supports=supports))
+            client = self._client_for_call(request, ctx)
+            openai_model = OpenAIModelHandler(
+                OpenAIModel(name, client, supports=supports, mistral=self._uses_mistral_names(client))
+            )
             return await openai_model.generate(request, ctx)
 
         return Model(
@@ -599,7 +630,7 @@ class OpenAI(Plugin):
             client = self._embed_client(ctx.context)
             create_kwargs: dict[str, Any] = {}
             if dimensions is not None:
-                if is_mistral(client):
+                if self._uses_mistral_names(client):
                     # Mistral names it output_dimension and rejects dimensions.
                     # The SDK has no output_dimension kwarg, so it rides in extra_body.
                     create_kwargs['extra_body'] = {'output_dimension': dimensions}

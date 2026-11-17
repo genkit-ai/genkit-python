@@ -1044,3 +1044,33 @@ async def test_mistral_runtime_client_raises_without_mistral_api_key(monkeypatch
         plugin._runtime_client()  # pyright: ignore[reportPrivateUsage]
 
     assert excinfo.value.status == 'FAILED_PRECONDITION'
+
+
+@pytest.mark.asyncio
+async def test_mistral_stream_keeps_two_signed_thinking_chunks_apart(mistral: Genkit, server: _Server) -> None:
+    """Two streamed signed thinking chunks end as two reasoning parts, each with its own text and signature."""
+    server.deltas = [
+        [_thinking('First,')],
+        [_thinking(' count.', signature='sig-1')],
+        [_thinking('Then,')],
+        [_thinking(' answer.', signature='sig-2'), {'type': 'text', 'text': 'Two'}],
+        ' loaves.',
+    ]
+
+    stream = mistral.generate_stream(
+        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+    )
+    first = await stream.response
+    await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+
+    assert first.message is not None
+    assert [(p.reasoning, p.metadata) for p in first.message.content if p.reasoning is not None] == [
+        ('First, count.', {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-1'}),
+        ('Then, answer.', {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-2'}),
+    ]
+    [assistant] = _assistant_messages(server.bodies()[-1])
+    assert assistant['content'] == [
+        _signed_thinking('First, count.', 'sig-1'),
+        _signed_thinking('Then, answer.', 'sig-2'),
+        {'type': 'text', 'text': 'Two loaves.'},
+    ]

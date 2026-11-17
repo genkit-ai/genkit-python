@@ -112,7 +112,8 @@ that differ:
 With `reasoning_effort` set, replies carry their reasoning in `thinking`
 chunks. Each comes back as its own reasoning part, ahead of the text, with its
 own signature in `metadata['thoughtSignature']`; a streamed reply's final
-message joins each chunk's fragments back into one part. On the next turn each part goes back to Mistral as its own
+message joins each chunk's fragments back into one part, ending a part at
+the fragment that carries a signature. On the next turn each part goes back to Mistral as its own
 `thinking` chunk, in order, as Mistral asks, so a signature stays with the text
 it signs. Only reasoning that came from Mistral goes back: each such part is
 marked `metadata['reasoningSource'] == 'mistral'`, which survives saving the

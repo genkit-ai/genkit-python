@@ -488,24 +488,27 @@ def merge_streamed_reasoning(parts: list[Part]) -> list[Part]:
     """Join a stream's Mistral reasoning fragments back into one part per thinking chunk.
 
     A streamed thinking chunk arrives in many deltas, each read as its own
-    reasoning part, and its signature, if any, rides on one of them. Replayed
-    one part per chunk, the fragments would pair the signature with a piece
-    of the text it signs. Runs of adjacent Mistral reasoning parts are joined
-    into one, carrying the last signature seen, as the Go plugin does; other
+    reasoning part, and its signature, if any, rides on its last fragment.
+    Replayed one part per fragment, the signature would be paired with a
+    piece of the text it signs. Runs of adjacent Mistral reasoning parts are
+    joined into one, and a fragment carrying a signature closes its part: the
+    next fragment starts a new one, so two signed thinking chunks stay two
+    parts, each with its own signature, as in a non-streamed reply. Other
     parts are kept as they are.
     """
     merged: list[Part] = []
     run: list[Part] = []
 
-    def flush() -> None:
+    def flush(signature: str | None = None) -> None:
         if run:
-            signature = next((sig for sig in map(_signature, reversed(run)) if sig is not None), None)
             merged.append(_mistral_reasoning(''.join(p.reasoning or '' for p in run), signature))
             run.clear()
 
     for part in parts:
         if _is_mistral_reasoning(part):
             run.append(part)
+            if (signature := _signature(part)) is not None:
+                flush(signature)
             continue
         flush()
         merged.append(part)

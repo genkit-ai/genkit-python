@@ -28,29 +28,30 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from genkit_vertexai import _constants as const
-from genkit_vertexai._model_garden._model_info import (
-    SUPPORTED_OPENAI_COMPAT_MODELS,
-    get_default_model_info,
-)
-from genkit_vertexai._model_garden._secrets import reject_secrets_api_key
 from google.auth import default as google_auth_default
 from google.auth.exceptions import DefaultCredentialsError
 
 from genkit import GenkitError, ModelResponse
 from genkit.model import Model, ModelContext, ModelInfo, ModelRequest
 from genkit.plugin_api import Action, ActionKind, Plugin, loop_local_client
+from genkit_model_garden import _constants as const
+from genkit_model_garden._model_info import (
+    SUPPORTED_OPENAI_COMPAT_MODELS,
+    get_default_model_info,
+)
+from genkit_model_garden._secrets import reject_secrets_api_key
 
 if TYPE_CHECKING:
-    from genkit_vertexai._model_garden._client import CachedOpenAI
     from openai import AsyncOpenAI
+
+    from genkit_model_garden._client import CachedOpenAI
 
 MODELGARDEN_PLUGIN_NAME = 'modelgarden'
 
 
 @dataclass(frozen=True)
 class _Extra:
-    """An optional publisher dependency of genkit-vertexai.
+    """An optional publisher dependency of genkit-model-garden.
 
     Attributes:
         packages: Top-level packages the extra installs. A missing extra fails
@@ -67,13 +68,13 @@ class _Extra:
 # only installs the SDK for the models it actually calls.
 _ANTHROPIC_EXTRA = _Extra(
     packages=frozenset({'anthropic', 'genkit_anthropic'}),
-    missing_message="Model Garden Claude models need the anthropic extra: uv add 'genkit-vertexai[anthropic]'",
+    missing_message="Model Garden Claude models need the anthropic extra: uv add 'genkit-model-garden[anthropic]'",
 )
 _OPENAI_EXTRA = _Extra(
     packages=frozenset({'openai', 'genkit_openai'}),
     missing_message=(
         'Model Garden Llama, Mistral, and other OpenAI-compatible models need the openai extra: '
-        "uv add 'genkit-vertexai[openai]'"
+        "uv add 'genkit-model-garden[openai]'"
     ),
 )
 
@@ -146,7 +147,7 @@ class ModelGardenModel:
     @loop_local_client
     def _runtime_client(self) -> 'CachedOpenAI':
         # _client.py imports openai, which is an extra; load it on first generate.
-        from genkit_vertexai._model_garden._client import CachedOpenAI
+        from genkit_model_garden._client import CachedOpenAI
 
         return CachedOpenAI(location=self._location, project=self._project)
 
@@ -204,10 +205,11 @@ class ModelGardenModel:
 class ModelGarden(Plugin):
     """Model Garden plugin for Genkit.
 
-    This plugin provides integration with Google Cloud's Vertex AI platform,
-    enabling the use of Vertex AI models and services within the Genkit
-    framework. It handles initialization of the Model Garden client and
-    registration of model actions.
+    Serves third-party models (Claude, Llama, Mistral) hosted in Google Cloud
+    Model Garden, billed to your Google Cloud project. It handles
+    initialization of the Model Garden client and registration of model
+    actions. Gemini is not served here; use ``VertexAI`` from
+    ``genkit-google-genai``.
     """
 
     name = MODELGARDEN_PLUGIN_NAME
@@ -295,7 +297,7 @@ class ModelGarden(Plugin):
         return self.model_locations.get(name, self.location), self.project
 
     async def _create_model_action(self, name: str) -> Action:
-        """Create an Action object for a Model Garden Vertex AI model.
+        """Create an Action object for a Model Garden model.
 
         The publisher's extra is checked before the project ID, so a missing
         extra is the first error reported.

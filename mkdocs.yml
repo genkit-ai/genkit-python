@@ -23,10 +23,10 @@ plugins:
             - packages/genkit-google-genai/src
             - packages/genkit-mcp/src
             - packages/genkit-middleware/src
+            - packages/genkit-model-garden/src
             - packages/genkit-ollama/src
             - packages/genkit-openai/src
             - packages/genkit-otel/src
-            - packages/genkit-vertexai/src
           options:
             docstring_style: google
             annotations_path: full

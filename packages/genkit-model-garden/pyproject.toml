@@ -47,14 +47,17 @@ dependencies = [
   "genkit>=0.13.0,<2",
   "google-auth[requests]>=2.14.1",
 ]
-description = "Vertex AI and Model Garden on Genkit"
+description = "Claude, Llama, and Mistral on Genkit through Google Cloud Model Garden"
 keywords = [
   "genkit",
-  "vertex-ai",
   "model-garden",
+  "google-cloud",
+  "vertex-ai",
+  "claude",
+  "llama",
 ]
 license = "Apache-2.0"
-name = "genkit-vertexai"
+name = "genkit-model-garden"
 readme = "README.md"
 requires-python = ">=3.10"
 version = "0.13.0"
@@ -77,5 +80,5 @@ build-backend = "hatchling.build"
 requires      = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
-only-include = ["src/genkit_vertexai"]
+only-include = ["src/genkit_model_garden"]
 sources      = ["src"]

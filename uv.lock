@@ -32,10 +32,10 @@ members = [
     "genkit-google-genai",
     "genkit-mcp",
     "genkit-middleware",
+    "genkit-model-garden",
     "genkit-ollama",
     "genkit-openai",
     "genkit-otel",
-    "genkit-vertexai",
     "genkit-workspace",
     "google-genai-deep-research",
     "google-genai-media",
@@ -1598,6 +1598,9 @@ mcp = [
 middleware = [
     { name = "genkit-middleware" },
 ]
+model-garden = [
+    { name = "genkit-model-garden", extra = ["anthropic", "openai"] },
+]
 ollama = [
     { name = "genkit-ollama" },
 ]
@@ -1606,12 +1609,6 @@ openai = [
 ]
 otel = [
     { name = "genkit-otel" },
-]
-vertex-ai = [
-    { name = "genkit-vertexai", extra = ["anthropic", "openai"] },
-]
-vertexai = [
-    { name = "genkit-vertexai", extra = ["anthropic", "openai"] },
 ]
 
 [package.metadata]
@@ -1628,11 +1625,10 @@ requires-dist = [
     { name = "genkit-google-genai", marker = "extra == 'google-genai'", editable = "packages/genkit-google-genai" },
     { name = "genkit-mcp", marker = "extra == 'mcp'", editable = "packages/genkit-mcp" },
     { name = "genkit-middleware", marker = "extra == 'middleware'", editable = "packages/genkit-middleware" },
+    { name = "genkit-model-garden", extras = ["anthropic", "openai"], marker = "extra == 'model-garden'", editable = "packages/genkit-model-garden" },
     { name = "genkit-ollama", marker = "extra == 'ollama'", editable = "packages/genkit-ollama" },
     { name = "genkit-openai", marker = "extra == 'openai'", editable = "packages/genkit-openai" },
     { name = "genkit-otel", marker = "extra == 'otel'", editable = "packages/genkit-otel" },
-    { name = "genkit-vertexai", extras = ["anthropic", "openai"], marker = "extra == 'vertex-ai'", editable = "packages/genkit-vertexai" },
-    { name = "genkit-vertexai", extras = ["anthropic", "openai"], marker = "extra == 'vertexai'", editable = "packages/genkit-vertexai" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "json5", specifier = ">=0.10.0" },
     { name = "jsonschema", specifier = ">=4.23.0" },
@@ -1646,7 +1642,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
     { name = "websockets", specifier = ">=13.0.0" },
 ]
-provides-extras = ["a2ui", "amazon-bedrock", "anthropic", "django", "fastapi", "flask", "google-cloud", "google-genai", "mcp", "middleware", "otel", "ollama", "openai", "vertex-ai", "vertexai"]
+provides-extras = ["a2ui", "amazon-bedrock", "anthropic", "django", "fastapi", "flask", "google-cloud", "google-genai", "mcp", "middleware", "model-garden", "otel", "ollama", "openai"]
 
 [[package]]
 name = "genkit-a2ui"
@@ -1875,6 +1871,32 @@ dev = [
 ]
 
 [[package]]
+name = "genkit-model-garden"
+version = "0.13.0"
+source = { editable = "packages/genkit-model-garden" }
+dependencies = [
+    { name = "genkit" },
+    { name = "google-auth", extra = ["requests"] },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "genkit-anthropic" },
+]
+openai = [
+    { name = "genkit-openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "genkit", editable = "packages/genkit" },
+    { name = "genkit-anthropic", marker = "extra == 'anthropic'", editable = "packages/genkit-anthropic" },
+    { name = "genkit-openai", marker = "extra == 'openai'", editable = "packages/genkit-openai" },
+    { name = "google-auth", extras = ["requests"], specifier = ">=2.14.1" },
+]
+provides-extras = ["anthropic", "openai"]
+
+[[package]]
 name = "genkit-ollama"
 version = "0.13.0"
 source = { editable = "packages/genkit-ollama" }
@@ -1922,32 +1944,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "genkit-vertexai"
-version = "0.13.0"
-source = { editable = "packages/genkit-vertexai" }
-dependencies = [
-    { name = "genkit" },
-    { name = "google-auth", extra = ["requests"] },
-]
-
-[package.optional-dependencies]
-anthropic = [
-    { name = "genkit-anthropic" },
-]
-openai = [
-    { name = "genkit-openai" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "genkit", editable = "packages/genkit" },
-    { name = "genkit-anthropic", marker = "extra == 'anthropic'", editable = "packages/genkit-anthropic" },
-    { name = "genkit-openai", marker = "extra == 'openai'", editable = "packages/genkit-openai" },
-    { name = "google-auth", extras = ["requests"], specifier = ">=2.14.1" },
-]
-provides-extras = ["anthropic", "openai"]
-
-[[package]]
 name = "genkit-workspace"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1963,10 +1959,10 @@ dependencies = [
     { name = "genkit-google-genai" },
     { name = "genkit-mcp" },
     { name = "genkit-middleware" },
+    { name = "genkit-model-garden" },
     { name = "genkit-ollama" },
     { name = "genkit-openai" },
     { name = "genkit-otel" },
-    { name = "genkit-vertexai" },
 ]
 
 [package.dev-dependencies]
@@ -2036,10 +2032,10 @@ requires-dist = [
     { name = "genkit-google-genai", editable = "packages/genkit-google-genai" },
     { name = "genkit-mcp", editable = "packages/genkit-mcp" },
     { name = "genkit-middleware", editable = "packages/genkit-middleware" },
+    { name = "genkit-model-garden", editable = "packages/genkit-model-garden" },
     { name = "genkit-ollama", editable = "packages/genkit-ollama" },
     { name = "genkit-openai", editable = "packages/genkit-openai" },
     { name = "genkit-otel", editable = "packages/genkit-otel" },
-    { name = "genkit-vertexai", editable = "packages/genkit-vertexai" },
 ]
 
 [package.metadata.requires-dev]

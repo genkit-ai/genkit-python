@@ -1,6 +1,16 @@
-# Genkit Vertex AI Plugin
+# Genkit Model Garden Plugin
 
-Integrate Genkit with Google Cloud Vertex AI Model Garden.
+Call Claude, Llama, Mistral and other third-party models hosted in Google Cloud
+[Model Garden](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-garden/explore-models).
+Requests run on your Google Cloud project's credentials and billing, so you
+don't need a separate Anthropic or Meta account.
+
+Gemini isn't in this package. For Gemini on Google Cloud, use `VertexAI` from
+[`genkit-google-genai`](https://github.com/genkit-ai/genkit-python/tree/main/packages/genkit-google-genai).
+
+This package was published as `genkit-vertexai` through 0.13. Only the package
+and import names changed; the `ModelGarden` class and `modelgarden/` model
+names are the same.
 
 > **Building with a coding agent? Install the Genkit Python skill first.**
 >
@@ -17,9 +27,9 @@ Integrate Genkit with Google Cloud Vertex AI Model Garden.
 Install the extra for the Model Garden publishers you call:
 
 ```bash
-uv add 'genkit-vertexai[anthropic]'          # Claude
-uv add 'genkit-vertexai[openai]'             # Llama, Mistral, and other OpenAI-compatible models
-uv add 'genkit-vertexai[anthropic,openai]'   # both
+uv add 'genkit-model-garden[anthropic]'          # Claude
+uv add 'genkit-model-garden[openai]'             # Llama, Mistral, and other OpenAI-compatible models
+uv add 'genkit-model-garden[anthropic,openai]'   # both
 ```
 
 The package without an extra serves no models. Calling a model without its
@@ -29,7 +39,7 @@ extra raises an error naming the command to run.
 
 ```python
 from genkit import Genkit
-from genkit_vertexai import ModelGarden
+from genkit_model_garden import ModelGarden
 
 ai = Genkit(
     plugins=[ModelGarden(project='my-project', location='us-central1')],

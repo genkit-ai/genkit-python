@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-"""Vertex AI client.
+"""Model Garden OpenAI-compatible client.
 
 Provides an async factory for creating AsyncOpenAI clients authenticated
 with Google Cloud credentials. Credential refresh is performed off the

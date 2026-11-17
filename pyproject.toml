@@ -31,7 +31,7 @@ dependencies = [
   "genkit-otel",
   "genkit-a2ui",
   "genkit-ollama",
-  "genkit-vertexai",
+  "genkit-model-garden",
 ]
 description = "Workspace for Genkit packages"
 license = "Apache-2.0"
@@ -181,7 +181,7 @@ genkit-middleware   = { workspace = true }
 genkit-otel         = { workspace = true }
 genkit-a2ui         = { workspace = true }
 genkit-ollama       = { workspace = true }
-genkit-vertexai     = { workspace = true }
+genkit-model-garden = { workspace = true }
 
 [tool.uv.workspace]
 exclude = ["*/shared"]
@@ -416,7 +416,7 @@ root = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
-  "packages/genkit-vertexai/src",
+  "packages/genkit-model-garden/src",
   ".",  # For samples.shared and other root-level imports
 ]
 
@@ -454,7 +454,7 @@ extraPaths = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
-  "packages/genkit-vertexai/src",
+  "packages/genkit-model-garden/src",
 ]
 pythonVersion = "3.10"
 reportMissingImports = true
@@ -504,7 +504,7 @@ search-path = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
-  "packages/genkit-vertexai/src",
+  "packages/genkit-model-garden/src",
   ".",
 ]
 python_version = "3.10"

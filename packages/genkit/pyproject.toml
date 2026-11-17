@@ -84,11 +84,10 @@ google-cloud          = ["genkit-google-cloud>=0.13.0,<2"]
 google-genai          = ["genkit-google-genai>=0.13.0,<2"]
 mcp                   = ["genkit-mcp>=0.13.0,<2"]
 middleware            = ["genkit-middleware>=0.13.0,<2"]
+model-garden          = ["genkit-model-garden[anthropic,openai]>=0.13.0,<2"]
 otel                  = ["genkit-otel>=0.13.0,<2"]
 ollama                = ["genkit-ollama>=0.13.0,<2"]
 openai                = ["genkit-openai>=0.13.0,<2"]
-vertex-ai             = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
-vertexai              = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
 
 [project.urls]
 "Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"
@@ -114,10 +113,10 @@ DEP002 = [
   "genkit-google-genai",
   "genkit-mcp",
   "genkit-middleware",
+  "genkit-model-garden",
   "genkit-ollama",
   "genkit-openai",
   "genkit-otel",
-  "genkit-vertexai",
 ]
 # Standard library on Python 3.14+; imported behind a version check.
 DEP001 = ["annotationlib"]
@@ -137,7 +136,7 @@ genkit-google-cloud                 = { workspace = true }
 genkit-google-genai                 = { workspace = true }
 genkit-mcp                          = { workspace = true }
 genkit-middleware                   = { workspace = true }
+genkit-model-garden                 = { workspace = true }
 genkit-otel                         = { workspace = true }
 genkit-ollama                       = { workspace = true }
 genkit-openai                       = { workspace = true }
-genkit-vertexai                     = { workspace = true }

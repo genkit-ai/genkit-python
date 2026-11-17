@@ -46,7 +46,7 @@ PLUGIN_PACKAGES = (
     'genkit_google_genai',
     'genkit_ollama',
     'genkit_openai',
-    'genkit_vertexai',
+    'genkit_model_garden',
 )
 
 COMMON_FIELDS = frozenset(name for name in ModelConfig.model_fields if name != 'extra')

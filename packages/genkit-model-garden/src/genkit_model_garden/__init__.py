@@ -14,15 +14,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Vertex AI Plugin for Genkit.
+"""Model Garden plugin for Genkit.
 
-This plugin provides integration with Google Cloud's Vertex AI platform,
-including Model Garden for accessing third-party models.
+Calls third-party models hosted in Google Cloud Model Garden (Claude, Llama,
+Mistral) on your Google Cloud project's credentials and billing. Gemini is not
+in this package; it's ``VertexAI`` in ``genkit-google-genai``.
 
 Example:
     ```python
     from genkit import Genkit
-    from genkit_vertexai import ModelGarden
+    from genkit_model_garden import ModelGarden
 
     # 1. Initialize Genkit with the Model Garden plugin
     ai = Genkit(
@@ -49,14 +50,14 @@ Example:
 Requirements:
     - Uses Google Cloud Application Default Credentials (ADC); there is no
       explicit-credentials option.
-    - Claude models need ``genkit-vertexai[anthropic]``; Llama, Mistral, and other
-      OpenAI-compatible models need ``genkit-vertexai[openai]``.
+    - Claude models need ``genkit-model-garden[anthropic]``; Llama, Mistral, and other
+      OpenAI-compatible models need ``genkit-model-garden[openai]``.
 
 See Also:
-    - Vertex AI Model Garden: https://cloud.google.com/vertex-ai/docs/model-garden
+    - Model Garden: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-garden/explore-models
 """
 
-from genkit_vertexai._model_garden._plugin import ModelGarden
+from genkit_model_garden._plugin import ModelGarden
 
 __all__ = [
     'ModelGarden',

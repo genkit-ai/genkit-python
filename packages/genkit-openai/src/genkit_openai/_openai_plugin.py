@@ -109,10 +109,17 @@ def _client_kwargs(
 
 
 def _missing_key_error(env: str) -> GenkitError:
+    # A Mistral target used to fall back to OPENAI_API_KEY; say why a key
+    # that is set there no longer counts.
+    ignored = (
+        f"{env} is not set; OPENAI_API_KEY is set but isn't used for Mistral. "
+        if env == MISTRAL_API_KEY_ENV and os.environ.get('OPENAI_API_KEY')
+        else ''
+    )
     return GenkitError(
         status='FAILED_PRECONDITION',
         message=(
-            f'OpenAI needs an API key: set {env} or pass OpenAI(api_key=...), '
+            f'{ignored}OpenAI needs an API key: set {env} or pass OpenAI(api_key=...), '
             "or send a per-request key as context={'secrets': {'api_key': ...}}."
         ),
     )
@@ -375,8 +382,12 @@ class OpenAI(Plugin):
     def _runtime_client(self) -> AsyncOpenAI:
         options: dict[str, Any] = self._options
         if self._plugin_api_key is None and self._targets_mistral():
-            # Otherwise the SDK reads OPENAI_API_KEY and sends it to Mistral.
-            options = {**options, 'api_key': os.environ.get(MISTRAL_API_KEY_ENV)}
+            # Otherwise the SDK reads OPENAI_API_KEY and sends it to Mistral,
+            # so an unset MISTRAL_API_KEY must not reach it as api_key=None.
+            key = os.environ.get(MISTRAL_API_KEY_ENV)
+            if not key:
+                raise _missing_key_error(MISTRAL_API_KEY_ENV)
+            options = {**options, 'api_key': key}
         return AsyncOpenAI(**options)
 
     @loop_local_client

@@ -27,7 +27,7 @@ from genkit_openai import OpenAI
 from genkit_openai._models._mistral import mistral_chat_body
 from pydantic import BaseModel
 
-from genkit import FinishReason, Genkit, Message, Part, Role
+from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 
 MISTRAL_URL = 'https://api.mistral.ai/v1'
 CODESTRAL_URL = 'https://codestral.mistral.ai/v1'
@@ -892,6 +892,7 @@ async def test_mistral_without_any_key_does_not_send_openai_api_key(
     assert response.error is not None
     assert response.error.status == 'FAILED_PRECONDITION'
     assert 'MISTRAL_API_KEY' in str(response.finish_message)
+    assert "OPENAI_API_KEY is set but isn't used for Mistral" in str(response.finish_message)
     assert server.requests == []
 
 
@@ -1012,3 +1013,34 @@ async def test_provider_mistral_keeps_base_url_from_client_options(server: _Serv
     await ai.generate(model='openai/mistral-small-latest', prompt='salut')
 
     assert server.requests[0].url.host == 'llm-gateway.example.com'
+
+
+@pytest.mark.asyncio
+async def test_mistral_missing_key_error_leaves_out_openai_api_key_when_unset(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With neither key set, the error names MISTRAL_API_KEY and says nothing about OPENAI_API_KEY."""
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('MISTRAL_API_KEY', raising=False)
+    ai = _ai(server, MISTRAL_URL, api_key=None)
+
+    response = await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+
+    assert response.error is not None
+    assert response.error.status == 'FAILED_PRECONDITION'
+    assert 'MISTRAL_API_KEY' in str(response.finish_message)
+    assert 'OPENAI_API_KEY' not in str(response.finish_message)
+    assert server.requests == []
+
+
+@pytest.mark.asyncio
+async def test_mistral_runtime_client_raises_without_mistral_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Mistral client never falls through to the SDK's OPENAI_API_KEY default, even if called with no key."""
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-openai')
+    monkeypatch.delenv('MISTRAL_API_KEY', raising=False)
+    plugin = OpenAI(base_url=MISTRAL_URL)
+
+    with pytest.raises(GenkitError, match='MISTRAL_API_KEY') as excinfo:
+        plugin._runtime_client()  # pyright: ignore[reportPrivateUsage]
+
+    assert excinfo.value.status == 'FAILED_PRECONDITION'

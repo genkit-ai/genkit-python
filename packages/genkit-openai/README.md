@@ -73,17 +73,16 @@ Other hosts keep those ids and classify each one as chat, image, speech,
 transcription or embedding, so a host can list `gpt-oss-120b` as a chat model.
 The filter uses the client's effective base URL, including URLs configured
 through `client_options` or `OPENAI_BASE_URL`. A hidden id still resolves by name.
-A dated snapshot such as `gpt-5-2025-08-07` or `o4-mini-2025-04-16` takes the
-capabilities and stage of its alias, unless the plugin has an entry for that
-exact snapshot.
+A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and stage of
+its alias when the alias is in the built-in catalog.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and
 `o4-mini`) are no longer in it, so the plugin does not register them at
-startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with their
-previous capabilities for hosts on an OpenAI-compatible `base_url` that still
-serve them. For example, schema-less JSON output on `gpt-4` continues to send
-`response_format={'type': 'text'}`. Unknown ids use generic capabilities.
+startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with
+generic capabilities, like any id the plugin does not know, for hosts on an
+OpenAI-compatible `base_url` that still serve them. For example, schema-less
+JSON output on `gpt-4` sends `response_format={'type': 'json_object'}`.
 
 ## Config
 

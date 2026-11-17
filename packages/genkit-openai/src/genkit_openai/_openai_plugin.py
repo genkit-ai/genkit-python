@@ -69,7 +69,6 @@ from genkit_openai._models._image import (
 )
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
-    _LEGACY_CHAT_MODELS,
     SUPPORTED_EMBEDDING_MODELS,
     SUPPORTED_OPENAI_MODELS,
     KnownGpt,
@@ -314,16 +313,17 @@ def multimodal_config_class(*, name: str, model_type: _ModelType) -> type[BaseMo
     return OpenAIDalleConfig
 
 
+# Dated snapshots OpenAI has shut down while their alias is still served.
+_SHUT_DOWN_SNAPSHOTS = frozenset({'gpt-4o-2024-05-13'})
+
+
 def _known_chat_model_info(name: str) -> ModelInfo | None:
     if info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
         return info
-    if info := _LEGACY_CHAT_MODELS.get(name):
-        return info
     alias = _undated(name)
-    if alias == name:
+    if alias == name or name in _SHUT_DOWN_SNAPSHOTS:
         return None
-    info = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias)) or _LEGACY_CHAT_MODELS.get(alias)
-    if info is None:
+    if (info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias))) is None:
         return None
     supports = info.supports.model_copy(update={'constrained': None}) if info.supports else None
     return info.model_copy(update={'label': f'OpenAI - {name}', 'supports': supports})
@@ -332,7 +332,7 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
 def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
-    A dated snapshot takes its alias's info and stage, without constrained output, unless it has an entry of its own.
+    A dated snapshot takes its catalog alias's info and stage, without constrained output, unless it is shut down.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 

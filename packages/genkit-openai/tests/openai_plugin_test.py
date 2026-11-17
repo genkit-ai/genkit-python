@@ -150,50 +150,29 @@ def test_catalog_models_all_accept_json_schema() -> None:
         assert info.supports.constrained == ConstrainedSupport.ALL, name
 
 
-_LEGACY_TEXT = ModelSupports(multiturn=True, media=False, tools=True, system_role=True, output=['json', 'text'])
-_LEGACY_GPT_4 = ModelSupports(multiturn=True, media=False, tools=True, system_role=True, output=['text'])
-_LEGACY_MULTIMODAL = ModelSupports(multiturn=True, media=True, tools=True, system_role=True, output=['json', 'text'])
-_LEGACY_MULTIMODAL_CONSTRAINED = ModelSupports(
-    multiturn=True,
-    media=True,
-    tools=True,
-    system_role=True,
-    output=['json', 'text'],
-    constrained=ConstrainedSupport.ALL,
+# Shut down, Responses-only, or never served by Chat Completions.
+_RETIRED_CHAT_IDS = (
+    'gpt-4o-2024-05-13',
+    'gpt-4.5-preview',
+    'gpt-4-turbo',
+    'gpt-4-turbo-2024-04-09',
+    'gpt-4-turbo-preview',
+    'gpt-4-0125-preview',
+    'gpt-4-1106-preview',
+    'gpt-4',
+    'gpt-4-0613',
+    'gpt-3.5-turbo',
+    'gpt-3.5-turbo-0125',
+    'gpt-3.5-turbo-1106',
+    'o1',
+    'o3-mini',
+    'o4-mini',
+    'gpt-5-chat-latest',
+    'gpt-5.2-chat',
+    'gpt-5.2-chat-latest',
+    'gpt-oss-120b',
+    'gpt-oss-20b',
 )
-_LEGACY_O_SERIES = ModelSupports(
-    multiturn=True,
-    media=True,
-    tools=True,
-    system_role=False,
-    output=['json', 'text'],
-    constrained=ConstrainedSupport.ALL,
-)
-
-# Shut down, Responses-only, or never served by Chat Completions, with the supports they resolve with.
-_RETIRED_CHAT_SUPPORTS: dict[str, ModelSupports] = {
-    'gpt-4o-2024-05-13': _LEGACY_MULTIMODAL_CONSTRAINED,
-    'gpt-4.5-preview': _LEGACY_MULTIMODAL_CONSTRAINED,
-    'gpt-4-turbo': _LEGACY_MULTIMODAL,
-    'gpt-4-turbo-2024-04-09': _LEGACY_MULTIMODAL,
-    'gpt-4-turbo-preview': _LEGACY_MULTIMODAL,
-    'gpt-4-0125-preview': _LEGACY_MULTIMODAL,
-    'gpt-4-1106-preview': _LEGACY_MULTIMODAL,
-    'gpt-4': _LEGACY_GPT_4,
-    'gpt-4-0613': _LEGACY_GPT_4,
-    'gpt-3.5-turbo': _LEGACY_TEXT,
-    'gpt-3.5-turbo-0125': _LEGACY_TEXT,
-    'gpt-3.5-turbo-1106': _LEGACY_TEXT,
-    'o1': _LEGACY_O_SERIES,
-    'o3-mini': _LEGACY_O_SERIES.model_copy(update={'media': False}),
-    'o4-mini': _LEGACY_O_SERIES,
-    'gpt-5-chat-latest': ModelSupports(multiturn=True, media=True, tools=False, system_role=True, output=['text']),
-    'gpt-5.2-chat': _LEGACY_MULTIMODAL_CONSTRAINED,
-    'gpt-5.2-chat-latest': _LEGACY_MULTIMODAL_CONSTRAINED,
-    'gpt-oss-120b': _LEGACY_TEXT,
-    'gpt-oss-20b': _LEGACY_TEXT,
-}
-_RETIRED_CHAT_IDS = tuple(_RETIRED_CHAT_SUPPORTS)
 
 
 def test_catalog_drops_retired_and_non_chat_ids() -> None:
@@ -203,8 +182,8 @@ def test_catalog_drops_retired_and_non_chat_ids() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model', _RETIRED_CHAT_IDS)
-async def test_legacy_chat_id_resolves_with_capabilities_without_startup_registration(model: str) -> None:
-    """A retired id is not registered at startup and resolves by name with its own supports and no stage."""
+async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) -> None:
+    """A shut-down id is not registered at startup and resolves by name with generic info and no stage."""
     plugin = OpenAI(api_key='test-key', base_url='https://compat.example/v1')
 
     assert f'openai/{model}' not in {a.name for a in await plugin.init()}
@@ -214,8 +193,9 @@ async def test_legacy_chat_id_resolves_with_capabilities_without_startup_registr
     assert action.metadata is not None
     model_meta = cast(dict[str, Any], action.metadata['model'])
     assert model_meta['label'] == f'OpenAI - {model}'
-    assert model_meta['supports'] == _RETIRED_CHAT_SUPPORTS[model].model_dump(by_alias=True, exclude_none=True)
+    assert model_meta['supports'] == {'multiturn': True}
     assert 'stage' not in model_meta
+    assert plugin.get_model_info(model) == {'label': model_meta['label'], 'supports': model_meta['supports']}
 
 
 @pytest.mark.parametrize(
@@ -446,37 +426,22 @@ async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt)
 
 
 @pytest.mark.parametrize(
-    ('model', 'alias'),
+    'model',
     [
-        ('o4-mini-2025-04-16', 'o4-mini'),
-        ('o1-2024-12-17', 'o1'),
-        ('o3-mini-2025-01-31', 'o3-mini'),
-        ('gpt-4.5-preview-2025-02-27', 'gpt-4.5-preview'),
-        ('gpt-5.2-chat-2025-12-11', 'gpt-5.2-chat'),
+        'o4-mini-2025-04-16',
+        'o1-2024-12-17',
+        'o3-mini-2025-01-31',
+        'gpt-4.5-preview-2025-02-27',
+        'gpt-5.2-chat-2025-12-11',
+        'gpt-4o-2024-05-13',
     ],
 )
-def test_dated_snapshots_of_retired_aliases_take_their_alias_supports(model: str, alias: str) -> None:
-    """A snapshot of a retired alias resolves with the alias's supports, without constrained output."""
+def test_shut_down_dated_snapshot_gets_generic_info(model: str) -> None:
+    """A shut-down snapshot gets generic info, and gpt-4o-2024-05-13 does not take the live gpt-4o alias's info."""
     info = _chat_model_info(model)
 
     assert info.label == f'OpenAI - {model}'
-    assert info.supports == _RETIRED_CHAT_SUPPORTS[alias].model_copy(update={'constrained': None})
-    assert info.stage is None
-
-
-def test_shut_down_dated_snapshot_does_not_take_its_alias_info() -> None:
-    """The retired snapshot retains its previous capabilities and does not inherit the alias's stage."""
-    info = _chat_model_info('gpt-4o-2024-05-13')
-
-    assert info.label == 'OpenAI - gpt-4o-2024-05-13'
-    assert info.supports == ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['json', 'text'],
-        constrained=ConstrainedSupport.ALL,
-    )
+    assert info.supports == ModelSupports(multiturn=True)
     assert info.stage is None
 
 
@@ -902,21 +867,9 @@ def _json_completion(content: str = '{"a": 1}') -> ChatCompletion:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ('model', 'response_format'),
-    [
-        ('ft:gpt-4o:acme', 'json_object'),
-        ('my-chat-model', 'json_object'),
-        ('gpt-4', 'text'),
-        ('gpt-4-0613', 'text'),
-        ('gpt-5-chat-latest', 'text'),
-        ('gpt-4-turbo', 'json_object'),
-        ('gpt-3.5-turbo', 'json_object'),
-        ('gpt-oss-120b', 'json_object'),
-    ],
-)
-async def test_legacy_and_unknown_models_preserve_json_request_format(model: str, response_format: str) -> None:
-    """Schema-less JSON sends json_object only to ids whose supports list json output."""
+@pytest.mark.parametrize('model', ['ft:gpt-4o:acme', 'my-chat-model', *_RETIRED_CHAT_IDS])
+async def test_generic_info_model_json_request_sends_json_object(model: str) -> None:
+    """A fine-tune, unknown or shut-down id has generic info and sends json_object for schema-less JSON output."""
     captured: dict[str, Any] = {}
     client = MagicMock()
 
@@ -931,7 +884,7 @@ async def test_legacy_and_unknown_models_preserve_json_request_format(model: str
 
     assert response.error is None
     assert response.output == {'a': 1}
-    assert captured['response_format'] == {'type': response_format}
+    assert captured['response_format'] == {'type': 'json_object'}
 
 
 @pytest.mark.asyncio

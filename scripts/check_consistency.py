@@ -35,7 +35,9 @@ NC = '\033[0m'
 
 PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPECTED_PYTHON = '>=3.10'
-ZERO_X_ONLY_PACKAGES: frozenset[str] = frozenset({'genkit-evaluators'})
+# 0.x-only packages cap genkit at <1, and check_consistency fails a 1.0 bump while they exist.
+# genkit-vertexai is the deprecated alias for genkit-model-garden.
+ZERO_X_ONLY_PACKAGES: frozenset[str] = frozenset({'genkit-evaluators', 'genkit-vertexai'})
 
 _INTRA_REPO_NAME_RE = re.compile(r'^\s*(genkit(?:-[a-z0-9-]+)?)\b')
 _EXACT_PIN_RE = re.compile(r'^(genkit(?:-[a-z0-9-]+)?)(?:\[[a-z0-9,_-]+\])?==([^,;\s]+)$')

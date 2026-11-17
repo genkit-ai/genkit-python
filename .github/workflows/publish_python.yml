@@ -73,6 +73,7 @@ jobs:
             packages/genkit-ollama
             packages/genkit-openai
             packages/genkit-otel
+            packages/genkit-vertexai
           )
 
           FAILED=()

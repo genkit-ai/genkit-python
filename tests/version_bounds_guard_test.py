@@ -165,12 +165,17 @@ def test_real_workspace_passes_consistency_and_extras_contract() -> None:
     if 'evaluators' in opt_deps:
         assert opt_deps['evaluators'] == [f'genkit-evaluators>={core_version},<1']
 
-    # Every publishable plugin is reachable from at least one genkit[...] extra.
+    # Every publishable plugin is reachable from at least one genkit[...] extra. Renamed-package
+    # aliases are exempt: they only exist so the old pip name keeps installing the new package.
+    renamed_package_aliases = {'genkit-vertexai'}
     referenced_plugins = {spec.split('[', 1)[0].split('>=', 1)[0] for specs in opt_deps.values() for spec in specs}
     all_plugins = {
         p.name
         for p in (PY_DIR / 'packages').iterdir()
-        if p.is_dir() and p.name != 'genkit' and (p / 'pyproject.toml').exists()
+        if p.is_dir()
+        and p.name != 'genkit'
+        and p.name not in renamed_package_aliases
+        and (p / 'pyproject.toml').exists()
     }
     assert referenced_plugins == all_plugins
 

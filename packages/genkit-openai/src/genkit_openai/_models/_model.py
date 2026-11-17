@@ -33,7 +33,7 @@ from genkit_openai._models._utils import (
     split_reply_content,
     strip_markdown_fences,
 )
-from genkit_openai._typing import OpenAIConfig
+from genkit_openai._typing import OpenAIConfig, ReasoningEffort
 from openai import AsyncOpenAI
 from openai.lib._pydantic import _ensure_strict_json_schema
 from openai.types import CompletionUsage
@@ -491,6 +491,14 @@ class OpenAIModel:
                 request.config if isinstance(request.config, OpenAIConfig) else self._normalize_config(request.config)
             )
             top_k = config.top_k
+            if config.reasoning_effort == ReasoningEffort.MAX and not self._mistral:
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message=(
+                        "reasoning_effort='max' is Mistral's; OpenAI's API stops at 'xhigh'. For another host "
+                        "that takes it, pass extra={'reasoning_effort': 'max'}."
+                    ),
+                )
             if config.version:
                 openai_config['model'] = config.version
             effective_model = config.model or config.version or self._model

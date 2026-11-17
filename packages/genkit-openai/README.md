@@ -103,6 +103,10 @@ that differ:
 - `seed` goes out as `random_seed`.
 - `top_k` is refused before the request goes out: Mistral's models reject
   `top_k` sampling.
+- `reasoning_effort` also takes `'max'`, which Mistral's API declares and
+  OpenAI's doesn't; other targets refuse it before the request goes out.
+  Which values a model accepts varies: Mistral Small takes `none` and `high`,
+  Mistral Large `low`, `medium` and `high`.
 - Streaming sends no `stream_options`; Mistral reports usage on the last chunk
   without it.
 - An embedder's `dimensions` goes out as `output_dimension`.

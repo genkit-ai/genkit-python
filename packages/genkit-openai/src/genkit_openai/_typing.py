@@ -53,6 +53,9 @@ class ReasoningEffort(StrEnum):
     MEDIUM = 'medium'
     HIGH = 'high'
     XHIGH = 'xhigh'
+    # Mistral only (its ReasoningEffort has it; OpenAI's doesn't). Refused
+    # before the request for any other target.
+    MAX = 'max'
 
 
 class Verbosity(StrEnum):

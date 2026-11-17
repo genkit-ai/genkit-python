@@ -1074,3 +1074,30 @@ async def test_mistral_stream_keeps_two_signed_thinking_chunks_apart(mistral: Ge
         _signed_thinking('Then, answer.', 'sig-2'),
         {'type': 'text', 'text': 'Two loaves.'},
     ]
+
+
+@pytest.mark.asyncio
+async def test_mistral_takes_reasoning_effort_max(mistral: Genkit, server: _Server) -> None:
+    """`reasoning_effort='max'`, in Mistral's ReasoningEffort, goes out to Mistral as given."""
+    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'reasoning_effort': 'max'})
+
+    assert server.bodies()[0]['reasoning_effort'] == 'max'
+
+
+@pytest.mark.asyncio
+async def test_openai_refuses_reasoning_effort_max(openai: Genkit, server: _Server) -> None:
+    """Other targets refuse `reasoning_effort='max'` before the request, pointing at `extra`."""
+    response = await openai.generate(model='openai/gpt-5', prompt='salut', config={'reasoning_effort': 'max'})
+
+    assert response.error is not None
+    assert response.error.status == 'INVALID_ARGUMENT'
+    assert "extra={'reasoning_effort': 'max'}" in str(response.finish_message)
+    assert server.requests == []
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_effort_max_through_extra(openai: Genkit, server: _Server) -> None:
+    """A non-Mistral host that takes 'max' gets it through `extra`."""
+    await openai.generate(model='openai/gpt-5', prompt='salut', config={'extra': {'reasoning_effort': 'max'}})
+
+    assert server.bodies()[0]['reasoning_effort'] == 'max'

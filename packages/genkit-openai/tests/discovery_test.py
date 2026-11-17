@@ -58,6 +58,11 @@ _HIDDEN_ON_EVERY_HOST = [
     'sora-2',
     'babbage-002',
     'davinci-002',
+    'davinci',
+    'davinci-instruct-beta',
+    'curie-instruct-beta',
+    'text-similarity-davinci-001',
+    'text-search-ada-doc-001',
     'gpt-3.5-turbo-instruct',
 ]
 _HIDDEN_ON_OPENAI = [
@@ -74,6 +79,7 @@ _LISTED_ON_EVERY_HOST = [
     'my-realtime-llama',
     'llama-guard-moderation',
     'text-embedding-3-small',
+    'text-embedding-ada-002',
     'tts-1',
     'whisper-1',
 ]

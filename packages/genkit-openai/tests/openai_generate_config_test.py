@@ -67,7 +67,7 @@ class _OpenAIServer:
             return httpx.Response(200, json={'created': 0, 'data': [{'b64_json': 'aW1n'}]})
         if path.endswith('/audio/speech'):
             return httpx.Response(200, content=b'mp3-bytes', headers={'content-type': 'audio/mpeg'})
-        if path.endswith('/audio/transcriptions'):
+        if path.endswith(('/audio/transcriptions', '/audio/translations')):
             return httpx.Response(200, text='heard you', headers={'content-type': 'text/plain'})
         body = json.loads(request.content)
         if body.get('stream'):
@@ -320,6 +320,37 @@ async def test_generate_openai_stt_sends_prompt_from_config_or_message(ai: Genki
     [from_config, from_message] = server.requests
     assert b'name="prompt"\r\n\r\nNames: Genkit, Gemini' in from_config.content
     assert b'name="prompt"\r\n\r\nSpeaker: Alice' in from_message.content
+
+
+@pytest.mark.asyncio
+async def test_generate_openai_stt_omits_blank_prompt(ai: Genkit, server: _OpenAIServer) -> None:
+    """A whitespace-only prompt is not sent, so diarization models don't reject the request."""
+    await ai.generate(
+        model='openai/gpt-4o-transcribe-diarize',
+        prompt=[Part.from_text(' '), Part.from_media(_AUDIO, content_type='audio/mpeg')],
+    )
+    await ai.generate(
+        model='openai/gpt-4o-transcribe',
+        prompt=[Part.from_media(_AUDIO, content_type='audio/mpeg')],
+        config={'prompt': '  '},
+    )
+    await ai.generate(
+        model='openai/gpt-4o-transcribe',
+        prompt=[Part.from_text(' Names: Genkit '), Part.from_media(_AUDIO, content_type='audio/mpeg')],
+        config={'prompt': '\n'},
+    )
+    await ai.generate(
+        model='openai/whisper-1',
+        prompt=[Part.from_text(' '), Part.from_media(_AUDIO, content_type='audio/mpeg')],
+        config={'translate': True},
+    )
+
+    [blank_message, blank_config, real_prompt, blank_translation] = server.requests
+    assert b'name="prompt"' not in blank_message.content
+    assert b'name="prompt"' not in blank_config.content
+    assert b'name="prompt"\r\n\r\n Names: Genkit \r\n' in real_prompt.content
+    assert blank_translation.url.path.endswith('/audio/translations')
+    assert b'name="prompt"' not in blank_translation.content
 
 
 @pytest.mark.parametrize(

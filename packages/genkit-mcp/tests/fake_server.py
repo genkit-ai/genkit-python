@@ -19,7 +19,7 @@ import threading
 # is most of this server's startup and stretches every handshake on a busy
 # machine. None in sys.modules makes the import fail, and jsonschema skips the
 # IRI format checks this server never runs.
-sys.modules['rfc3987_syntax'] = None  # type: ignore[assignment]
+sys.modules['rfc3987_syntax'] = None  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
 import anyio
 from mcp.server import Server

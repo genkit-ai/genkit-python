@@ -423,9 +423,7 @@ def create_reflection_asgi_app(
 
     middleware: list[Middleware] = []
     if secret:
-        # ty (0.0.x) cannot match any factory against Starlette's ParamSpec'd
-        # `_MiddlewareFactory` protocol, including this documented form.
-        middleware.append(Middleware(ReflectionAuthMiddleware, secret=secret))  # ty: ignore[invalid-argument-type]
+        middleware.append(Middleware(ReflectionAuthMiddleware, secret=secret))
 
     app = Starlette(
         middleware=middleware,

@@ -48,6 +48,9 @@ T_co = TypeVarExt('T_co')
 R = TypeVarExt('R', default=Any)
 # No defaults, so they can sit in any order in the helpers' signatures.
 _ChunkT = TypeVar('_ChunkT')
+# Chunks only come out of a StoppableStream, so a stream of a subtype fits a
+# stream of its supertype (StreamResponse's chunk type is covariant too).
+_StreamT_co = TypeVar('_StreamT_co', covariant=True)
 _ResultT = TypeVar('_ResultT')
 _PickedT = TypeVar('_PickedT')
 
@@ -70,7 +73,8 @@ class Channel(Generic[T_co, R]):
         if pop_task.cancelled():
             return
         if pop_task.exception() is None:
-            self.queue._queue.appendleft(pop_task.result())  # type: ignore[attr-defined]
+            # asyncio.Queue keeps items in a private deque that typeshed doesn't declare.
+            self.queue._queue.appendleft(pop_task.result())  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
     async def __anext__(self) -> T_co:
         if not self.queue.empty():
@@ -208,7 +212,7 @@ def _spawn_stop(stop: Callable[[], Awaitable[None]], *, on_done: Callable[[], No
     task.add_done_callback(_finish)
 
 
-class StoppableStream(AsyncIterator[T]):
+class StoppableStream(AsyncIterator[_StreamT_co]):
     """Single-pass ``AsyncIterator`` over a run's chunks, with explicit ``aclose()``.
 
     ``__aiter__`` returns ``self`` (``aiter(s) is s``). Closing via
@@ -228,9 +232,9 @@ class StoppableStream(AsyncIterator[T]):
     ``await s.response`` alone still works.
     """
 
-    def __init__(self, *, chunks: AsyncIterable[T], stop: Callable[[], Awaitable[None]] | None) -> None:
-        self._chunks: AsyncIterable[T] | None = chunks
-        self._source: AsyncIterator[T] | None = None
+    def __init__(self, *, chunks: AsyncIterable[_StreamT_co], stop: Callable[[], Awaitable[None]] | None) -> None:
+        self._chunks: AsyncIterable[_StreamT_co] | None = chunks
+        self._source: AsyncIterator[_StreamT_co] | None = None
         self._stop = stop
         self._finished = False
         self._closing = False
@@ -245,7 +249,7 @@ class StoppableStream(AsyncIterator[T]):
         return self
 
     @override
-    async def __anext__(self) -> T:
+    async def __anext__(self) -> _StreamT_co:
         if self._finished or self._closing:
             raise StopAsyncIteration
         if self._source is None:
@@ -311,7 +315,13 @@ class StoppableStream(AsyncIterator[T]):
         self._loop_ref = None
         self._unwatch_readers()
         stream_ref = weakref.ref(self)
-        _spawn_stop(stop, on_done=lambda: (s := stream_ref()) is not None and s._clear_stop_ref())  # type: ignore[func-returns-value]
+
+        def _on_stop_done() -> None:
+            s = stream_ref()
+            if s is not None:
+                s._clear_stop_ref()
+
+        _spawn_stop(stop, on_done=_on_stop_done)
 
     def __del__(self) -> None:
         # A bare `async for` that breaks never calls aclose(). Once the reader

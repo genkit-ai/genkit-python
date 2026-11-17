@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast, overload
 
 import anyio
 import uvicorn
+from anyio.abc import TaskGroup
 from pydantic import BaseModel
 from typing_extensions import Never
 
@@ -1381,14 +1382,14 @@ class Genkit:
                     logger.info(self._reflection_ready_message())
                     async with anyio.create_task_group() as tg:
 
-                        async def _handle_signal(tg_: anyio.abc.TaskGroup) -> None:  # type: ignore[name-defined]
+                        async def _handle_signal(tg_: TaskGroup) -> None:
                             nonlocal stop_signal
                             async for sig in sigs:
                                 stop_signal = sig
                                 tg_.cancel_scope.cancel()
                                 return
 
-                        async def _handle_reflection_stopped(tg_: anyio.abc.TaskGroup) -> None:  # type: ignore[name-defined]
+                        async def _handle_reflection_stopped(tg_: TaskGroup) -> None:
                             # Poll rather than park a worker thread in Event.wait:
                             # anyio worker threads are non-daemon, so a parked one
                             # keeps the process alive after run_main returns.

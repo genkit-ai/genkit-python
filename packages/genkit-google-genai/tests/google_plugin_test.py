@@ -925,13 +925,13 @@ async def test_lazy_client_unknown_failure_stays_raw() -> None:
 def test_googleai_positional_api_key_raises_type_error() -> None:
     """GoogleAI('my-key') raises TypeError; the key is passed as api_key=."""
     with pytest.raises(TypeError):
-        GoogleAI('my-key')  # type: ignore[misc]
+        GoogleAI('my-key')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_vertexai_positional_project_raises_type_error() -> None:
     """VertexAI('my-project') raises TypeError instead of treating the project as credentials."""
     with pytest.raises(TypeError):
-        VertexAI('my-project')  # type: ignore[misc]
+        VertexAI('my-project')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 @pytest.mark.asyncio

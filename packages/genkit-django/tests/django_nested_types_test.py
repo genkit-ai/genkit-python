@@ -47,7 +47,7 @@ def turn_urlconf(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         return Turn(reply=Message(role='model', content=[Part.from_text('hi')]), turns=1)
 
     module = types.ModuleType('genkit_django_nested_types_urls')
-    module.urlpatterns = [path('turn', turn)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    module.urlpatterns = [path('turn', turn)]  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
     monkeypatch.setitem(sys.modules, 'genkit_django_nested_types_urls', module)
     with override_settings(ROOT_URLCONF='genkit_django_nested_types_urls'):
         yield

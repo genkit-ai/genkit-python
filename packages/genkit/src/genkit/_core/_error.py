@@ -311,7 +311,7 @@ def http_code(code: object) -> int | None:
         resolved = code
     else:
         try:
-            resolved = int(code)  # type: ignore[arg-type]
+            resolved = int(code)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type] - any object; int() raising is the check
         except (TypeError, ValueError):
             return None
     if 100 <= resolved <= 599:
@@ -372,7 +372,8 @@ def retry_after_ms_from_headers(headers: object) -> float | None:
         return None
     try:
         raw = next(
-            (value for key, value in headers.items() if isinstance(key, str) and key.lower() == 'retry-after'),  # type: ignore[attr-defined]
+            # headers is any object; a non-mapping raises AttributeError below.
+            (value for key, value in headers.items() if isinstance(key, str) and key.lower() == 'retry-after'),  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
             None,
         )
     except (AttributeError, TypeError):

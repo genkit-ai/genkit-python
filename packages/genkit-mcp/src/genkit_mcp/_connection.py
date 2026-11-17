@@ -58,7 +58,8 @@ from genkit_mcp._errors import (
 )
 
 if sys.version_info < (3, 11):
-    from exceptiongroup import BaseExceptionGroup  # type: ignore[import-not-found]
+    # The backport is only installed on 3.10, so ty running on a newer venv can't resolve it.
+    from exceptiongroup import BaseExceptionGroup  # type: ignore[import-not-found]  # ty: ignore[unresolved-import]
 
 _T = TypeVar('_T')
 

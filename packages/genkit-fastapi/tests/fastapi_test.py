@@ -549,7 +549,7 @@ def _defaulted_and_bad_return_app() -> FastAPI:
 
     @ai.flow()
     async def charge(name: str) -> dict[str, int]:
-        return {'account': name}  # type: ignore[dict-item]
+        return {'account': name}  # type: ignore[dict-item]  # ty: ignore[invalid-return-type]
 
     app.include_router(serve_flow(greet, base_path='/greet'))
     app.include_router(serve_flow(charge, base_path='/charge'))
@@ -601,7 +601,7 @@ def test_fastapi_flow_returning_dict_for_model_sends_model_dump() -> None:
 
     @ai.flow()
     async def close_tab(table: int) -> Receipt:
-        return {'table': table, 'note': None}  # type: ignore[return-value]
+        return {'table': table, 'note': None}  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     @app.post('/close_tab')
     @genkit_fastapi_handler(ai)

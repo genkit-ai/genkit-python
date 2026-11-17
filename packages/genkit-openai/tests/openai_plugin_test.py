@@ -622,7 +622,7 @@ async def test_embedder_action_reads_ctx_context() -> None:
         seen.append(context)
         return client
 
-    plugin._embed_client = resolve  # type: ignore[method-assign]
+    plugin._embed_client = resolve  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
     action = plugin._create_embedder_action('text-embedding-3-small')
     tenant = {'secrets': {'api_key': 'sk-tenant'}}
     await action._fn(EmbedRequest(input=[Document.from_text('hello')], options={}), EmbedContext(context=tenant))

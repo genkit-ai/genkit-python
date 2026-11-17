@@ -230,7 +230,7 @@ def mock_genkit_instance() -> tuple[Genkit, MockGenkitRegistry]:
     """Fixture for a Genkit instance with a mock registry."""
     registry = MockGenkitRegistry()
     genkit_instance = Genkit()
-    genkit_instance._registry = registry  # type: ignore[assignment]
+    genkit_instance._registry = registry  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
     return genkit_instance, registry
 
 

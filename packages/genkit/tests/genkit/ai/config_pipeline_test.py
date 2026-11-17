@@ -445,7 +445,7 @@ def test_typed_embedder_ref_checks_and_copies_config() -> None:
     assert ref.config == CrmEmbedConfig(task_type='query')
     assert ref.version == 'v2'
     with pytest.raises(dataclasses.FrozenInstanceError):
-        ref.name = 'other'  # type: ignore[misc]
+        ref.name = 'other'  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     with pytest.raises(GenkitError, match=r'crm: config must be an instance of .*CrmEmbedConfig, got .*MenuOnlyConfig'):
         EmbedderRef(name='crm', config_schema=CrmEmbedConfig, config=cast(Any, MenuOnlyConfig()))
 

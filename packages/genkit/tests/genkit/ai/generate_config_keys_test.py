@@ -260,7 +260,7 @@ async def test_generate_model_config_extra_reaches_model() -> None:
 def test_model_config_with_unknown_keyword_raises_validation_error() -> None:
     """`ModelConfig(temprature=0.2)` fails at construction."""
     with pytest.raises(ValidationError, match='temprature'):
-        ModelConfig(temprature=0.2)  # type: ignore[call-arg]
+        ModelConfig(temprature=0.2)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_model_config_extra_takes_any_provider_settings() -> None:
@@ -761,7 +761,7 @@ async def test_generate_config_api_key_raises_pointing_to_secrets(config: dict[s
 def test_model_config_with_api_key_raises_validation_error() -> None:
     """`ModelConfig(api_key=k)` fails where it's typed; there's no such setting."""
     with pytest.raises(ValidationError, match='api_key'):
-        ModelConfig(api_key=KEY)  # type: ignore[call-arg]
+        ModelConfig(api_key=KEY)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.asyncio

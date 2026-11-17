@@ -914,7 +914,7 @@ async def to_generate_options(
         max_turns=call.max_turns,
         docs=call.docs,  # type: ignore[arg-type]
         resume=resume,
-        use=call.use,  # type: ignore[arg-type]
+        use=call.use,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     )
 
 

@@ -576,13 +576,13 @@ async def test_model_garden_environment_project_skips_adc(vertex_requests: list[
 def test_model_garden_positional_project_raises_type_error() -> None:
     """ModelGarden('my-project') raises TypeError; the project is passed as project=."""
     with pytest.raises(TypeError):
-        ModelGarden('my-project')  # type: ignore[misc]
+        ModelGarden('my-project')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_model_garden_models_argument_raises_type_error() -> None:
     """ModelGarden(models=[...]) raises TypeError; models resolve by name without a list."""
     with pytest.raises(TypeError, match='models'):
-        ModelGarden(project='p', models=['meta/llama-3.1-405b-instruct-maas'])  # type: ignore[call-arg]
+        ModelGarden(project='p', models=['meta/llama-3.1-405b-instruct-maas'])  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.asyncio

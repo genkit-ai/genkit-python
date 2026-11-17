@@ -96,7 +96,7 @@ class Tts:
         return Operation(id='op-1', done=False)
 
     def _typed_fn(self, config_class: type[BaseModel]) -> Callable[..., Awaitable[object]]:
-        async def tts(request: ModelRequest[config_class], ctx: ModelContext):  # type: ignore[valid-type]  # noqa: ANN202
+        async def tts(request: ModelRequest[config_class], ctx: ModelContext):  # type: ignore[valid-type]  # noqa: ANN202  # ty: ignore[invalid-type-form]
             return self._reply(request.config)
 
         return tts
@@ -134,7 +134,7 @@ class Tts:
 
 def voice_of(config: object) -> object:
     """The voice a model saw, whether its config arrived typed or as a dict."""
-    return config.voice if isinstance(config, BaseModel) else dict(config)['voice']  # type: ignore[arg-type,attr-defined]
+    return config.voice if isinstance(config, BaseModel) else dict(config)['voice']  # type: ignore[arg-type,attr-defined]  # ty: ignore[unresolved-attribute]
 
 
 class DefaultVoice(Middleware):

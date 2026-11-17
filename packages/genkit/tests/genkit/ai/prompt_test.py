@@ -869,7 +869,7 @@ async def test_prompt_call_on_chunk_receives_each_chunk() -> None:
     p = ai.define_prompt(prompt='hi')
     seen: list[str] = []
 
-    await p(on_chunk=lambda chunk: seen.append(chunk.text))
+    await p(on_chunk=lambda chunk: seen.append(cast(ModelResponseChunk, chunk).text))
 
     assert seen == ['a', 'b']
 

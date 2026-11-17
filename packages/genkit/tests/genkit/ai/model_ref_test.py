@@ -65,7 +65,7 @@ def test_model_ref_with_bare_base_model_schema() -> None:
 def test_model_ref_requires_explicit_config_schema() -> None:
     """ModelRef raises TypeError if config_schema is missing."""
     with pytest.raises(TypeError):
-        ModelRef(name='googleai/gemini-pro-latest')  # type: ignore[call-arg]
+        ModelRef(name='googleai/gemini-pro-latest')  # type: ignore[call-arg]  # ty: ignore[missing-argument]
 
 
 def test_model_ref_immutability() -> None:
@@ -73,10 +73,10 @@ def test_model_ref_immutability() -> None:
     ref = ModelRef(name='custom-model', config_schema=CustomConfig)
 
     with pytest.raises(FrozenInstanceError):
-        ref.name = 'changed'  # type: ignore[misc]
+        ref.name = 'changed'  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
     with pytest.raises(FrozenInstanceError):
-        ref.config = CustomConfig(temperature=0.1)  # type: ignore[misc]
+        ref.config = CustomConfig(temperature=0.1)  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_model_ref_dataclass_value_equality() -> None:
@@ -223,4 +223,4 @@ def test_model_ref_isolates_caller_config_and_info() -> None:
 def test_model_info_has_no_config_schema() -> None:
     """Config schemas go on config_schema= and reach the Dev UI as customOptions; ModelInfo has no slot."""
     with pytest.raises(ValidationError, match='config_schema'):
-        ModelInfo(config_schema={'type': 'object'})  # type: ignore[call-arg]
+        ModelInfo(config_schema={'type': 'object'})  # type: ignore[call-arg]  # ty: ignore[unknown-argument]

@@ -948,13 +948,13 @@ async def test_the_probe_timeout_covers_a_slow_header_callable() -> None:
 def test_ollama_positional_argument_raises_type_error() -> None:
     """Ollama('http://example:11434') raises TypeError; every option is passed by name."""
     with pytest.raises(TypeError):
-        Ollama('http://example:11434')  # type: ignore[misc]
+        Ollama('http://example:11434')  # type: ignore[misc]  # ty: ignore[too-many-positional-arguments]
 
 
 def test_ollama_server_address_raises_type_error() -> None:
     """Ollama(server_address=...) raises TypeError; the server is set with base_url=."""
     with pytest.raises(TypeError, match='server_address'):
-        Ollama(server_address='http://example:11434')  # type: ignore[call-arg]
+        Ollama(server_address='http://example:11434')  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.asyncio

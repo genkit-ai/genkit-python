@@ -227,7 +227,7 @@ def test_action_stream_does_not_accept_timeout() -> None:
 
     action = Action(name='foo', kind=ActionKind.CUSTOM, fn=foo)
     with pytest.raises(TypeError, match='timeout'):
-        action.stream('foo', timeout=5)  # type: ignore[call-arg]
+        action.stream('foo', timeout=5)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_parse_plugin_name_from_action_name() -> None:
@@ -861,7 +861,7 @@ async def test_flow_bad_return_with_tracing_on_has_no_trace_id(hex_ids: None) ->
 
     @ai.flow()
     async def charge(order: str) -> Receipt:
-        return 'nope'  # type: ignore[return-value]
+        return 'nope'  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     with pytest.raises(GenkitError) as exc:
         await charge('o1')
@@ -926,7 +926,7 @@ async def test_action_stream_async_with_calls_aclose() -> None:
         closed.append(True)
         await orig_aclose()
 
-    stream_resp.aclose = tracked_aclose  # type: ignore[method-assign]
+    stream_resp.aclose = tracked_aclose  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     seen: list[str] = []
     async with stream_resp as s:

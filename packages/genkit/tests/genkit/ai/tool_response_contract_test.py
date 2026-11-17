@@ -339,7 +339,7 @@ async def test_await_multipart_annotated_tool_with_bare_return_returns_the_bare_
 
     @ai.tool(name='shot')
     async def shot() -> MultipartToolResponse[ShotOut]:
-        return ShotOut(ok=True, label='lab')  # type: ignore[return-value]
+        return ShotOut(ok=True, label='lab')  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     out: object = await shot()
     assert isinstance(out, ShotOut)
@@ -355,7 +355,7 @@ async def test_generate_multipart_shotout_with_bare_return_has_dump_and_no_media
 
     @ai.tool(name='shot')
     async def shot() -> MultipartToolResponse[ShotOut]:
-        return ShotOut(ok=True, label='lab')  # type: ignore[return-value]
+        return ShotOut(ok=True, label='lab')  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     generated = await _generate_tool_turn(ai, pm, name='shot')
     _assert_closed_tool_round(generated)
@@ -455,7 +455,7 @@ async def test_await_str_tool_returning_response_returns_multipart_tool_response
 
     @ai.tool(name='weather')
     async def weather(city: str) -> str:
-        return MultipartToolResponse(output=f'Sunny in {city}', content=[_png()])  # type: ignore[return-value]
+        return MultipartToolResponse(output=f'Sunny in {city}', content=[_png()])  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     out: object = await weather('Austin')
     assert isinstance(out, MultipartToolResponse)
@@ -473,7 +473,7 @@ async def test_generate_str_tool_may_put_png_on_the_tool_message_without_changin
 
     @ai.tool(name='weather')
     async def weather(city: str) -> str:
-        return MultipartToolResponse(output=f'Sunny in {city}', content=[_png()])  # type: ignore[return-value]
+        return MultipartToolResponse(output=f'Sunny in {city}', content=[_png()])  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
 
     generated = await _generate_tool_turn(ai, pm, name='weather', tool_input='Austin')
     _assert_closed_tool_round(generated)
@@ -569,9 +569,9 @@ async def test_tool_constructor_infers_types_from_function() -> None:
     # constructors yet and infers Tool[Any, Any]; @ai.tool() is typed for it.
     assert_type(Tool(add_pair), Tool[Pair, int])  # ty: ignore[type-assertion-failure]
     assert_type(Tool(add_pair_ctx_first), Tool[Pair, int])  # ty: ignore[type-assertion-failure]
-    assert_type(Tool(whoami), Tool[Any, str])  # ty: ignore[type-assertion-failure]
+    assert_type(Tool(whoami), Tool[Any, str])
     assert_type(Tool(double), Tool[int, int])  # ty: ignore[type-assertion-failure]
-    assert_type(Tool(shot, name='shot'), Tool[None, ShotOut])  # ty: ignore[type-assertion-failure]
+    assert_type(Tool(shot, name='shot'), Tool[None, ShotOut])
 
     # 2-arg runtime subscripting works at runtime.
     assert get_args(Tool[int, str])[:2] == (int, str)
@@ -731,11 +731,10 @@ async def test_tool_input_type_inference_across_shapes() -> None:
     assert_type(define_tool(Registry(), echo_object), Tool[Any, str])
     assert_type(define_tool(Registry(), echo_any), Tool[Any, str])
 
-    # 3. Tool(fn). ty doesn't solve overloaded generic constructors yet (see
-    # test_tool_constructor_infers_types_from_function).
-    assert_type(Tool(ctx_then_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(Tool(echo_object), Tool[Any, str])  # ty: ignore[type-assertion-failure]
-    assert_type(Tool(echo_any), Tool[Any, str])  # ty: ignore[type-assertion-failure]
+    # 3. Tool(fn).
+    assert_type(Tool(ctx_then_any), Tool[Any, str])
+    assert_type(Tool(echo_object), Tool[Any, str])
+    assert_type(Tool(echo_any), Tool[Any, str])
 
     # 4. Any/object tools take any input at the call site.
     assert await Tool(echo_object)(5) == '5'

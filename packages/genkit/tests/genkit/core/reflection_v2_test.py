@@ -1025,7 +1025,7 @@ async def test_empty_trace_id_does_not_notify_run_action_state() -> None:
     async def fake_notify(sid: str, tid: str) -> None:
         notified.append((sid, tid))
 
-    server.notify_run_action_state = fake_notify  # type: ignore[method-assign]
+    server.notify_run_action_state = fake_notify  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
     cb = server.trace_start_callback('sid-1', [None], register_for_cancel=True)
     await cb('', 'span')
     assert '' not in server.active_actions

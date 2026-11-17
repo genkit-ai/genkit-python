@@ -152,12 +152,12 @@ class HttpAgentTransport(AgentTransport[StateT]):
         """Resolve caller headers for this request."""
         if self.headers is None:
             return {}
-        if callable(self.headers):
-            resolved = self.headers()
-            if inspect.isawaitable(resolved):
-                resolved = await resolved
-            return dict(resolved)
-        return dict(self.headers)
+        if isinstance(self.headers, dict):
+            return dict(self.headers)
+        resolved = self.headers()
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
+        return dict(resolved)
 
     async def _post_json(self, *, url: str, input_val: dict[str, Any]) -> Any:  # noqa: ANN401
         """POST JSON to a one-shot action endpoint and return the parsed body."""

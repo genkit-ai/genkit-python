@@ -78,7 +78,7 @@ def server_tool_of(action: Action) -> object:
             CallToolResult(
                 content=[text('bad'), ImageContent(type='image', mimeType='image/png', data='abc')],
                 isError=True,
-                _meta={'requestId': 'r1'},  # ty: ignore[unknown-argument]
+                _meta={'requestId': 'r1'},
             ),
             {'error': 'bad'},
             None,
@@ -88,7 +88,7 @@ def server_tool_of(action: Action) -> object:
             CallToolResult(
                 content=[text('bad')],
                 isError=True,
-                _meta={'isError': False},  # ty: ignore[unknown-argument]
+                _meta={'isError': False},
             ),
             {'error': 'bad'},
             None,
@@ -114,7 +114,7 @@ def test_call_result_to_multipart_error_flag_is_top_level_and_keeps_server_mcp_m
     result = CallToolResult(
         content=[text('bad')],
         isError=True,
-        _meta={'mcp': {'trace': 't1'}},  # ty: ignore[unknown-argument]
+        _meta={'mcp': {'trace': 't1'}},
     )
 
     response = call_result_to_multipart(result)
@@ -126,7 +126,7 @@ def test_call_result_to_multipart_drops_server_error_flags_from_a_success() -> N
     """A server's own isError or is_error in _meta cannot mark a successful result as failed."""
     result = CallToolResult(
         content=[text('ok')],
-        _meta={'isError': True, 'is_error': True, 'trace': 't'},  # ty: ignore[unknown-argument]
+        _meta={'isError': True, 'is_error': True, 'trace': 't'},
     )
 
     response = call_result_to_multipart(result)
@@ -159,7 +159,7 @@ def test_call_result_to_multipart_maps_multipart_content_and_meta() -> None:
                 uri=AnyUrl('https://example.test/docs'),
             ),
         ],
-        _meta={'trace': 'mcp-1'},  # ty: ignore[unknown-argument]
+        _meta={'trace': 'mcp-1'},
     )
 
     response = call_result_to_multipart(result)
@@ -212,7 +212,7 @@ async def test_mcp_tool_to_action_preserves_schema_metadata_and_context_meta() -
         name='lookup',
         description='Find a record.',
         inputSchema=awkward_schema,
-        _meta={'audience': 'internal'},  # ty: ignore[unknown-argument]
+        _meta={'audience': 'internal'},
     )
     calls: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
 

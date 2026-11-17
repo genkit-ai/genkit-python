@@ -73,7 +73,7 @@ class GenkitMetricExporter(MetricExporter):
         # 5 -> 6 would chart as 5 then 1.
         delta = AggregationTemporality.DELTA
         cumulative = AggregationTemporality.CUMULATIVE
-        preferred_temporality = {
+        preferred_temporality: dict[type, AggregationTemporality] = {
             Counter: delta,
             UpDownCounter: cumulative,
             Histogram: delta,

@@ -171,7 +171,7 @@ def test_agent_interrupt_restart_has_no_replace_input() -> None:
     """intr.restart(replace_input=...) is a TypeError; the helper does not take a new input."""
     intr = AgentInterrupt('transfer', 'ref-1', {'amount': 100})
     with pytest.raises(TypeError, match='replace_input'):
-        intr.restart(replace_input={'amount': 50})  # type: ignore[call-arg]
+        intr.restart(replace_input={'amount': 50})  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_restart_with_no_args_marks_resumed() -> None:

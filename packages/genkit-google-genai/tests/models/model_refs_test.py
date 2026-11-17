@@ -340,7 +340,7 @@ class TestEmbedderConstructor:
         with pytest.raises(TypeError, match='version'):
             GoogleAI.embedder(
                 'gemini-embedding-001',
-                version='gemini-embedding-2',  # type: ignore[call-arg]
+                version='gemini-embedding-2',  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
             )
 
     def test_embedder_strips_and_prefixes(self) -> None:

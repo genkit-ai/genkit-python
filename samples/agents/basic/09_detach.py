@@ -39,7 +39,6 @@ from genkit.exp.agent import (
     AgentResult,
     InMemorySessionStore,
     SessionRunner,
-    SessionSnapshot,
     SnapshotStatus,
     TurnContext,
     TurnResult,
@@ -100,7 +99,7 @@ async def main() -> None:
     assert task.snapshot_id  # the handle you poll on, hand off, or persist
 
     # Re-read the server snapshot every 0.5s and yield live status until terminal:
-    last_snap: SessionSnapshot[JobState] | None = None
+    last_snap = None
     async for snap in task.poll(interval=0.5):
         last_snap = snap
         if snap.state and snap.state.custom:

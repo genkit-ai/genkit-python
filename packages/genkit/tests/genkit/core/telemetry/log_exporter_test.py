@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Iterator
 from queue import Full, Queue
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -234,7 +234,7 @@ def test_overflow_drops_and_warns_once() -> None:
 @pytest.mark.usefixtures('_reset_export', '_dev_env')
 def test_posts_otlp_path_and_batches() -> None:
     """Worker POSTs ``/api/otlp`` with a resourceLogs envelope."""
-    seen: list[dict[str, object]] = []
+    seen: list[dict[str, Any]] = []
     posted = threading.Event()
 
     def capture_post(*_args: object, **kwargs: object) -> MagicMock:
@@ -263,8 +263,8 @@ def test_posts_otlp_path_and_batches() -> None:
     called = mock_client.post.call_args
     url = called.args[0] if called.args else called.kwargs.get('url')
     assert url is not None and url.endswith(LOG_ENDPOINT)
-    records = seen[0]['resourceLogs'][0]['scopeLogs'][0]['logRecords']  # type: ignore[index]
-    events = [r['body']['stringValue'] for r in records]  # type: ignore[index]
+    records = seen[0]['resourceLogs'][0]['scopeLogs'][0]['logRecords']
+    events = [r['body']['stringValue'] for r in records]
     assert 'a' in events
     assert 'b' in events
     assert BATCH_DELAY_S == 0.1
@@ -279,22 +279,22 @@ def test_get_logger_tees_debug_when_console_is_info() -> None:
         structlog_ok = configure_structlog_level()
         logger = get_logger('tee-test')
         assert is_debug_enabled(logger) is True
-        queued: list[dict[str, object]] = []
+        queued: list[dict[str, Any]] = []
         assert log_exporter._exporter is not None
         original = log_exporter._exporter.enqueue
 
         def capture(*, record: dict[str, object]) -> None:
             queued.append(record)
 
-        log_exporter._exporter.enqueue = capture  # type: ignore[method-assign]
+        log_exporter._exporter.enqueue = capture  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         try:
             logger.debug('looking up weather', city='Paris')
             logger.error('Startup failed: %s: %s', 'ValueError', 'boom')
             logger.info('kept on console')
         finally:
-            log_exporter._exporter.enqueue = original  # type: ignore[method-assign]
+            log_exporter._exporter.enqueue = original  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    events = [r['body']['stringValue'] for r in queued]  # type: ignore[index]
+    events = [r['body']['stringValue'] for r in queued]
     assert 'looking up weather' in events
     assert 'Startup failed: ValueError: boom' in events
     assert 'kept on console' in events
@@ -309,14 +309,14 @@ async def test_get_logger_tees_async_fatal_and_try_unbind() -> None:
     # The runtime object is still structlog, so calls outside GenkitLogger
     # (alog, fatal, bind) must tee too.
     logger = cast(FilteringBoundLogger, get_logger('tee-async-test'))
-    queued: list[dict[str, object]] = []
+    queued: list[dict[str, Any]] = []
     assert log_exporter._exporter is not None
     original = log_exporter._exporter.enqueue
 
     def capture(*, record: dict[str, object]) -> None:
         queued.append(record)
 
-    log_exporter._exporter.enqueue = capture  # type: ignore[method-assign]
+    log_exporter._exporter.enqueue = capture  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
     try:
         await logger.ainfo('order placed', table=4)
         await logger.adebug('kitchen ticket %s', 'T-9')
@@ -324,9 +324,9 @@ async def test_get_logger_tees_async_fatal_and_try_unbind() -> None:
         logger.fatal('walk-in freezer down')
         logger.bind(table=4).try_unbind('table', 'missing').info('table cleared')
     finally:
-        log_exporter._exporter.enqueue = original  # type: ignore[method-assign]
+        log_exporter._exporter.enqueue = original  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    events = [r['body']['stringValue'] for r in queued]  # type: ignore[index]
+    events = [r['body']['stringValue'] for r in queued]
     assert events == ['order placed', 'kitchen ticket T-9', 'oven hot', 'walk-in freezer down', 'table cleared']
 
 

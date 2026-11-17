@@ -1983,9 +1983,8 @@ class BidiAction(Action[InputT, OutputT, ChunkT, InitT]):
         """
         if ctx._input_stream is not None:
             # ctx carries the stream as AsyncIterator[object]; here we know it's
-            # this action's InputT. (ty collapses InputT to object and sees this
-            # as redundant; pyright needs it.)
-            input_stream = cast('AsyncIterator[InputT]', ctx._input_stream)  # ty: ignore[redundant-cast]
+            # this action's InputT.
+            input_stream = cast('AsyncIterator[InputT]', ctx._input_stream)
         else:
             input_stream = single_item_stream(input)
         return await self.bidi_fn(cast(InitT, ctx._init), input_stream, ctx.send_chunk)

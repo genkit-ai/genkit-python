@@ -86,7 +86,7 @@ from genkit.exp.agent import (
     require_one_selector,
     session_id_of,
 )
-from genkit.plugin_api import loop_local_client
+from genkit.plugin_api import StatusName, loop_local_client
 
 DEFAULT_COLLECTION = 'genkit-sessions'
 DEFAULT_PREFIX = 'global'
@@ -303,7 +303,7 @@ def _json_dumps_utf8(value: Any) -> bytes:  # noqa: ANN401
 
 
 # google.api_core exception class -> gRPC status name (see _to_genkit_error).
-_GOOGLE_EXC_STATUS: dict[str, str] = {
+_GOOGLE_EXC_STATUS: dict[str, StatusName] = {
     'Aborted': 'ABORTED',
     'AlreadyExists': 'ALREADY_EXISTS',
     'Cancelled': 'CANCELLED',
@@ -334,7 +334,7 @@ def _to_genkit_error(e: google_exceptions.GoogleAPICallError) -> GenkitError:
     """
     status = _GOOGLE_EXC_STATUS.get(type(e).__name__, 'UNKNOWN')
     return GenkitError(
-        status=status,  # type: ignore[arg-type]
+        status=status,
         message=f'FirestoreSessionStore: Firestore rejected the transaction ({type(e).__name__}): {e.message or e}',
     )
 

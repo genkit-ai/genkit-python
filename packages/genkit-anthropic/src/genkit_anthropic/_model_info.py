@@ -16,7 +16,7 @@
 
 """Anthropic Models for Genkit."""
 
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 
 from genkit.model import ConstrainedSupport, ModelInfo, ModelSupports
 
@@ -230,7 +230,7 @@ def get_model_info(name: str) -> ModelInfo:
         Model information.
     """
     if name in SUPPORTED_ANTHROPIC_MODELS:
-        return SUPPORTED_ANTHROPIC_MODELS[cast(KnownClaude, name)]
+        return SUPPORTED_ANTHROPIC_MODELS[name]
     return ModelInfo(
         label=f'Anthropic - {name}',
         supports=DEFAULT_SUPPORTS,

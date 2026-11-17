@@ -71,7 +71,7 @@ def test_plugin_config_model_dump_by_alias_emits_camel_case() -> None:
 def test_plugin_config_forbids_extra_kwargs() -> None:
     """Unknown kwargs raise ValidationError at creation time."""
     with pytest.raises(ValidationError):
-        SampleConfig(sample_rate=0.5, unknown_field='bad')  # type: ignore[call-arg]
+        SampleConfig(sample_rate=0.5, unknown_field='bad')  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
     with pytest.raises(ValidationError):
         SampleConfig.model_validate({'sampleRate': 0.5, 'unknownField': 'bad'})
@@ -130,7 +130,7 @@ def test_genkit_config_rejects_both_spellings_of_one_setting() -> None:
     with pytest.raises(ValidationError):
         SampleConfig.model_validate({'sampleRate': 0.5, 'sample_rate': 0.5})
     with pytest.raises(ValidationError):
-        SampleConfig(sample_rate=0.5, sampleRate=0.6)  # type: ignore[call-arg]
+        SampleConfig(sample_rate=0.5, sampleRate=0.6)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 class _BoundedConfig(ModelConfig):

@@ -867,7 +867,9 @@ class AgentRuntime:
             )
 
         try:
-            await self.store.save_snapshot(  # type: ignore[union-attr]
+            # A turn only detaches when the agent has a store.
+            store = cast(SessionStore[Any], self.store)
+            await store.save_snapshot(
                 pending_snap.snapshot_id,
                 finalize,
                 context=context,

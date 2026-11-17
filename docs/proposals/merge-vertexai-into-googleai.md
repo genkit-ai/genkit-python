@@ -1,10 +1,10 @@
 # Proposal: Merge `VertexAI` into `GoogleAI`
 
-**Author:** Jeff Huang · **Status:** Proposed · **Applies to:** JS, Go, Python
+**Author:** Jeff Huang · **Status:** Proposed · **Applies to:** `genkit-google-genai` (Python)
 
 ## Summary
 
-Genkit has two plugins for Gemini: `GoogleAI` (an AI Studio API key) and `VertexAI` (a Google Cloud project). They call the same models. The only difference is which Google API serves them.
+`genkit-google-genai` has two plugins for Gemini: `GoogleAI` (an AI Studio API key) and `VertexAI` (a Google Cloud project). They call the same models. The only difference is which Google API serves them.
 
 This proposal folds them into one plugin with a switch:
 
@@ -12,8 +12,6 @@ This proposal folds them into one plugin with a switch:
 GoogleAI()                                                         # AI Studio key, as today
 GoogleAI(enterprise=True, project='bistro-prod', location='us-central1')  # Google Cloud
 ```
-
-Examples use Python, and file references point to the Python plugin. JS (`googleAI()`) and Go (`GoogleAI`) get the same option, spelled the way each language spells it.
 
 It ships in two steps:
 
@@ -26,11 +24,7 @@ Neither step blocks Python 1.0.
 
 **Going to production means rewriting model names.** A team prototypes with `googleai/gemini-2.5-flash` on an AI Studio key. Moving to their Cloud project means changing every ref to `vertexai/gemini-2.5-flash`: in code, in `.prompt` files and in eval datasets. With one plugin, they change one line of setup and the refs stay the same (except for a few model IDs that differ by backend; see below).
 
-**Google's own SDKs already work this way.** They use one client with a backend switch, not two clients:
-
-- **Python `google-genai`:** `Client(enterprise=True)`. The old `vertexai=` flag is now documented as legacy.
-- **Go `genai`:** a `Backend` setting, with a new `BackendEnterprise` value.
-- Both SDKs read the `GOOGLE_GENAI_USE_ENTERPRISE` env var.
+**The SDK underneath already works this way.** `google-genai` uses one client with a backend switch, not two clients: `Client(enterprise=True)`, with the old `vertexai=` flag documented as legacy and a `GOOGLE_GENAI_USE_ENTERPRISE` env var. (Go's `genai` SDK made the same change, with a `BackendEnterprise` value.)
 
 **The name keeps changing.** Vertex AI became Gemini Enterprise Agent Platform in April, then "Gemini platform" in October. A setting on `GoogleAI` holds up better than a plugin class named after the product.
 
@@ -98,10 +92,7 @@ The namespace and refs stay the same, but some model IDs differ by backend:
 
 Users don't pick between them. `ai.generate(...)` looks the same either way, and the plugin chooses the API for each model.
 
-**Where each SDK is:**
-
-- **JS:** newer Gemini models on both `googleAI` and `vertexAI` already use Interactions (since [genkit#6851](https://github.com/genkit-ai/genkit/pull/6851)). Older Gemini, image models and tuned endpoints stay on `generateContent`.
-- **Python:** Gemini, Gemma, Imagen, Veo and embedders still use `generateContent`. Only Deep Research, Antigravity and Lyria use Interactions, and only on the Developer API. The migration is in progress: [genkit-python#78](https://github.com/genkit-ai/genkit-python/pull/78), then [#105](https://github.com/genkit-ai/genkit-python/pull/105), then a follow-up that moves Gemini onto Interactions. It uses the plugin's own HTTP client and wire types rather than the SDK's, matching JS and Dart.
+**Where the plugin is today:** Gemini, Gemma, Imagen, Veo and embedders still use `generateContent`. Only Deep Research, Antigravity and Lyria use Interactions, and only on the Developer API. The migration is in progress: [genkit-python#78](https://github.com/genkit-ai/genkit-python/pull/78), then [#105](https://github.com/genkit-ai/genkit-python/pull/105), then a follow-up that moves Gemini onto Interactions, the same split the JS plugin already uses ([genkit#6851](https://github.com/genkit-ai/genkit/pull/6851)). It uses the plugin's own HTTP client and wire types rather than the SDK's.
 
 **Why it matters here.** After the migration, the plugin has two code paths: `genai.Client` for `generateContent` models and its own client for Interactions models. Both APIs exist on both backends:
 
@@ -130,16 +121,16 @@ await ai.generate(model='vertexai/gemini-2.5-flash', prompt='Suggest a dish.')
 - **Routing:** `vertexai/...` goes to `GoogleAI.resolve`, and the plugin is told which name was used. The backend check lives in the plugin, not in core.
 - **Naming:** the resolved action is stored and traced under `googleai/...`. Today the registry names an action after whatever string was asked for.
 - **Dev UI:** the model list doesn't show the alias, so models don't appear twice.
-- **Cost:** new API for plugin authors, and JS and Go need the same thing at their own 2.0.
+- **Cost:** new public API in `genkit.plugin_api` for plugin authors.
 
 ## What we give up at 2.0
 
 - **Both backends in one app.** Until 2.0, `GoogleAI()` plus `VertexAI()` keeps working. After 2.0, two `GoogleAI` plugins collide on `googleai/`, and the registry raises at startup. We'd make that message name the fix. I expect this is rare, but we have no usage data.
 - **A possible follow-up that doesn't break anyone:** a per-request backend override, if those apps show up. It's not part of this proposal. Config is merged from the ref, the `.prompt` file and the call, and middleware can rewrite it, so putting billing routing in config needs its own design. Background `Operation`s would also have to record their backend.
 
-## Cross-SDK risk
+## Other SDKs
 
-Until JS and Go ship `enterprise=`, `googleai/gemini-2.5-flash` in a `.prompt` file means the Developer API in JS and Go but can mean Cloud in Python. The same file would bill a different account depending on which SDK loads it. In the additive phase, that only affects users who opt in with `enterprise=True`, but JS and Go should follow soon.
+This proposal covers Python only. One thing to flag for JS and Go: `.prompt` files are shared across SDKs, so with `GoogleAI(enterprise=True)` in Python, `googleai/gemini-2.5-flash` runs on Cloud in Python but on the Developer API in JS and Go. It only affects users who opt in, but JS and Go may want the same option eventually.
 
 ## Plan
 
@@ -157,12 +148,11 @@ Until JS and Go ship `enterprise=`, `googleai/gemini-2.5-flash` in a `.prompt` f
    - the `VertexAI` deprecation warning.
 
    Additive.
-4. **JS and Go:** the same additive change whenever they're ready.
-5. **At 2.0, in each SDK:** core namespace aliases, then remove `VertexAI` and register the `vertexai/` alias.
+4. **At 2.0:** core namespace aliases, then remove `VertexAI` and register the `vertexai/` alias.
 
 ## Open questions
 
-1. **Is `enterprise` the long-term name?** The flag follows "Gemini Enterprise Agent Platform", a brand developer marketing has already moved away from. Can we confirm with the `google-genai` team, and is JS `@google/genai` moving too?
-2. **Flag name in Genkit:** mirror each SDK (`enterprise=` in Python, a backend enum in Go), or use one brand-neutral `backend=` Literal everywhere?
+1. **Is `enterprise` the long-term name?** The flag follows "Gemini Enterprise Agent Platform", a brand developer marketing has already moved away from. Can we confirm with the `google-genai` team?
+2. **Flag name:** mirror the SDK's `enterprise=`, or use a brand-neutral `backend=` Literal?
 3. **The environment variable:** should `GoogleAI()` honor `GOOGLE_GENAI_USE_ENTERPRISE` when `enterprise=` isn't passed? Honoring it lets deployment config switch the backend without code changes. Ignoring it avoids a switch caused by a variable set for some other tool. An explicit `enterprise=` wins either way. I lean toward honoring it and logging the chosen backend once.
 4. **How long the alias lives after 2.0:** one major version, or for good?

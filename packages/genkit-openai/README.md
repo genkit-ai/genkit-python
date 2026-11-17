@@ -74,7 +74,10 @@ transcription or embedding, so a host can list `gpt-oss-120b` as a chat model.
 The filter uses the client's effective base URL, including URLs configured
 through `client_options` or `OPENAI_BASE_URL`. A hidden id still resolves by name.
 A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and stage of
-its alias when the alias is in the built-in catalog.
+its alias when the alias is in the built-in catalog, except constrained output:
+JSON output for a snapshot keeps the schema instructions in the prompt. A
+snapshot OpenAI has shut down, such as `gpt-4o-2024-05-13`, gets generic
+capabilities.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and

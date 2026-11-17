@@ -14,49 +14,39 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Vertex AI Plugin for Genkit.
+"""Deprecated: ``genkit-vertexai`` is now ``genkit-model-garden``.
 
-This plugin provides integration with Google Cloud's Vertex AI platform,
-including Model Garden for accessing third-party models.
+This package re-exports ``ModelGarden`` from ``genkit_model_garden`` and warns
+on import. It gets no releases for Genkit 1.0.
 
 Example:
     ```python
+    # 1. Replace the dependency, keeping the same extras
+    #    uv remove genkit-vertexai
+    #    uv add 'genkit-model-garden[anthropic]'
+
+    # 2. Change the import; the plugin and model names are unchanged
     from genkit import Genkit
-    from genkit_vertexai import ModelGarden
+    from genkit_model_garden import ModelGarden
 
-    # 1. Initialize Genkit with the Model Garden plugin
-    ai = Genkit(
-        plugins=[ModelGarden(project='my-project', location='us-central1')],
-    )
-
-
-    # 2. Call models under the modelgarden/ namespace (not vertexai/)
-    async def main() -> None:
-        res = await ai.generate(
-            model='modelgarden/anthropic/claude-sonnet-4-6',
-            prompt='Explain recursion in 10 words.',
-        )
-
-        # 3. Inspect output shapes directly
-        print(res.text)
-        # => A function calling itself until reaching a base stopping condition.
-
-
-    if __name__ == '__main__':
-        ai.run_main(main())
+    ai = Genkit(plugins=[ModelGarden(project='bistro-prod', location='us-east5')])
     ```
-
-Requirements:
-    - Uses Google Cloud Application Default Credentials (ADC); there is no
-      explicit-credentials option.
-    - Claude models need ``genkit-vertexai[anthropic]``; Llama, Mistral, and other
-      OpenAI-compatible models need ``genkit-vertexai[openai]``.
-
-See Also:
-    - Vertex AI Model Garden: https://cloud.google.com/vertex-ai/docs/model-garden
 """
 
-from genkit_vertexai._model_garden._plugin import ModelGarden
+import warnings
+
+from genkit_model_garden import ModelGarden
+
+# FutureWarning rather than DeprecationWarning: Python hides DeprecationWarning
+# unless it's attributed to __main__, and an import-time warning is attributed
+# to the import machinery, so app developers would never see it.
+warnings.warn(
+    'genkit-vertexai is now genkit-model-garden. Replace the dependency with genkit-model-garden '
+    '(same [anthropic] and [openai] extras) and import ModelGarden from genkit_model_garden. '
+    'genkit-vertexai gets no releases for Genkit 1.0.',
+    FutureWarning,
+    stacklevel=2,
+)
 
 __all__ = [
     'ModelGarden',

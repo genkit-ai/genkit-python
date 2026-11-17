@@ -69,6 +69,7 @@ jobs:
             packages/genkit-google-genai
             packages/genkit-mcp
             packages/genkit-middleware
+            packages/genkit-model-garden
             packages/genkit-ollama
             packages/genkit-openai
             packages/genkit-otel

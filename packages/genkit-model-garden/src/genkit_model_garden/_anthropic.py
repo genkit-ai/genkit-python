@@ -24,19 +24,19 @@ from anthropic import AsyncAnthropic, AsyncAnthropicVertex
 from genkit_anthropic import AnthropicConfig
 
 # Private import across packages, on purpose. genkit-anthropic and
-# genkit-vertexai release in lockstep, so Model Garden reuses the Claude
+# genkit-model-garden release in lockstep, so Model Garden reuses the Claude
 # model class instead of copying it.
 from genkit_anthropic._model_info import get_model_info as get_anthropic_model_info
 from genkit_anthropic._models import AnthropicModel
-from genkit_vertexai._model_garden._secrets import reject_secrets_api_key
 
 from genkit import ModelResponse
 from genkit.model import ModelConfig, ModelContext, ModelInfo, ModelRequest, ModelSupports
 from genkit.plugin_api import loop_local_client
+from genkit_model_garden._secrets import reject_secrets_api_key
 
 
 class AnthropicModelGarden:
-    """Manages integration with Anthropic models on Vertex AI Model Garden."""
+    """Manages integration with Anthropic models on Model Garden."""
 
     def __init__(
         self,

@@ -14,9 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Constants used by the Vertex AI plugin.
+"""Constants used by the Model Garden plugin.
 
-This module defines constants used throughout the Vertex AI plugin,
+This module defines constants used throughout the Model Garden plugin,
 including environment variable names and configuration values.
 """
 

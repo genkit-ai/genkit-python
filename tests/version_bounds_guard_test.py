@@ -89,8 +89,7 @@ def _make_workspace_fixture(py_root: Path, version: str = '0.12.0', *, include_e
     cap = consistency.expected_major_cap(version)
     extras: dict[str, list[str]] = {
         'openai': [f'genkit-openai>={version},<{cap}'],
-        'vertex-ai': [f'genkit-vertexai[anthropic,openai]>={version},<{cap}'],
-        'vertexai': [f'genkit-vertexai[anthropic,openai]>={version},<{cap}'],
+        'model-garden': [f'genkit-model-garden[anthropic,openai]>={version},<{cap}'],
     }
     if include_evaluators:
         extras['evaluators'] = [f'genkit-evaluators>={version},<1']
@@ -116,7 +115,7 @@ def _make_workspace_fixture(py_root: Path, version: str = '0.12.0', *, include_e
     )
     _write_pkg(
         py_root,
-        'genkit-vertexai',
+        'genkit-model-garden',
         version,
         dependencies=[f'genkit>={version},<{cap}'],
         optional_dependencies={
@@ -161,18 +160,22 @@ def test_real_workspace_passes_consistency_and_extras_contract() -> None:
     core_version = genkit_project['version']
     opt_deps = genkit_project['optional-dependencies']
 
-    # Both vertex-ai and vertexai aliases resolve to the same bounded target.
-    assert opt_deps['vertex-ai'] == [f'genkit-vertexai[anthropic,openai]>={core_version},<2']
-    assert opt_deps['vertexai'] == [f'genkit-vertexai[anthropic,openai]>={core_version},<2']
+    # The model-garden extra pulls in both publisher extras under the same bounded target.
+    assert opt_deps['model-garden'] == [f'genkit-model-garden[anthropic,openai]>={core_version},<2']
     if 'evaluators' in opt_deps:
         assert opt_deps['evaluators'] == [f'genkit-evaluators>={core_version},<1']
 
-    # Every publishable plugin is reachable from at least one genkit[...] extra.
+    # Every publishable plugin is reachable from at least one genkit[...] extra. Renamed-package
+    # aliases are exempt: they only exist so the old pip name keeps installing the new package.
+    renamed_package_aliases = {'genkit-vertexai'}
     referenced_plugins = {spec.split('[', 1)[0].split('>=', 1)[0] for specs in opt_deps.values() for spec in specs}
     all_plugins = {
         p.name
         for p in (PY_DIR / 'packages').iterdir()
-        if p.is_dir() and p.name != 'genkit' and (p / 'pyproject.toml').exists()
+        if p.is_dir()
+        and p.name != 'genkit'
+        and p.name not in renamed_package_aliases
+        and (p / 'pyproject.toml').exists()
     }
     assert referenced_plugins == all_plugins
 
@@ -193,7 +196,7 @@ def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_preserves_lt1(tmp_pat
     genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
     assert genkit_proj['version'] == '0.13.0'
     assert genkit_proj['optional-dependencies']['openai'] == ['genkit-openai>=0.13.0,<2']
-    assert genkit_proj['optional-dependencies']['vertexai'] == ['genkit-vertexai[anthropic,openai]>=0.13.0,<2']
+    assert genkit_proj['optional-dependencies']['model-garden'] == ['genkit-model-garden[anthropic,openai]>=0.13.0,<2']
     assert genkit_proj['optional-dependencies']['evaluators'] == ['genkit-evaluators>=0.13.0,<1']
 
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
@@ -204,10 +207,10 @@ def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_preserves_lt1(tmp_pat
     ]
     assert evals_proj['dependencies'] == ['genkit>=0.13.0,<1', 'jsonata-python>=0.6.0']
 
-    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+    garden_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-model-garden' / 'pyproject.toml'))[
         'project'
     ]
-    assert vertex_proj['optional-dependencies']['openai'] == ['genkit-openai==0.13.0']
+    assert garden_proj['optional-dependencies']['openai'] == ['genkit-openai==0.13.0']
 
 
 def test_bump_transition_0_13_0_to_1_0_0_keeps_lt2_cap(tmp_path: Path) -> None:
@@ -220,16 +223,15 @@ def test_bump_transition_0_13_0_to_1_0_0_keeps_lt2_cap(tmp_path: Path) -> None:
     genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
     assert genkit_proj['version'] == '1.0.0'
     assert genkit_proj['optional-dependencies']['openai'] == ['genkit-openai>=1.0.0,<2']
-    assert genkit_proj['optional-dependencies']['vertex-ai'] == ['genkit-vertexai[anthropic,openai]>=1.0.0,<2']
-    assert genkit_proj['optional-dependencies']['vertexai'] == ['genkit-vertexai[anthropic,openai]>=1.0.0,<2']
+    assert genkit_proj['optional-dependencies']['model-garden'] == ['genkit-model-garden[anthropic,openai]>=1.0.0,<2']
 
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
     assert openai_proj['dependencies'] == ['genkit>=1.0.0,<2', 'openai>=1.60.0,<3']
 
-    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+    garden_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-model-garden' / 'pyproject.toml'))[
         'project'
     ]
-    assert vertex_proj['optional-dependencies']['anthropic'] == ['genkit-anthropic==1.0.0']
+    assert garden_proj['optional-dependencies']['anthropic'] == ['genkit-anthropic==1.0.0']
 
 
 @pytest.mark.parametrize('start_version', ['1.0.0', '1.2.0'])
@@ -243,15 +245,15 @@ def test_bump_transition_1_x_to_2_0_0_advances_cap_to_lt3(tmp_path: Path, start_
     genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
     assert genkit_proj['version'] == '2.0.0'
     assert genkit_proj['optional-dependencies']['openai'] == ['genkit-openai>=2.0.0,<3']
-    assert genkit_proj['optional-dependencies']['vertexai'] == ['genkit-vertexai[anthropic,openai]>=2.0.0,<3']
+    assert genkit_proj['optional-dependencies']['model-garden'] == ['genkit-model-garden[anthropic,openai]>=2.0.0,<3']
 
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
     assert openai_proj['dependencies'] == ['genkit>=2.0.0,<3', 'openai>=1.60.0,<3']
 
-    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+    garden_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-model-garden' / 'pyproject.toml'))[
         'project'
     ]
-    assert vertex_proj['optional-dependencies']['openai'] == ['genkit-openai==2.0.0']
+    assert garden_proj['optional-dependencies']['openai'] == ['genkit-openai==2.0.0']
 
 
 def test_bump_transition_multi_digit_major_9_to_10(tmp_path: Path) -> None:
@@ -329,7 +331,7 @@ def test_consistency_rejects_unbounded_extra_and_stale_exact_pin(tmp_path: Path)
     )
     _write_pkg(
         tmp_path,
-        'genkit-vertexai',
+        'genkit-model-garden',
         '0.12.0',
         dependencies=['genkit>=0.12.0,<2'],
         optional_dependencies={'openai': ['genkit-openai==0.11.0']},
@@ -362,15 +364,17 @@ def test_bump_transition_0_13_0_to_rc_moves_every_intra_repo_bound(tmp_path: Pat
 
     genkit_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit' / 'pyproject.toml'))['project']
     assert genkit_proj['version'] == '1.0.0-rc.1'
-    assert genkit_proj['optional-dependencies']['vertexai'] == ['genkit-vertexai[anthropic,openai]>=1.0.0-rc.1,<2']
+    assert genkit_proj['optional-dependencies']['model-garden'] == [
+        'genkit-model-garden[anthropic,openai]>=1.0.0-rc.1,<2'
+    ]
 
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
     assert openai_proj['dependencies'] == ['genkit>=1.0.0-rc.1,<2', 'openai>=1.60.0,<3']
 
-    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+    garden_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-model-garden' / 'pyproject.toml'))[
         'project'
     ]
-    assert vertex_proj['optional-dependencies']['anthropic'] == ['genkit-anthropic==1.0.0-rc.1']
+    assert garden_proj['optional-dependencies']['anthropic'] == ['genkit-anthropic==1.0.0-rc.1']
 
 
 def test_rc_bump_with_unretired_zero_x_package_fails_consistency(tmp_path: Path) -> None:
@@ -439,10 +443,10 @@ def test_bump_transition_rc_to_next_rc_and_stable(tmp_path: Path) -> None:
     openai_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-openai' / 'pyproject.toml'))['project']
     assert openai_proj['dependencies'] == ['genkit>=1.0.0,<2', 'openai>=1.60.0,<3']
 
-    vertex_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-vertexai' / 'pyproject.toml'))[
+    garden_proj = consistency.load_pyproject(str(tmp_path / 'packages' / 'genkit-model-garden' / 'pyproject.toml'))[
         'project'
     ]
-    assert vertex_proj['optional-dependencies']['openai'] == ['genkit-openai==1.0.0']
+    assert garden_proj['optional-dependencies']['openai'] == ['genkit-openai==1.0.0']
 
 
 def test_release_rc_workflow_runs_bump_version_and_consistency_before_push() -> None:

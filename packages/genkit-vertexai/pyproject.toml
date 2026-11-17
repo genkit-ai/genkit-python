@@ -22,7 +22,7 @@ authors = [
   { name = "Niraj Nepal", email = "nnepal@google.com" },
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 7 - Inactive",
   "Environment :: Console",
   "Environment :: Web Environment",
   "Framework :: AsyncIO",
@@ -44,14 +44,14 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-  "genkit>=0.13.0,<2",
-  "google-auth[requests]>=2.14.1",
+  "genkit>=0.13.0,<1",
+  "genkit-model-garden>=0.13.0,<1",
 ]
-description = "Vertex AI and Model Garden on Genkit"
+description = "Deprecated: renamed to genkit-model-garden"
 keywords = [
   "genkit",
-  "vertex-ai",
   "model-garden",
+  "vertex-ai",
 ]
 license = "Apache-2.0"
 name = "genkit-vertexai"
@@ -60,10 +60,8 @@ requires-python = ">=3.10"
 version = "0.13.0"
 
 [project.optional-dependencies]
-# Exact pins: Model Garden imports private modules from these packages.
-# bin/bump_version rewrites them and scripts/check_consistency.py checks them.
-anthropic = ["genkit-anthropic==0.13.0"]
-openai    = ["genkit-openai==0.13.0"]
+anthropic = ["genkit-model-garden[anthropic]>=0.13.0,<1"]
+openai    = ["genkit-model-garden[openai]>=0.13.0,<1"]
 
 [project.urls]
 "Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"

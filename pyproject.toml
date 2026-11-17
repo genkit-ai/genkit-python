@@ -31,6 +31,7 @@ dependencies = [
   "genkit-otel",
   "genkit-a2ui",
   "genkit-ollama",
+  "genkit-model-garden",
   "genkit-vertexai",
 ]
 description = "Workspace for Genkit packages"
@@ -181,6 +182,7 @@ genkit-middleware   = { workspace = true }
 genkit-otel         = { workspace = true }
 genkit-a2ui         = { workspace = true }
 genkit-ollama       = { workspace = true }
+genkit-model-garden = { workspace = true }
 genkit-vertexai     = { workspace = true }
 
 [tool.uv.workspace]
@@ -416,6 +418,7 @@ root = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
+  "packages/genkit-model-garden/src",
   "packages/genkit-vertexai/src",
   ".",  # For samples.shared and other root-level imports
 ]
@@ -454,6 +457,7 @@ extraPaths = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
+  "packages/genkit-model-garden/src",
   "packages/genkit-vertexai/src",
 ]
 pythonVersion = "3.10"
@@ -504,6 +508,7 @@ search-path = [
   "packages/genkit-otel/src",
   "packages/genkit-a2ui/src",
   "packages/genkit-ollama/src",
+  "packages/genkit-model-garden/src",
   "packages/genkit-vertexai/src",
   ".",
 ]

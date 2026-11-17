@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Catalog of OpenAI-compatible models served by Vertex AI Model Garden."""
+"""Catalog of OpenAI-compatible models served by Model Garden."""
 
 from genkit.model import ModelInfo, ModelSupports
 

@@ -155,7 +155,7 @@ if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
   exit 1
 fi
 
-IFS='.' read -r NEW_MAJOR _ _ <<< "$NEW_VERSION"
+IFS='.' read -r NEW_MAJOR NEW_MINOR _ <<< "${NEW_VERSION%%-rc.*}"
 NEW_CAP=$((NEW_MAJOR + 1))
 if [ "$NEW_CAP" -lt 2 ]; then
   NEW_CAP=2
@@ -178,8 +178,9 @@ fi
 #   - the version line
 #   - exact intra-repo pins (e.g. genkit-openai==X.Y.Z in genkit-vertexai's extras)
 #   - capped intra-repo ranges: floor moves to $NEW_VERSION and major cap moves
-#     to max(2, major + 1), except 0.x-only specs explicitly capped at <1 (such
-#     as genkit-evaluators), which keep <1 while on 0.x.
+#     to max(2, major + 1), except 0.x-only specs explicitly capped at <1 or
+#     <0.Y (such as genkit-evaluators), which cap at the next minor <0.(Y+1)
+#     while on 0.x so dropping them in a later 0.x release won't break existing installs.
 CUR_RE=$(printf '%s' "$CURRENT_VERSION" | sed 's/\./\\./g')
 DEP_RE='\("genkit[a-z0-9-]*\(\[[a-z0-9,_-]*\]\)\{0,1\}\)'
 SED_ARGS=(
@@ -189,7 +190,11 @@ SED_ARGS=(
   -e "s/$DEP_RE>=$CUR_RE,<[1-9][0-9][0-9]*\"/\\1>=$NEW_VERSION,<$NEW_CAP\"/g"
 )
 if [ "$NEW_MAJOR" -eq 0 ]; then
-  SED_ARGS+=(-e "s/$DEP_RE>=$CUR_RE,<1\"/\\1>=$NEW_VERSION,<1\"/g")
+  NEW_MINOR_CAP="0.$((NEW_MINOR + 1))"
+  SED_ARGS+=(
+    -e "s/$DEP_RE>=$CUR_RE,<1\"/\\1>=$NEW_VERSION,<$NEW_MINOR_CAP\"/g"
+    -e "s/$DEP_RE>=$CUR_RE,<0\\.[0-9][0-9]*\"/\\1>=$NEW_VERSION,<$NEW_MINOR_CAP\"/g"
+  )
 fi
 
 # Function to update version in a file

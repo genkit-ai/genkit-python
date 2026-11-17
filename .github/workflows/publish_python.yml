@@ -63,6 +63,7 @@ jobs:
             packages/genkit-amazon-bedrock
             packages/genkit-anthropic
             packages/genkit-django
+            packages/genkit-evaluators
             packages/genkit-fastapi
             packages/genkit-flask
             packages/genkit-google-cloud

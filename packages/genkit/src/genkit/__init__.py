@@ -75,7 +75,7 @@ __all__ = [
     'ModelStreamResponse',
     'StreamResponse',
     'FinishReason',
-    # Embed and background jobs
+    # Embed, evaluate, and background jobs
     'Embedding',
     'Operation',
     # Tools and HITL

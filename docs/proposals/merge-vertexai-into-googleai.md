@@ -74,6 +74,7 @@ GoogleAI(api_key=key)                          # unchanged
   - `location`: the argument, then `GOOGLE_CLOUD_LOCATION` / `GCLOUD_LOCATION`, then `us-central1`. Multi-regions keep their dedicated endpoints.
   - Express mode only with an explicit `api_key=`. Environment keys stay ignored, as they are today, so an AI Studio `GEMINI_API_KEY` never quietly becomes a Cloud key.
 - **`enterprise=False`:** the key comes from `api_key`, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. Passing `project` or `location` raises a `ValueError` at setup.
+- **Only `enterprise=` picks the backend.** The SDK reads `GOOGLE_GENAI_USE_ENTERPRISE` and `GOOGLE_GENAI_USE_VERTEXAI` only when no flag is passed. The plugin always passes one, so both variables stay ignored, as they are today. A variable set for some other tool can't move an app to a different billing account.
 
 ## What still differs between backends
 
@@ -148,11 +149,11 @@ This proposal covers Python only. One thing to flag for JS and Go: `.prompt` fil
    - the `VertexAI` deprecation warning.
 
    Additive.
-4. **At 2.0:** core namespace aliases, then remove `VertexAI` and register the `vertexai/` alias.
+4. **At 2.0:** core namespace aliases, then remove `VertexAI` and register the `vertexai/` alias. How long the alias lives is decided then.
 
 ## Open questions
 
-1. **Is `enterprise` the long-term name?** The flag follows "Gemini Enterprise Agent Platform", a brand developer marketing has already moved away from. Can we confirm with the `google-genai` team?
-2. **Flag name:** mirror the SDK's `enterprise=`, or use a brand-neutral `backend=` Literal?
-3. **The environment variable:** should `GoogleAI()` honor `GOOGLE_GENAI_USE_ENTERPRISE` when `enterprise=` isn't passed? Honoring it lets deployment config switch the backend without code changes. Ignoring it avoids a switch caused by a variable set for some other tool. An explicit `enterprise=` wins either way. I lean toward honoring it and logging the chosen backend once.
-4. **How long the alias lives after 2.0:** one major version, or for good?
+1. **The direction:** one `GoogleAI` plugin with a backend switch, `VertexAI` deprecated in 1.x and removed at 2.0.
+2. **The flag name:** mirror the SDK's `enterprise=`, or use a brand-neutral `backend=` Literal. `enterprise=` matches `genai.Client`. `backend=` survives the next rename, and the product has already moved past "Gemini Enterprise Agent Platform". Worth checking with the `google-genai` team which way their flag is headed.
+3. **Dropping both backends in one app at 2.0:** is losing `GoogleAI()` plus `VertexAI()` side by side acceptable without usage data? If not, the per-request override under [What we give up at 2.0](#what-we-give-up-at-20) needs a design before 2.0.
+4. **Sequencing with the Interactions stack:** `enterprise=` is stacked on #78, then #105, then Gemini on Interactions, and needs the Cloud Interactions client to take the backend as a value. Shipping it in 1.0 depends on the Interactions owner agreeing to that shape and landing in time. Otherwise it ships in a later 1.x.

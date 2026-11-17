@@ -322,6 +322,30 @@ async def test_generate_openai_stt_sends_prompt_from_config_or_message(ai: Genki
     assert b'name="prompt"\r\n\r\nSpeaker: Alice' in from_message.content
 
 
+@pytest.mark.asyncio
+async def test_generate_openai_stt_omits_blank_prompt(ai: Genkit, server: _OpenAIServer) -> None:
+    """A whitespace-only prompt is not sent, so diarization models don't reject the request."""
+    await ai.generate(
+        model='openai/gpt-4o-transcribe-diarize',
+        prompt=[Part.from_text(' '), Part.from_media(_AUDIO, content_type='audio/mpeg')],
+    )
+    await ai.generate(
+        model='openai/gpt-4o-transcribe',
+        prompt=[Part.from_media(_AUDIO, content_type='audio/mpeg')],
+        config={'prompt': '  '},
+    )
+    await ai.generate(
+        model='openai/gpt-4o-transcribe',
+        prompt=[Part.from_text(' Names: Genkit '), Part.from_media(_AUDIO, content_type='audio/mpeg')],
+        config={'prompt': '\n'},
+    )
+
+    [blank_message, blank_config, real_prompt] = server.requests
+    assert b'name="prompt"' not in blank_message.content
+    assert b'name="prompt"' not in blank_config.content
+    assert b'name="prompt"\r\n\r\n Names: Genkit \r\n' in real_prompt.content
+
+
 @pytest.mark.parametrize(
     'model,props',
     [

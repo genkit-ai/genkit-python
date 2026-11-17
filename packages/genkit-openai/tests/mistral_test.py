@@ -978,3 +978,37 @@ async def test_mistral_stream_joins_a_thinking_chunks_fragments_into_one_part(mi
     assert [(p.reasoning, p.metadata) for p in response.message.content if p.reasoning is not None] == [
         (REASONING, {'reasoningSource': 'mistral', 'thoughtSignature': SIGNATURE})
     ]
+
+
+@pytest.mark.asyncio
+async def test_provider_mistral_without_base_url_goes_to_mistral(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OpenAI(provider='mistral')` with no base_url sends to api.mistral.ai, not the SDK's api.openai.com."""
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+    ai = _ai(server, None, provider='mistral')
+
+    await ai.generate(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+
+    [request] = server.requests
+    assert str(request.url) == f'{MISTRAL_URL}/chat/completions'
+    assert json.loads(request.content)['random_seed'] == 7
+
+
+@pytest.mark.asyncio
+async def test_provider_mistral_keeps_base_url_from_client_options(server: _Server) -> None:
+    """A base_url given in client_options still wins over the Mistral default."""
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(server.handler))
+    ai = Genkit(
+        plugins=[
+            OpenAI(
+                api_key=PLUGIN_KEY,
+                client_options={'http_client': http_client, 'max_retries': 0, 'base_url': GATEWAY_URL},
+                provider='mistral',
+            )
+        ]
+    )
+
+    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+
+    assert server.requests[0].url.host == 'llm-gateway.example.com'

@@ -91,6 +91,9 @@ OpenAI's field names, which Mistral rejects. Pass the gateway's own key as
 OpenAI(base_url='https://llm-gateway.example.com/v1', api_key=gateway_key, provider='mistral')
 ```
 
+`OpenAI(provider='mistral')` with no `base_url` goes to
+`https://api.mistral.ai/v1`; `OPENAI_BASE_URL` isn't read then.
+
 Mistral rejects any request field it doesn't declare, so with a Mistral host
 (or `provider='mistral'`) the plugin sends Mistral's names for the settings
 that differ:

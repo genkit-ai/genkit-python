@@ -64,7 +64,7 @@ from genkit_openai._models._image import (
     OpenAIGptImageConfig,
     OpenAIImageModel,
 )
-from genkit_openai._models._mistral import MISTRAL_API_KEY_ENV, is_mistral, is_mistral_url
+from genkit_openai._models._mistral import MISTRAL_API_KEY_ENV, MISTRAL_BASE_URL, is_mistral, is_mistral_url
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
     SUPPORTED_EMBEDDING_MODELS,
@@ -327,7 +327,8 @@ class OpenAI(Plugin):
             base_url: OpenAI API base URL up to and including ``/v1``, e.g.
                 ``https://openrouter.ai/api/v1``; the SDK appends
                 ``/chat/completions``. Defaults to ``OPENAI_BASE_URL``, then the
-                public API.
+                public API; with ``provider='mistral'``, ``https://api.mistral.ai/v1``
+                (``OPENAI_BASE_URL`` is not read then).
             client_options: Other ``AsyncOpenAI`` settings, such as
                 ``organization``, ``project``, ``timeout``, ``max_retries``,
                 ``default_headers``, or ``http_client``.
@@ -344,6 +345,10 @@ class OpenAI(Plugin):
             raise ValueError(f"OpenAI got provider={provider!r}; the only provider it knows is 'mistral'")
         self._provider = provider
         options = _client_kwargs(api_key=api_key, base_url=base_url, client_options=client_options)
+        if provider == 'mistral' and options.get('base_url') is None:
+            # Else the SDK's default, api.openai.com, would get the Mistral key
+            # and Mistral's field names.
+            options['base_url'] = MISTRAL_BASE_URL
         self._options = options
         self._plugin_api_key: str | None = options.get('api_key')
         plugin_headers: dict[str, str] = dict(options.get('default_headers') or {})

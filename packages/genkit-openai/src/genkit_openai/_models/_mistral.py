@@ -47,6 +47,10 @@ from genkit import GenkitError
 MISTRAL_HOSTS = frozenset({'api.mistral.ai', 'api.eu.mistral.ai', 'api.us.mistral.ai', 'codestral.mistral.ai'})
 
 
+# Where OpenAI(provider='mistral') sends calls when no base_url is given, as
+# JS's and Dart's mistral() do.
+MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
+
 # The key Mistral's own SDKs, and Genkit's JS and Dart plugins, read.
 MISTRAL_API_KEY_ENV = 'MISTRAL_API_KEY'
 

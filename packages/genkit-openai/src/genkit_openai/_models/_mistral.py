@@ -37,9 +37,10 @@ Source: https://docs.mistral.ai/openapi.yaml (``ChatCompletionRequest``,
 from typing import Any
 
 import httpx
+from genkit_openai._models._utils import parse_data_uri_content_type
 from openai import AsyncOpenAI
 
-from genkit import GenkitError
+from genkit import GenkitError, Message
 
 # Mistral's API hosts: global, EU and US, the servers in the mistralai SDK's
 # sdkconfiguration.py. codestral.mistral.ai, for Codestral-only keys, is not in
@@ -118,3 +119,28 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
     if renamed or extra:
         out['extra_body'] = {**renamed, **extra}
     return out
+
+
+def refuse_non_image_media(messages: list[Message]) -> None:
+    """Refuse media Mistral's chat endpoint can't take as an image.
+
+    Every media part goes out as an ``image_url`` chunk, so a PDF or audio
+    clip would reach Mistral as a broken image and fail there. The type is the
+    part's ``content_type``, else the one a ``data:`` URL declares; a remote
+    URL with neither is sent as is, since only the host knows what it serves.
+
+    Raises:
+        GenkitError: ``INVALID_ARGUMENT`` naming the first non-image type.
+    """
+    for message in messages:
+        for part in message.content:
+            media = part.media
+            if media is None:
+                continue
+            declared = media.content_type or parse_data_uri_content_type(media.url)
+            content_type = declared.split(';', 1)[0].strip().lower()
+            if content_type and not content_type.startswith('image/'):
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message=f'Mistral only supports image media in chat requests, got {content_type}.',
+                )

@@ -20,7 +20,7 @@ import json
 from collections.abc import Callable
 from typing import Any, cast
 
-from genkit_openai._models._mistral import is_mistral, mistral_chat_body
+from genkit_openai._models._mistral import is_mistral, mistral_chat_body, refuse_non_image_media
 from genkit_openai._models._utils import (
     OPENAI_CALL_ERRORS,
     DictMessageAdapter,
@@ -296,6 +296,8 @@ class OpenAIModel:
         Raises:
             ValueError: If no messages are provided in the request.
         """
+        if self._mistral:
+            refuse_non_image_media(messages)
         openai_messages = []
         for message in messages:
             openai_messages.extend(MessageConverter.to_openai(message=message, replay_thinking=self._mistral))

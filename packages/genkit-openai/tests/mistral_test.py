@@ -1101,3 +1101,59 @@ async def test_openai_reasoning_effort_max_through_extra(openai: Genkit, server:
     await openai.generate(model='openai/gpt-5', prompt='salut', config={'extra': {'reasoning_effort': 'max'}})
 
     assert server.bodies()[0]['reasoning_effort'] == 'max'
+
+
+@pytest.mark.parametrize(
+    ('url', 'content_type', 'expected'),
+    [
+        pytest.param('data:application/pdf;base64,JVBERi0xLjQK', 'application/pdf', 'application/pdf', id='inline'),
+        pytest.param('data:application/pdf;base64,JVBERi0xLjQK', None, 'application/pdf', id='inline-untyped'),
+        pytest.param('https://example.com/menu.pdf', 'application/pdf', 'application/pdf', id='remote'),
+        pytest.param('https://example.com/song.mp3', 'audio/mpeg; charset=binary', 'audio/mpeg', id='params'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_mistral_refuses_non_image_media(
+    mistral: Genkit, server: _Server, url: str, content_type: str | None, expected: str
+) -> None:
+    """Non-image media fails before the request instead of reaching Mistral as an image_url."""
+    response = await mistral.generate(
+        model='openai/mistral-small-latest',
+        prompt=[Part.from_text('Summarize this.'), Part.from_media(url, content_type)],
+    )
+
+    assert response.error is not None
+    assert response.error.status == 'INVALID_ARGUMENT'
+    assert expected in str(response.finish_message)
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    ('url', 'content_type'),
+    [
+        pytest.param('data:image/png;base64,iVBORw0KGgo=', None, id='inline-untyped'),
+        pytest.param('https://example.com/loaf', None, id='remote-untyped'),
+        pytest.param('https://example.com/loaf.jpg', 'IMAGE/JPEG', id='remote-typed'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_mistral_sends_image_media(mistral: Genkit, server: _Server, url: str, content_type: str | None) -> None:
+    """Images, and remote URLs whose type isn't known, still go out as image_url."""
+    await mistral.generate(
+        model='openai/pixtral-large-latest',
+        prompt=[Part.from_text('What bread is this?'), Part.from_media(url, content_type)],
+    )
+
+    [body] = server.bodies()
+    assert {'type': 'image_url', 'image_url': {'url': url}} in body['messages'][-1]['content']
+
+
+@pytest.mark.asyncio
+async def test_openai_host_still_sends_non_image_media(openai: Genkit, server: _Server) -> None:
+    """The guard is Mistral's: other hosts get the media part as before."""
+    url = 'data:application/pdf;base64,JVBERi0xLjQK'
+    await openai.generate(
+        model='openai/gpt-4o', prompt=[Part.from_text('Summarize this.'), Part.from_media(url, 'application/pdf')]
+    )
+
+    assert len(server.requests) == 1

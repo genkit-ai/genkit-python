@@ -110,6 +110,10 @@ that differ:
 - Streaming sends no `stream_options`; Mistral reports usage on the last chunk
   without it.
 - An embedder's `dimensions` goes out as `output_dimension`.
+- Media other than images, such as a PDF, is refused before the request goes
+  out: every media part goes out as `image_url`. The type comes from the part's
+  `content_type`, else a `data:` URL's header; a remote URL with neither is
+  sent as an image.
 - `extra` gets the same renames: `seed` and `max_completion_tokens` there go
   out as `random_seed` and `max_tokens`, and `stream_options` is dropped.
 

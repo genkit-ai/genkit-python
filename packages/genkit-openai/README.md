@@ -64,21 +64,24 @@ and `gpt-6.1-sol` do not advertise tool support, because they take function
 tools only through the Responses API.
 `gpt-5-search-api` does not take function tools either.
 
-The Dev UI lists the models your key can see on `/v1/models`, but only the ones
-this plugin can call: realtime, live, audio, moderation, Sora, Responses-only
-(such as computer-use, deep-research and gpt-oss) and legacy completion models
-are left out. The filter matches on the model id, so it applies on any host, including
-a custom `base_url`: ids such as `perplexity/sonar-deep-research`,
-`qwen-audio-turbo` and `dall-e-3` are hidden there too. A hidden id still
-resolves by name. A dated snapshot such as `gpt-5-2025-08-07` takes the
-capabilities and stage of its alias.
+On `api.openai.com`, discovery filters the `/v1/models` listing to exclude ids
+that OpenAI cannot serve through this plugin's endpoints, such as realtime,
+moderation and Responses-only models. A hidden id still resolves by name.
+For custom hosts, discovery keeps the host's model listing and classifies each
+id as chat, image, speech, transcription or embedding. This includes models
+such as `gpt-oss-120b` that another host can serve through Chat Completions.
+The filter uses the client's effective base URL, including URLs configured
+through `client_options` or `OPENAI_BASE_URL`.
+A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and stage of
+its alias, unless the plugin retains a legacy entry for that exact snapshot.
 
 The built-in catalog holds only the chat models that OpenAI serves today. Ids
 that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and
 `o4-mini`) are no longer in it, so the plugin does not register them at
-startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with
-generic capabilities, for hosts on an OpenAI-compatible `base_url` that still
-serve them.
+startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with their
+previous capabilities for hosts on an OpenAI-compatible `base_url` that still
+serve them. For example, schema-less JSON output on `gpt-4` continues to send
+`response_format={'type': 'text'}`. Unknown ids use generic capabilities.
 
 ## Config
 

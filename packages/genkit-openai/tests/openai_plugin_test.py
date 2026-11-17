@@ -181,8 +181,8 @@ def test_catalog_drops_retired_and_non_chat_ids() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model', _RETIRED_CHAT_IDS)
-async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) -> None:
-    """A shut-down id is not registered at startup and resolves by name with generic info and no stage."""
+async def test_legacy_chat_id_resolves_with_capabilities_without_startup_registration(model: str) -> None:
+    """Removed ids retain explicit capabilities when resolved, without returning to the active catalog."""
     plugin = OpenAI(api_key='test-key', base_url='https://compat.example/v1')
 
     assert f'openai/{model}' not in {a.name for a in await plugin.init()}
@@ -192,7 +192,10 @@ async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) 
     assert action.metadata is not None
     model_meta = cast(dict[str, Any], action.metadata['model'])
     assert model_meta['label'] == f'OpenAI - {model}'
-    assert model_meta['supports'] == {'multiturn': True}
+    assert model_meta['supports']['multiturn'] is True
+    assert model_meta['supports']['tools'] is (model != 'gpt-5-chat-latest')
+    assert 'media' in model_meta['supports']
+    assert 'output' in model_meta['supports']
     assert 'stage' not in model_meta
 
 
@@ -421,11 +424,18 @@ async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt)
 
 
 def test_shut_down_dated_snapshot_does_not_take_its_alias_info() -> None:
-    """gpt-4o-2024-05-13 is shut down, so it gets generic info instead of the gpt-4o alias's supports and stage."""
+    """The retired snapshot retains its previous capabilities and does not inherit the alias's stage."""
     info = _chat_model_info('gpt-4o-2024-05-13')
 
     assert info.label == 'OpenAI - gpt-4o-2024-05-13'
-    assert info.supports == ModelSupports(multiturn=True)
+    assert info.supports == ModelSupports(
+        multiturn=True,
+        media=True,
+        tools=True,
+        system_role=True,
+        output=['json', 'text'],
+        constrained=ConstrainedSupport.ALL,
+    )
     assert info.stage is None
 
 
@@ -521,6 +531,7 @@ async def test_openai_plugin_list_actions() -> None:
     mock_client = MagicMock()
 
     mock_result_ = MagicMock()
+    mock_client.base_url = httpx.URL('https://api.openai.com/v1')
     mock_result_.data = entries
     mock_client.models.list = AsyncMock(return_value=mock_result_)
 
@@ -849,22 +860,42 @@ def _json_completion(content: str = '{"a": 1}') -> ChatCompletion:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('model', ['ft:gpt-4o:acme', 'gpt-4'])
-async def test_openai_unlisted_model_json_request_sends_json_object(model: str) -> None:
-    """A fine-tune or shut-down id with generic info still sends json_object for schema-less JSON output."""
+@pytest.mark.parametrize(
+    ('model', 'response_format'),
+    [
+        ('ft:gpt-4o:acme', 'json_object'),
+        ('my-chat-model', 'json_object'),
+        ('gpt-4', 'text'),
+        ('gpt-4-0613', 'text'),
+        ('gpt-5-chat-latest', 'text'),
+        ('gpt-4-turbo', 'json_object'),
+        ('gpt-3.5-turbo', 'json_object'),
+        ('gpt-oss-120b', 'json_object'),
+    ],
+)
+async def test_legacy_and_unknown_models_preserve_json_request_format(model: str, response_format: str) -> None:
+    """Resolving a legacy id preserves the schema-less JSON request accepted before catalog removal."""
     captured: dict[str, Any] = {}
     client = MagicMock()
 
     async def create(**kwargs: Any) -> ChatCompletion:
+        if model in ('gpt-4', 'gpt-4-0613', 'gpt-5-chat-latest') and kwargs['response_format']['type'] != 'text':
+            raise APIStatusError(
+                'This legacy endpoint does not support JSON mode',
+                response=httpx.Response(400, request=_http_request()),
+                body=None,
+            )
         captured.update(kwargs)
         return _json_completion()
 
     client.chat.completions.create = AsyncMock(side_effect=create)
     ai = Genkit(plugins=[_plugin_with(client)])
 
-    await ai.generate(model=f'openai/{model}', prompt='give me json', output_format='json')
+    response = await ai.generate(model=f'openai/{model}', prompt='give me json', output_format='json')
 
-    assert captured['response_format'] == {'type': 'json_object'}
+    assert response.error is None
+    assert response.output == {'a': 1}
+    assert captured['response_format'] == {'type': response_format}
 
 
 @pytest.mark.asyncio

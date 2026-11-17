@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from genkit_openai._openai_plugin import OpenAI
 from openai.types import Model
@@ -39,6 +40,7 @@ _UNCATALOGED_CHAT_IDS = {'gpt-6-cyber', 'gpt-6-cyber-2026-10-06', 'ft:gpt-4o-min
 async def _listed() -> dict[str, Action]:
     plugin = OpenAI(api_key='test-key')
     client = MagicMock()
+    client.base_url = httpx.URL('https://api.openai.com/v1')
     result = MagicMock()
     result.data = [
         Model(id=model_id, created=1790000000, object='model', owned_by='system')
@@ -47,6 +49,69 @@ async def _listed() -> dict[str, Action]:
     client.models.list = AsyncMock(return_value=result)
     plugin._runtime_client = lambda: client
     return {action.name.removeprefix('openai/'): action for action in await plugin.list_actions()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['constructor', 'environment', 'client_options'])
+@pytest.mark.parametrize(
+    ('base_url', 'filtered'),
+    [
+        ('https://api.openai.com/v1', True),
+        ('https://API.OPENAI.COM/v1', True),
+        ('https://compatible.example/v1', False),
+        ('http://localhost:8000/v1', False),
+        ('https://api.openai.com.proxy.example/v1', False),
+    ],
+)
+async def test_discovery_filters_only_the_effective_openai_host(
+    monkeypatch: pytest.MonkeyPatch, source: str, base_url: str, filtered: bool
+) -> None:
+    """Compatible hosts retain their listing regardless of how the base URL is configured."""
+    ids = [
+        'gpt-oss-120b',
+        'perplexity/sonar-deep-research',
+        'dall-e-3',
+        'gpt-image-1',
+        'my-chat-model',
+        'text-embedding-3-small',
+        'tts-1',
+        'whisper-1',
+    ]
+
+    def list_models(request: httpx.Request) -> httpx.Response:
+        assert request.method == 'GET'
+        assert request.url == httpx.URL(base_url + '/models')
+        return httpx.Response(
+            200,
+            json={
+                'object': 'list',
+                'data': [{'id': name, 'created': 0, 'object': 'model', 'owned_by': 'host'} for name in ids],
+            },
+        )
+
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://ignored.example/v1')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(list_models)) as http_client:
+        options: dict[str, Any] = {'http_client': http_client}
+        kwargs: dict[str, Any] = {}
+        if source == 'constructor':
+            kwargs['base_url'] = base_url
+        elif source == 'environment':
+            monkeypatch.setenv('OPENAI_BASE_URL', base_url)
+        else:
+            options['base_url'] = base_url
+        plugin = OpenAI(api_key='test-key', client_options=options, **kwargs)
+        actions = {action.name.removeprefix('openai/'): action for action in await plugin.list_actions()}
+
+    assert set(actions) == set(ids[4:] if filtered else ids)
+    assert _is_chat(actions['my-chat-model'])
+    assert actions['text-embedding-3-small'].kind == ActionKind.EMBEDDER
+    assert _model_meta(actions['tts-1'])['customOptions']['title'] == 'OpenAITtsConfig'
+    assert _model_meta(actions['whisper-1'])['customOptions']['title'] == 'OpenAISttConfig'
+    if not filtered:
+        assert _is_chat(actions['gpt-oss-120b'])
+        assert _is_chat(actions['perplexity/sonar-deep-research'])
+        assert _model_meta(actions['dall-e-3'])['customOptions']['title'] == 'OpenAIDalleConfig'
+        assert _model_meta(actions['gpt-image-1'])['customOptions']['title'] == 'OpenAIGptImageConfig'
 
 
 def _model_meta(action: Action) -> dict[str, Any]:

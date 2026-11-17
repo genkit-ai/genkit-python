@@ -112,8 +112,8 @@ def _info(name: str, supports: ModelSupports, *, deprecated: bool = False) -> Mo
     )
 
 
-# Only ids that serve /v1/chat/completions are listed; Codex, -pro and gpt-oss
-# ids are Responses-only. deprecated=True marks ids OpenAI is shutting down, with
+# Only ids that OpenAI serves on /v1/chat/completions are listed; other hosts
+# may serve additional ids. deprecated=True marks ids OpenAI is shutting down, with
 # the date beside each group. The bare gpt-4o and gpt-4o-mini aliases have no
 # date of their own and follow their dated snapshots.
 SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
@@ -150,6 +150,44 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     'gpt-6-luna': _info('gpt-6-luna', GPT_REASONING_MODEL_SUPPORTS),
     'gpt-6.1-sol': _info('gpt-6.1-sol', GPT_6_NO_TOOLS_MODEL_SUPPORTS),
     'gpt-6.1-terra': _info('gpt-6.1-terra', GPT_REASONING_MODEL_SUPPORTS),
+}
+
+# Models removed from startup registration retain their previous capabilities
+# when explicitly resolved, including on compatible hosts that still serve them.
+# Keep this separate from the active catalog and KnownGpt autocomplete.
+_LEGACY_TEXT_SUPPORTS = ModelSupports(
+    multiturn=True,
+    media=False,
+    tools=True,
+    system_role=True,
+    output=['json', 'text'],
+)
+_LEGACY_MULTIMODAL_SUPPORTS = MULTIMODAL_MODEL_SUPPORTS.model_copy(update={'constrained': None})
+_LEGACY_GPT_4_SUPPORTS = _LEGACY_TEXT_SUPPORTS.model_copy(update={'output': ['text']})
+
+_LEGACY_CHAT_MODELS: dict[str, ModelInfo] = {
+    'gpt-4o-2024-05-13': _info('gpt-4o-2024-05-13', MULTIMODAL_MODEL_SUPPORTS),
+    'gpt-4.5-preview': _info('gpt-4.5-preview', MULTIMODAL_MODEL_SUPPORTS),
+    'gpt-4-turbo': _info('gpt-4-turbo', _LEGACY_MULTIMODAL_SUPPORTS),
+    'gpt-4-turbo-2024-04-09': _info('gpt-4-turbo-2024-04-09', _LEGACY_MULTIMODAL_SUPPORTS),
+    'gpt-4-turbo-preview': _info('gpt-4-turbo-preview', _LEGACY_MULTIMODAL_SUPPORTS),
+    'gpt-4-0125-preview': _info('gpt-4-0125-preview', _LEGACY_MULTIMODAL_SUPPORTS),
+    'gpt-4-1106-preview': _info('gpt-4-1106-preview', _LEGACY_MULTIMODAL_SUPPORTS),
+    'gpt-4': _info('gpt-4', _LEGACY_GPT_4_SUPPORTS),
+    'gpt-4-0613': _info('gpt-4-0613', _LEGACY_GPT_4_SUPPORTS),
+    'gpt-3.5-turbo': _info('gpt-3.5-turbo', _LEGACY_TEXT_SUPPORTS),
+    'gpt-3.5-turbo-0125': _info('gpt-3.5-turbo-0125', _LEGACY_TEXT_SUPPORTS),
+    'gpt-3.5-turbo-1106': _info('gpt-3.5-turbo-1106', _LEGACY_TEXT_SUPPORTS),
+    'o1': _info('o1', O_SERIES_MODEL_SUPPORTS),
+    'o3-mini': _info('o3-mini', O_SERIES_MODEL_SUPPORTS.model_copy(update={'media': False})),
+    'o4-mini': _info('o4-mini', O_SERIES_MODEL_SUPPORTS),
+    'gpt-5-chat-latest': _info(
+        'gpt-5-chat-latest',
+        MULTIMODAL_MODEL_SUPPORTS.model_copy(update={'tools': False, 'output': ['text'], 'constrained': None}),
+    ),
+    'gpt-5.2-chat': _info('gpt-5.2-chat', GPT_REASONING_MODEL_SUPPORTS),
+    'gpt-oss-120b': _info('gpt-oss-120b', _LEGACY_TEXT_SUPPORTS),
+    'gpt-oss-20b': _info('gpt-oss-20b', _LEGACY_TEXT_SUPPORTS),
 }
 
 SUPPORTED_EMBEDDING_MODELS: dict[str, dict] = {

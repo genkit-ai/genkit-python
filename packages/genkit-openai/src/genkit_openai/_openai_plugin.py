@@ -69,6 +69,7 @@ from genkit_openai._models._image import (
 )
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
+    _LEGACY_CHAT_MODELS,
     SUPPORTED_EMBEDDING_MODELS,
     SUPPORTED_OPENAI_MODELS,
     KnownGpt,
@@ -205,7 +206,7 @@ _LISTED_EXCEPTIONS = frozenset({'gpt-6-cyber'})
 
 
 def _is_known_unsupported(name: str) -> bool:
-    """Report whether discovery hides a model id because no action in this plugin can serve it."""
+    """Report whether OpenAI's service cannot serve an id through this plugin's endpoints."""
     name = _base_id(name)
     if _undated(name) in _LISTED_EXCEPTIONS:
         return False
@@ -296,15 +297,13 @@ def multimodal_config_class(*, name: str, model_type: _ModelType) -> type[BaseMo
     return OpenAIDalleConfig
 
 
-# Dated snapshots OpenAI has shut down while their alias is still served.
-_SHUT_DOWN_SNAPSHOTS = frozenset({'gpt-4o-2024-05-13'})
-
-
 def _known_chat_model_info(name: str) -> ModelInfo | None:
     if info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
         return info
+    if info := _LEGACY_CHAT_MODELS.get(name):
+        return info
     alias = _undated(name)
-    if alias == name or name in _SHUT_DOWN_SNAPSHOTS:
+    if alias == name:
         return None
     if (info := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, alias))) is None:
         return None
@@ -314,7 +313,7 @@ def _known_chat_model_info(name: str) -> ModelInfo | None:
 def _chat_model_info(name: str) -> ModelInfo:
     """The ModelInfo for a chat model id, or generic info for an id the plugin does not know.
 
-    A dated snapshot takes its alias's info, stage included, unless it is shut down.
+    Legacy ids keep their previous info. Other dated snapshots take their active alias's info and stage.
     """
     return _known_chat_model_info(name) or get_default_openai_model_info(name)
 
@@ -702,15 +701,16 @@ class OpenAI(Plugin):
             return self._list_actions_cache
 
         actions: list[Action] = []
+        client = self._runtime_client()
         try:
-            models_ = await self._runtime_client().models.list()
+            models_ = await client.models.list()
         except APIError as e:
             reraise_openai_error(e)
         models: list[OpenAIModelEntry] = models_.data
         for model in models:
             name = model.id
             model_type = _classify_model(name)
-            if not _is_listed(name, model_type):
+            if client.base_url.host == 'api.openai.com' and not _is_listed(name, model_type):
                 continue
             if model_type == _ModelType.EMBEDDER:
                 actions.append(self._create_embedder_action(name))

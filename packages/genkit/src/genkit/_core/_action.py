@@ -24,7 +24,8 @@ import re
 import sys
 import time
 import types
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from typing import (
@@ -68,6 +69,7 @@ from genkit._core._model import (
     ModelRequest,
     ModelResponse,
     ModelResponseChunk,
+    augment_with_context,
     config_type_path,
     declared_config_type,
     reject_config_api_key,
@@ -80,7 +82,7 @@ from genkit._core._telemetry._instrumentation import (
     run_in_new_span,
     to_json_attr,
 )
-from genkit._core._typing import ActionMetadata, EmbedResponse
+from genkit._core._typing import ActionMetadata, EmbedResponse, GenerationUsage
 
 # =============================================================================
 # Span attribute types and tracing helpers
@@ -865,6 +867,39 @@ _inside_action: ContextVar[bool] = ContextVar('inside_action', default=False)
 # an action with no tool above it turns one into an error.
 _inside_tool: ContextVar[bool] = ContextVar('inside_tool', default=False)
 
+# Every model action reports its usage here when it returns, so generate can
+# total the calls made under it however they were reached: the turn loop, a
+# Retry calling next() again, a Fallback calling the backup model directly, or
+# a nested generate inside a tool.
+_usage_sink: ContextVar[Callable[[GenerationUsage], None] | None] = ContextVar('genkit_usage_sink', default=None)
+
+
+@contextmanager
+def collect_model_usage(add: Callable[[GenerationUsage], None]) -> Iterator[None]:
+    """Send the usage of every model call made inside this block to ``add``.
+
+    An enclosing collector (the generate whose tool started this one) still
+    gets each usage too.
+    """
+    outer = _usage_sink.get()
+
+    def sink(usage: GenerationUsage) -> None:
+        add(usage)
+        if outer is not None:
+            outer(usage)
+
+    token = _usage_sink.set(sink)
+    try:
+        yield
+    finally:
+        _usage_sink.reset(token)
+
+
+def _report_model_usage(response: object) -> None:
+    sink = _usage_sink.get()
+    if sink is not None and isinstance(response, ModelResponse) and response.usage is not None:
+        sink(response.usage)
+
 
 def _request_error(error: GenkitError) -> GenkitError:
     """Mark an input/init failure as the caller's request only on the outermost action."""
@@ -1290,6 +1325,17 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
                 reject_config_api_key(_request_config(input))
             input = self._layer_config_defaults(input)
             input = self._validate_input(input)
+            # docs= become a context part on the last user message here, in
+            # the model action, after every wrap_model has run. A middleware
+            # that clears request.docs keeps them from the model, and a model
+            # called directly (Fallback's backup, a judge) still gets them.
+            # No-op when the message already carries a rendered context part.
+            if (
+                self._kind in (ActionKind.MODEL, ActionKind.BACKGROUND_MODEL)
+                and isinstance(input, ModelRequest)
+                and input.docs
+            ):
+                input = cast(InputT, augment_with_context(input))
         init = self._validate_init(init)
 
         if context is None:
@@ -1312,12 +1358,15 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         )
 
         try:
-            return await self._run_with_telemetry(
+            result = await self._run_with_telemetry(
                 input,
                 action_ctx,
                 on_trace_start,
                 telemetry_labels,
             )
+            if self._kind == ActionKind.MODEL:
+                _report_model_usage(result.response)
+            return result
 
         finally:
             _inside_action.reset(inside_token)

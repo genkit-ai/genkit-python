@@ -519,6 +519,23 @@ async def test_prompt_stream_to_sse_frames_chunks_and_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_flow_returning_a_failed_model_response_sends_it_as_the_result() -> None:
+    """A flow's return value is data: a FAILED ModelResponse goes out as `result`, same as over JSON."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = []  # The scripted model raises when it runs out of responses.
+
+    @ai.flow()
+    async def suggest_dish(order: str) -> ModelResponse:
+        return await ai.generate(prompt=order)
+
+    lines = await _lines(to_sse(suggest_dish.stream('tartine')))
+
+    assert len(lines) == 1
+    assert json.loads(lines[0].removeprefix('data: '))['result']['finishReason'] == 'failed'
+
+
+@pytest.mark.asyncio
 async def test_generate_stream_to_sse_public_error_details_keep_failure_immutable(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

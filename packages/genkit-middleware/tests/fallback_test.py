@@ -26,6 +26,7 @@ from genkit_middleware import Fallback
 from pydantic import Field, ValidationError
 
 from genkit import (
+    Document,
     ErrorReason,
     FinishReason,
     Genkit,
@@ -37,7 +38,7 @@ from genkit import (
     Role,
 )
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
-from genkit.model import ModelConfig, ModelContext, ModelRef, ModelRequest
+from genkit.model import GenerationUsage, ModelConfig, ModelContext, ModelRef, ModelRequest
 from genkit.plugin_api import provider_error
 from genkit.testing import define_scripted_model
 
@@ -267,6 +268,81 @@ async def test_fallback_switches_model_when_primary_is_unreachable() -> None:
     assert response.finish_reason == FinishReason.STOP
     assert response.text == 'from backup'
     assert response.error is None
+
+
+@pytest.mark.asyncio
+async def test_fallback_backup_usage_lands_in_total_usage() -> None:
+    """Primary bills a tool-call turn, then fails; total_usage counts it plus the backup's answer."""
+    ai = Genkit()
+    calls = 0
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                finish_reason=FinishReason.STOP,
+                message=Message(role=Role.MODEL, content=[Part.from_tool_request(name='stock', input={}, ref='s1')]),
+                usage=GenerationUsage(input_tokens=10, output_tokens=4),
+            )
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    async def backup(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        return ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('Oat milk is on shelf 3.')]),
+            usage=GenerationUsage(input_tokens=100, output_tokens=7),
+        )
+
+    ai.define_model(name='primary', fn=primary)
+    ai.define_model(name='backup', fn=backup)
+
+    @ai.tool(name='stock')
+    async def stock() -> str:
+        return 'shelf 3'
+
+    response = await ai.generate(
+        model='primary',
+        prompt='where is the oat milk?',
+        tools=['stock'],
+        use=[Fallback(models=['backup'])],
+    )
+
+    assert response.text == 'Oat milk is on shelf 3.'
+    assert response.usage == GenerationUsage(input_tokens=100, output_tokens=7)
+    assert response.total_usage == GenerationUsage(input_tokens=110, output_tokens=11)
+
+
+@pytest.mark.asyncio
+async def test_fallback_backup_model_gets_the_docs() -> None:
+    """docs= are inlined in the model action, so the backup Fallback calls directly still sees them."""
+    ai = Genkit()
+    seen: list[ModelRequest] = []
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    async def backup(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        seen.append(request)
+        return ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(role=Role.MODEL, content=[Part.from_text('Lentil soup is vegan.')]),
+        )
+
+    ai.define_model(name='primary', fn=primary)
+    ai.define_model(name='backup', fn=backup)
+
+    await ai.generate(
+        model='primary',
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[Fallback(models=['backup'])],
+    )
+
+    context = [p for m in seen[0].messages for p in m.content if (p.metadata or {}).get('purpose') == 'context']
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
 
 
 @pytest.mark.asyncio

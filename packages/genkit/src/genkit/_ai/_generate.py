@@ -44,7 +44,6 @@ from genkit._ai._model import (
     annotated_config_class,
     check_config_before_turn,
     resolve_model_name,
-    text_from_content,
 )
 from genkit._ai._tools import (
     ORIGINAL_OUTPUT_SCHEMA_KEY,
@@ -65,6 +64,7 @@ from genkit._core._action import (
     ActionContext,
     ActionKind,
     _action_context,  # pyright: ignore[reportPrivateUsage]
+    collect_model_usage,
     create_action_key,
     get_current_context,
     parse_action_key,
@@ -100,12 +100,12 @@ from genkit._core._middleware import (
 )
 from genkit._core._model import (
     ABNORMAL_FINISH_REASONS,
-    Document,
     GenerateActionOptions,
     MultipartToolResponse,
     OutputConfig,
     Part,
     as_message,
+    augment_with_context as augment_with_context,
     check_max_turns,
     chunk_for_stream,
     reject_config_api_key,
@@ -120,6 +120,7 @@ from genkit._core._typing import (
     ConstrainedSupport,
     FinishReason,
     GenerateActionOutputConfig,
+    GenerationUsage,
     MiddlewareRef,
     Role,
     ToolDefinition,
@@ -706,93 +707,6 @@ async def register_tools(registry: Registry, tools: Sequence[str | Tool] | None)
         registry.register_action_from_instance(t)
 
 
-CONTEXT_PREFACE = '\n\nUse the following information to complete your task:\n\n'
-
-
-def last_user_message(*, messages: list[Message]) -> Message | None:
-    """Find the last user message in a list."""
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].role == 'user':
-            return messages[i]
-    return None
-
-
-def context_item_template(d: Document, index: int) -> str:
-    """Render a document as a citation line for context injection.
-
-    Only ``ref``/``id`` goes on the line, same as JS. Other metadata (ACLs,
-    embeddings, tenant ids) stays out of the prompt. Only the document's text
-    is rendered; media parts in a document are not sent.
-    """
-    out = '- '
-    ref = (d.metadata and (d.metadata.get('ref') or d.metadata.get('id'))) or index
-    out += f'[{ref}]: '
-    out += text_from_content(d.content) + '\n'
-    return out
-
-
-def augment_with_context(
-    request: ModelRequest,
-    *,
-    preface: str | None = CONTEXT_PREFACE,
-    item_template: Callable[[Document, int], str] | None = None,
-    citation_key: str | None = None,
-) -> ModelRequest:
-    """Return a deepcopy of ``request`` with ``request.docs`` injected as a context part on the last user message.
-
-    No-op (returns ``request`` unchanged) when there are no docs, no user message, or the last user message
-    already has a non-pending ``purpose: 'context'`` part.
-    """
-    if not request.docs:
-        return request
-
-    user_message = last_user_message(messages=request.messages)
-    if user_message is None:
-        return request
-
-    # Find any existing context part in the last user message
-    context_idx = -1
-    for i, part in enumerate(user_message.content):
-        metadata = part.metadata or {}
-        if metadata.get('purpose') == 'context':
-            context_idx = i
-            break
-
-    # If context already exists, only proceed if it is a pending placeholder
-    if context_idx >= 0:
-        meta = user_message.content[context_idx].metadata or {}
-        if not meta.get('pending'):
-            logger.warning(
-                'docs= not injected: the last user message already has a context part',
-                docs=len(request.docs),
-            )
-            return request
-
-    # Render all documents as a single formatted text string
-    template = item_template or context_item_template
-    rendered_docs = []
-    for i, doc_data in enumerate(request.docs):
-        doc = Document(content=doc_data.content, metadata=doc_data.metadata)
-        if citation_key and doc.metadata:
-            doc.metadata['ref'] = doc.metadata.get(citation_key, i)
-        rendered_docs.append(template(doc, i))
-
-    text_content = (preface or '') + ''.join(rendered_docs) + '\n'
-    text_part = Part.from_text(text_content, metadata={'purpose': 'context'})
-
-    # Safe-mutation via deep copy
-    new_req = copy.deepcopy(request)
-    new_user = last_user_message(messages=new_req.messages)
-    assert new_user is not None
-
-    if context_idx >= 0:
-        new_user.content[context_idx] = text_part
-    else:
-        new_user.content.append(text_part)
-
-    return new_req
-
-
 def raise_if_stopped(caller_stopped: asyncio.Event | None) -> None:
     if caller_stopped is not None and caller_stopped.is_set():
         raise GenkitError(status='CANCELLED', message='Generation aborted.')
@@ -1019,26 +933,28 @@ async def run_generate(
             logger.debug('generate request resolved', **resolved)
 
         try:
-            return await run_wrap_generate(
-                registry=registry,
-                options=options,
-                mw_pipeline=mw_pipeline,
-                message_index=message_index,
-                current_turn=current_turn,
-                call=call,
-            )
+            with collect_model_usage(call.add_usage):
+                result = await run_wrap_generate(
+                    registry=registry,
+                    options=options,
+                    mw_pipeline=mw_pipeline,
+                    message_index=message_index,
+                    current_turn=current_turn,
+                    call=call,
+                )
         except asyncio.CancelledError as exc:
             stamp_cancelled_error(exc=exc, messages=call.messages)
             raise
         except (Exception, _StreamingCallbackError) as exc:
             if streaming_callback_cause(exc=exc) is None:
                 raise
-            return box_from_exc(
+            result = box_from_exc(
                 response=ModelResponse(),
                 messages=call.messages,
                 exc=exc,
                 caller_stopped=False,
             )
+        return call.stamp_total_usage(result)
     finally:
         _action_context.reset(context_token)
 
@@ -1210,6 +1126,7 @@ def as_model_response(*, raw: object, name: str) -> ModelResponse:
         finish_message=raw.finish_message,
         latency_ms=raw.latency_ms,
         usage=raw.usage,
+        total_usage=raw.total_usage,
         custom=raw.custom,
         raw=raw.raw,
         request=raw.request,
@@ -1246,6 +1163,20 @@ class GenerateRun:
     output: GenerateActionOutputConfig | None = None
     request: ModelRequest | None = None
     answered: ModelResponse | None = None
+    total_usage: GenerationUsage | None = None
+
+    def add_usage(self, usage: GenerationUsage) -> None:
+        """Add one billed model call to the running total for the whole call."""
+        # An empty usage ({} from models that report nothing) adds nothing, so
+        # a run where no model reported usage leaves total_usage None.
+        if usage.model_dump(exclude_none=True):
+            self.total_usage = sum_usage(self.total_usage, usage)
+
+    def stamp_total_usage(self, response: ModelResponse) -> ModelResponse:
+        """Every model call's usage, summed, rides out on the response they get."""
+        if self.total_usage is not None:
+            response.total_usage = self.total_usage
+        return response
 
     def is_stopped(self) -> bool:
         return self.caller_stopped is not None and self.caller_stopped.is_set()
@@ -1280,6 +1211,48 @@ class GenerateRun:
         self.last_response = result
 
 
+def sum_usage(total: GenerationUsage | None, usage: GenerationUsage) -> GenerationUsage:
+    """Field-wise sum of two usages. A field stays None only if both are None.
+
+    Providers fill different fields (Gemini reports ``thoughts_tokens`` outside
+    ``output_tokens``; OpenAI counts reasoning inside it), so each field is
+    summed as reported and never derived.
+    """
+    if total is None:
+        return usage.model_copy(deep=True)
+    summed: dict[str, Any] = {}
+    for name in GenerationUsage.model_fields:
+        a = getattr(total, name)
+        b = getattr(usage, name)
+        if name == 'custom':
+            summed[name] = sum_custom_usage(a, b)
+        elif a is None:
+            summed[name] = b
+        elif b is None:
+            summed[name] = a
+        else:
+            summed[name] = a + b
+    return GenerationUsage(**summed)
+
+
+def sum_custom_usage(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Sum numeric custom counters; the latest turn wins for anything else."""
+    if a is None or b is None:
+        return copy.deepcopy(b if a is None else a)
+    merged = dict(a)
+    for key, value in b.items():
+        prev = merged.get(key)
+        if is_count(prev) and is_count(value):
+            merged[key] = prev + value
+        else:
+            merged[key] = value
+    return merged
+
+
+def is_count(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def history_with_closed_turn(*, messages: list[Message], result: ModelResponse) -> list[Message]:
     """If this response closed a model turn, that turn is on the history they can resend."""
     if result.message is None:
@@ -1310,10 +1283,10 @@ async def turn_request(*, options: GenerateActionOptions, resolved: ResolvedTurn
     answers still echoes docs, config, tools, and tool_choice instead of a
     rebuilt subset.
     """
-    request = await to_model_request(options=options, tools=resolved.tools, model=resolved.model)
-    if request.docs:
-        request = augment_with_context(request)
-    return request
+    # docs= stay on request.docs. The model action inlines them after every
+    # wrap_model (Action._run), so a middleware that clears docs keeps them
+    # from the model, and a backup model called directly still gets them.
+    return await to_model_request(options=options, tools=resolved.tools, model=resolved.model)
 
 
 async def paused_request(
@@ -1977,9 +1950,13 @@ async def call_model(
     # request the caller made instead of a rebuilt subset of it.
     call.request = request
 
+    sent: list[ModelRequest] = []
+
     async def run_action(params: ModelHookParams, c: MiddlewareContext) -> ModelResponse:
         # After they stop, another model call would be billed and thrown away.
         raise_if_stopped(call.caller_stopped)
+        # What the provider actually received, after every wrap_model edit.
+        sent.append(params.request)
         if is_debug_enabled(logger):
             logger.debug(
                 'calling model',
@@ -2005,6 +1982,9 @@ async def call_model(
         # The provider has charged for this by now. Middleware still gets to
         # reject what came back, and a rejection should not erase usage.
         call.answered = answered
+        # total_usage is fed by the model action itself (collect_model_usage in
+        # run_generate), so a Fallback that calls the backup model directly
+        # instead of next() still counts.
         return answered
 
     # generate built the config as the model's class once. Middleware edits
@@ -2034,7 +2014,9 @@ async def call_model(
             ),
             name=turn_model.name,
         )
-    response.request = request
+    # Echo the request the model saw, not the pre-middleware one: a wrap_model
+    # that redacts PII must not see the raw text come back on response.request.
+    response.request = sent[-1] if sent else request
     formatter = resolved.formatter
     if formatter:
         parse = formatter.parse_message
@@ -2309,8 +2291,12 @@ def apply_format(
 
     out_request.output.constrained = constrained
 
-    if format_def.config.content_type is not None:
+    # The format fills in a content type only when the caller didn't set one,
+    # the same as `constrained` above and JS applyFormat.
+    if out_request.output.content_type is None:
         out_request.output.content_type = format_def.config.content_type
+    # `format` stays format-owned: a custom format (say `cited-json`) maps onto
+    # the wire format (`json`) that models and the instruction rule key on.
     if format_def.config.format is not None:
         out_request.output.format = format_def.config.format
 

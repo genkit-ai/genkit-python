@@ -16,7 +16,7 @@
 
 """Tool registration, interruption, and request execution helpers for the Genkit framework."""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
@@ -25,7 +25,13 @@ from genkit._core._action import Action
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
-from genkit._core._model import MultipartToolResponse as MultipartToolResponse, Part, as_part, as_resumed
+from genkit._core._model import (
+    MultipartToolResponse as MultipartToolResponse,
+    Part,
+    as_part,
+    as_resumed,
+    parts_to_wire as parts_to_wire,
+)
 from genkit._core._registry import Registry
 from genkit._core._tool import (
     ORIGINAL_OUTPUT_SCHEMA_KEY as ORIGINAL_OUTPUT_SCHEMA_KEY,
@@ -85,25 +91,6 @@ def normalize_pending_content(pending_content: object, *, tool_name: str) -> lis
         dumped = dump_part(part, tool_name=tool_name, what=f'pendingContent[{i}]')
         if not wire_part_is_live(dumped):
             raise live_payload_error(tool_name=tool_name, where=f'pendingContent[{i}]')
-        out.append(dumped)
-    return out
-
-
-def parts_to_wire(parts: Sequence[Part] | None, *, tool_name: str | None = None) -> list[dict[str, Any]] | None:
-    """Dump parts the way a model plugin expects them on the tool message.
-
-    A bare dump keeps unused fields as null and uses snake_case names. The
-    model request — and anything that later re-parses that history — wants
-    only the live fields, in camelCase.
-    """
-    if not parts:
-        return None
-    out: list[dict[str, Any]] = []
-    name = tool_name if tool_name is not None else 'tool'
-    for part in parts:
-        dumped = dump_part(part, tool_name=name, what='content')
-        if not wire_part_is_live(dumped):
-            raise live_payload_error(tool_name=name, where='content')
         out.append(dumped)
     return out
 

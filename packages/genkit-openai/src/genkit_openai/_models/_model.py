@@ -29,8 +29,8 @@ from genkit_openai._models._utils import (
     check_extra_body,
     extract_response_metadata,
     merge_streamed_reasoning,
+    reply_content,
     reraise_openai_error,
-    split_reply_content,
     strip_markdown_fences,
 )
 from genkit_openai._typing import OpenAIConfig, ReasoningEffort
@@ -587,8 +587,12 @@ class OpenAIModel:
         stream = await self._openai_client.chat.completions.create(**openai_config)
 
         tool_calls: dict[int, Any] = {}
-        reasoning_parts: list[Part] = []
-        text_parts: list[Part] = []
+        # As a full reply is read (MessageConverter.to_genkit): reasoning from
+        # its own field (DeepSeek's reasoning_content) first, then the
+        # content's reasoning and text in the order they arrived (Mistral's
+        # thinking chunks can come between text chunks), then tool calls.
+        field_reasoning: list[Part] = []
+        content_parts: list[Part] = []
         metadata: dict[str, Any] = {}
         usage: CompletionUsage | None = None
         saw_choice = False
@@ -621,17 +625,14 @@ class OpenAIModel:
             # Reasoning content (DeepSeek R1 / reasoner models).
             if reasoning_text := MessageAdapter(delta).reasoning_content:
                 reasoning_part = Part.from_reasoning(reasoning_text)
-                reasoning_parts.append(reasoning_part)
+                field_reasoning.append(reasoning_part)
                 parts.append(reasoning_part)
 
             # Text content; Mistral's reasoning models stream reasoning in it too.
-            thinking, text = split_reply_content(delta.content)
-            reasoning_parts.extend(thinking)
-            parts.extend(thinking)
-            if text:
-                text_part = MessageConverter.text_part_to_genkit(text)
-                text_parts.append(text_part)
-                parts.append(text_part)
+            for item in reply_content(delta.content):
+                part = MessageConverter.text_part_to_genkit(item) if isinstance(item, str) else item
+                content_parts.append(part)
+                parts.append(part)
 
             # Tool calls (partial function calls)
             if delta.tool_calls:
@@ -658,7 +659,7 @@ class OpenAIModel:
                 details={'usage': _usage_from_completion(usage).model_dump(exclude_none=True)},
             )
 
-        accumulated_content: list[Part] = [*merge_streamed_reasoning(reasoning_parts), *text_parts]
+        accumulated_content: list[Part] = [*field_reasoning, *merge_streamed_reasoning(content_parts)]
         if tool_calls:
             message = MessageConverter.to_genkit(
                 DictMessageAdapter({'tool_calls': tool_calls.values(), 'role': Role.MODEL})

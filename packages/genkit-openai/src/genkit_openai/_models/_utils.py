@@ -439,37 +439,43 @@ def _signature(part: Part) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def split_reply_content(content: object) -> tuple[list[Part], str]:
-    """The reasoning and the text in a reply's ``content``.
+def reply_content(content: object) -> list[Part | str]:
+    """The reasoning and the text in a reply's ``content``, in the order they came.
 
     OpenAI sends ``content`` as a string. Mistral sends a list of chunks
     instead when it reasons (``reasoning_effort`` set), in full replies and in
     streamed deltas alike: ``{'type': 'text', 'text': ...}`` for the answer and
     ``{'type': 'thinking', 'thinking': [{'type': 'text', 'text': ...}],
-    'signature': ...}`` for the reasoning before it. Other chunk types carry
-    no text and are skipped.
+    'signature': ...}`` for reasoning. Other chunk types carry no text and are
+    skipped.
 
     Args:
         content: A message's or delta's ``content`` as the SDK parsed it.
 
     Returns:
-        One reasoning part per thinking chunk with text or a signature, in
-        order, each marked ``metadata['reasoningSource'] = 'mistral'`` and
+        In chunk order: one reasoning part per thinking chunk with text or a
+        signature, each marked ``metadata['reasoningSource'] = 'mistral'`` and
         holding its own chunk's signature in ``metadata['thoughtSignature']``;
-        and the reply text, empty when absent.
+        and the text, one string per run of adjacent text chunks. Empty text is
+        left out, so a plain empty string gives an empty list.
     """
     if isinstance(content, str):
-        return [], content
+        return [content] if content else []
     if not isinstance(content, list):
-        return [], ''
-    reasoning: list[Part] = []
-    text: list[str] = []
+        return []
+    out: list[Part | str] = []
     for chunk in cast(list[object], content):
         if not isinstance(chunk, Mapping):
             continue
         chunk = cast(Mapping[str, object], chunk)
         if chunk.get('type') == 'text' and isinstance(chunk.get('text'), str):
-            text.append(cast(str, chunk['text']))
+            text = cast(str, chunk['text'])
+            if not text:
+                continue
+            if out and isinstance(out[-1], str):
+                out[-1] += text
+            else:
+                out.append(text)
         elif chunk.get('type') == 'thinking' and isinstance(chunk.get('thinking'), list):
             signature = chunk.get('signature')
             signature = signature if isinstance(signature, str) and signature else None
@@ -480,8 +486,8 @@ def split_reply_content(content: object) -> tuple[list[Part], str]:
                     if item.get('type') == 'text' and isinstance(item.get('text'), str):
                         thought.append(cast(str, item['text']))
             if thought or signature is not None:
-                reasoning.append(_mistral_reasoning(''.join(thought), signature))
-    return reasoning, ''.join(text)
+                out.append(_mistral_reasoning(''.join(thought), signature))
+    return out
 
 
 def merge_streamed_reasoning(parts: list[Part]) -> list[Part]:
@@ -795,8 +801,9 @@ class MessageConverter:
     def to_genkit(cls, message: ChatCompletionMessageAdapter) -> Message:
         """Converts an OpenAI-style message into a Genkit `Message` object.
 
-        Emits a reasoning part, a text part, and one tool request part per
-        tool call, in that order, for whichever of them the message carries.
+        Emits a reasoning part, the content's reasoning and text parts in the
+        order they came, and one tool request part per tool call, in that
+        order, for whichever of them the message carries.
 
         Args:
             message: A ChatCompletionMessageAdapter instance.
@@ -811,10 +818,8 @@ class MessageConverter:
         if reasoning:
             content.append(Part.from_reasoning(reasoning))
 
-        thinking, text = split_reply_content(message.content)
-        content.extend(thinking)
-        if text:
-            content.append(cls.text_part_to_genkit(text))
+        for item in reply_content(message.content):
+            content.append(cls.text_part_to_genkit(item) if isinstance(item, str) else item)
 
         for tool_call in message.tool_calls or []:
             content.append(cls.tool_call_to_genkit(tool_call, args_parser=json.loads))

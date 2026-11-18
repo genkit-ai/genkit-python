@@ -1157,3 +1157,49 @@ async def test_openai_host_still_sends_non_image_media(openai: Genkit, server: _
     )
 
     assert len(server.requests) == 1
+
+
+# Reply order
+
+
+_INTERLEAVED = [
+    _thinking('First, flour.', signature='sig-1'),
+    {'type': 'text', 'text': 'Flour.'},
+    _thinking('Then, water.', signature='sig-2'),
+    {'type': 'text', 'text': ' Water.'},
+]
+
+
+def _order(message: Message | None) -> list[tuple[str, str]]:
+    assert message is not None
+    return [
+        ('reasoning', p.reasoning) if p.reasoning is not None else ('text', p.text or '')
+        for p in message.content
+        if p.reasoning is not None or p.text is not None
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mistral_keeps_thinking_and_text_in_the_order_they_came(mistral: Genkit, server: _Server) -> None:
+    """thinking, text, thinking, text stays in that order, streamed or not."""
+    server.content = _INTERLEAVED
+    server.deltas = [[chunk] for chunk in _INTERLEAVED]
+    expected = [
+        ('reasoning', 'First, flour.'),
+        ('text', 'Flour.'),
+        ('reasoning', 'Then, water.'),
+        ('text', ' Water.'),
+    ]
+
+    full = await mistral.generate(model='openai/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG)
+    streamed = await mistral.generate_stream(
+        model='openai/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG
+    ).response
+
+    assert _order(full.message) == expected
+    assert _order(streamed.message) == expected
+    assert streamed.message is not None
+    assert [p.metadata for p in streamed.message.content if p.reasoning is not None] == [
+        {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-1'},
+        {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-2'},
+    ]

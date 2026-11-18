@@ -465,8 +465,8 @@ def find_input_and_context(
         if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             star = '*' if p.kind is inspect.Parameter.VAR_POSITIONAL else '**'
             raise TypeError(
-                f"{owner} takes {star}{p.name}, but Genkit passes only the input and context. "
-                "Remove it, or if a decorator added it, apply functools.wraps in the decorator."
+                f'{owner} takes {star}{p.name}, but Genkit passes only the input and context. '
+                'Remove it, or if a decorator added it, apply functools.wraps in the decorator.'
             )
         if p.kind is inspect.Parameter.POSITIONAL_ONLY:
             raise TypeError(

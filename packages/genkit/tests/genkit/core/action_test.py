@@ -901,10 +901,10 @@ async def test_action_run_and_stream_reject_abort_signal_kwarg() -> None:
     signal = asyncio.Event()
 
     with pytest.raises(TypeError, match='abort_signal'):
-        await action.run('hi', abort_signal=signal)  # pyright: ignore[reportCallIssue]  # ty: ignore[unknown-argument]  # pyrefly: ignore[unexpected-keyword]
+        await action.run('hi', abort_signal=signal)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[unexpected-keyword]
 
     with pytest.raises(TypeError, match='abort_signal'):
-        action.stream('hi', abort_signal=signal)  # pyright: ignore[reportCallIssue]  # ty: ignore[unknown-argument]  # pyrefly: ignore[unexpected-keyword]
+        action.stream('hi', abort_signal=signal)  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[unexpected-keyword]
 
 
 @pytest.mark.asyncio

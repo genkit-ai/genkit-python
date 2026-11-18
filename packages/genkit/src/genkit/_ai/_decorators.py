@@ -24,10 +24,10 @@ from typing import Any, TypeVar, overload
 from pydantic import BaseModel
 
 from genkit._ai._tools import define_tool
-from genkit._core._action import FlowContext
-from genkit._core._flow import Flow, define_flow
+from genkit._core._action import CtxDefaultInputFn, DefaultInputCtxFn, DefaultInputFn, FlowContext
+from genkit._core._flow import DefaultedFlow, Flow, define_flow
 from genkit._core._registry import Registry
-from genkit._core._tool import Tool, ToolContext
+from genkit._core._tool import DefaultedTool, Tool, ToolContext
 
 # TypeVars for generic input/output typing
 InputT = TypeVar('InputT')
@@ -45,9 +45,10 @@ class _FlowDecorator:
 
     # Overload order matters: checkers pick the first matching overload.
     #
-    # - A flow with a defaulted input (`async def f(x: str = '...')`) is
-    #   callable as both 1-arg and 0-arg, so the 1-arg shapes come first and
-    #   the input type stays as written instead of collapsing to `None`.
+    # - A defaulted input (`async def f(x: str = '...')`) matches the
+    #   Default*Fn Protocols and returns DefaultedFlow[str, ...]: the input may
+    #   be omitted, but None isn't a str. `(x = ..., ctx = None)` also fits
+    #   the (input, ctx) shape, so DefaultInputCtxFn comes before it.
     # - `(x: Any)` and `(x: object)` also accept a FlowContext, so they'd match
     #   the ctx-only shape and type as Flow[None, ...]. The `object` shapes
     #   come first and catch them as Flow[Any, ...]. A real `(ctx: FlowContext)`
@@ -62,8 +63,18 @@ class _FlowDecorator:
 
     @overload
     def __call__(
+        self, func: DefaultInputCtxFn[FlowContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedFlow[InputT, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
         self, func: Callable[[InputT, FlowContext[ChunkT]], Awaitable[OutputT]]
     ) -> Flow[InputT, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
+        self, func: CtxDefaultInputFn[FlowContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedFlow[InputT, OutputT, ChunkT]: ...
 
     @overload
     def __call__(
@@ -77,13 +88,13 @@ class _FlowDecorator:
     def __call__(self, func: Callable[[FlowContext[ChunkT]], Awaitable[OutputT]]) -> Flow[None, OutputT, ChunkT]: ...
 
     @overload
+    def __call__(self, func: DefaultInputFn[InputT, OutputT]) -> DefaultedFlow[InputT, OutputT]: ...
+
+    @overload
     def __call__(self, func: Callable[[InputT], Awaitable[OutputT]]) -> Flow[InputT, OutputT]: ...
 
     @overload
     def __call__(self, func: Callable[[], Awaitable[OutputT]]) -> Flow[None, OutputT]: ...
-
-    @overload
-    def __call__(self, func: Callable[..., Awaitable[OutputT]]) -> Flow[Any, OutputT, Any]: ...
 
     def __call__(self, func: Callable[..., Awaitable[Any]]) -> Flow[Any, Any, Any]:
         return define_flow(self._registry, func, self._name, self._description)
@@ -113,8 +124,18 @@ class _ToolDecorator:
 
     @overload
     def __call__(
+        self, func: DefaultInputCtxFn[ToolContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedTool[InputT, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
         self, func: Callable[[InputT, ToolContext[ChunkT]], Awaitable[OutputT]]
     ) -> Tool[InputT, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(
+        self, func: CtxDefaultInputFn[ToolContext[ChunkT], InputT, OutputT]
+    ) -> DefaultedTool[InputT, OutputT, ChunkT]: ...
 
     @overload
     def __call__(
@@ -125,7 +146,10 @@ class _ToolDecorator:
     def __call__(self, func: Callable[[object], Awaitable[OutputT]]) -> Tool[Any, OutputT]: ...
 
     @overload
-    def __call__(self, func: Callable[[ToolContext[ChunkT]], Awaitable[OutputT]]) -> Tool[Any, OutputT, ChunkT]: ...
+    def __call__(self, func: Callable[[ToolContext[ChunkT]], Awaitable[OutputT]]) -> Tool[None, OutputT, ChunkT]: ...
+
+    @overload
+    def __call__(self, func: DefaultInputFn[InputT, OutputT]) -> DefaultedTool[InputT, OutputT]: ...
 
     @overload
     def __call__(self, func: Callable[[InputT], Awaitable[OutputT]]) -> Tool[InputT, OutputT]: ...

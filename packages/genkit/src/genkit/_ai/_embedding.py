@@ -51,8 +51,11 @@ class EmbedderInfo(BaseModel):
     dimensions: int | None = None
 
 
-# Covariant so EmbedderRef[CrmEmbedConfig] is assignable to EmbedderRef[BaseModel].
-EmbedderRefConfigT = TypeVar('EmbedderRefConfigT', bound=BaseModel, covariant=True, default=BaseModel)
+# Invariant so embed(embedder=EmbedderRef[T], config=T) pins T to the ref's
+# config class. Defaults to Any (not BaseModel) because invariant generics
+# forbid subtyping on the type parameter, so bare EmbedderRef must mean
+# EmbedderRef[Any] to accept any typed ref.
+EmbedderRefConfigT = TypeVar('EmbedderRefConfigT', bound=BaseModel, default=Any)
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -207,6 +207,25 @@ def test_action_with_positional_only_parameter_raises_type_error() -> None:
         Action(ActionKind.MODEL, 'chef', chef)
 
 
+def test_action_with_keyword_only_parameter_raises_type_error() -> None:
+    """Every action kind takes regular parameters, so a keyword-only one raises at definition."""
+
+    async def chef(request: ModelRequest, *, ctx: ActionContext) -> ModelResponse:
+        del request, ctx
+        return _REPLY
+
+    async def index_menu(doc: str, *, ctx: ActionContext | None = None) -> str:
+        del ctx
+        return doc
+
+    with pytest.raises(TypeError, match="model 'chef' parameter 'ctx' is keyword-only"):
+        Action(ActionKind.MODEL, 'chef', chef)
+    with pytest.raises(TypeError, match="embedder 'menu' parameter 'ctx' is keyword-only"):
+        Action(ActionKind.EMBEDDER, 'menu', index_menu)
+    with pytest.raises(TypeError, match="custom 'menu' parameter 'ctx' is keyword-only"):
+        Action(ActionKind.CUSTOM, 'menu', index_menu)
+
+
 @pytest.mark.asyncio
 async def test_background_model_with_context_first_start_gets_both() -> None:
     """`start(ctx, request)` gets each by name, and the handle has the start action key."""

@@ -46,8 +46,6 @@ from genkit._core._registry import Registry
 from genkit._core._schema import custom_options_schema
 from genkit._core._typing import ModelInfo
 
-# Spelled out, not CheckOpFn[ModelResponse]: Operation[ModelResponse] is a
-# concrete pydantic class at runtime, so the generic alias can't be subscripted.
 # A fn may return a plain Operation; its output is validated as a ModelResponse.
 StartModelOpFn = Callable[[ModelRequest, ModelContext], Awaitable[Operation]]
 CheckModelOpFn = Callable[[Operation[ModelResponse], ModelContext], Awaitable[Operation]]

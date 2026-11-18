@@ -708,13 +708,14 @@ class AnthropicModel:
         """Extract system prompt from messages.
 
         Text from every system message is kept, in order, joined by blank lines.
+        System messages with no text are skipped.
         """
         system_texts = []
         for msg in messages:
             if msg.role == Role.SYSTEM:
-                texts = [part.text for part in msg.content if part.text is not None]
-                if texts:
-                    system_texts.append(''.join(texts))
+                text = ''.join(part.text for part in msg.content if part.text is not None)
+                if text:
+                    system_texts.append(text)
         return '\n\n'.join(system_texts) if system_texts else None
 
     def _to_anthropic_messages(self, messages: list[Message]) -> list[dict[str, Any]]:

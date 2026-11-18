@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
@@ -32,6 +31,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
+
+from genkit._core._async_call import is_async_callable
 
 from ._attrs import METADATA_PREFIX, Attr
 from ._log_exporter import reset_log_export
@@ -277,7 +278,7 @@ async def run_in_new_span(
     outermost. The provider list is snapshotted so configure/reset during an
     await cannot break the chain.
     """
-    if not inspect.iscoroutinefunction(fn):
+    if not is_async_callable(fn):
         name = getattr(fn, '__qualname__', type(fn).__name__)
         raise TypeError(f'run_in_new_span expected an async callback, got {name}')
     attrs: dict[str, SpanAttributeValue] = dict(attributes) if attributes else {}

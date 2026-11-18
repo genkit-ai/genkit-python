@@ -23,7 +23,6 @@ Mirrors Go ``core.BackgroundActionDef[In, Out]`` and JS
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from functools import wraps
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast, get_args, get_origin
@@ -38,6 +37,7 @@ from genkit._core._action import (
     get_current_context,
     set_action_name,
 )
+from genkit._core._async_call import is_async_callable
 from genkit._core._error import ErrorReason, GenkitError, StatusName
 from genkit._core._operation import Operation
 from genkit._core._schema import fixed_json_schema
@@ -486,7 +486,7 @@ def _operation_action(
     minus ``suffix`` (e.g. ``/check``) when it runs.
     """
     # Action rejects a sync fn, but it only sees the async wrapper below.
-    if not inspect.iscoroutinefunction(fn):
+    if not is_async_callable(fn):
         raise TypeError(f"Action handlers must be async functions. Got sync function for '{name}{suffix}'.")
     output_type = cls._output_type
 

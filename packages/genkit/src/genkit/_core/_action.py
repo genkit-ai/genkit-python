@@ -45,6 +45,7 @@ from pydantic.alias_generators import to_camel
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError, PydanticUserError
 from typing_extensions import Never, Self, TypeVar
 
+from genkit._core._async_call import is_async_callable
 from genkit._core._channel import Channel, CloseableQueue, StoppableStream, _stop_scope
 from genkit._core._compat import StrEnum
 from genkit._core._config_check import (
@@ -1105,7 +1106,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         self._span_metadata: dict[str, SpanAttributeValue] = span_metadata if span_metadata is not None else {}
 
         # All action handlers must be async
-        if not inspect.iscoroutinefunction(fn):
+        if not is_async_callable(fn):
             raise TypeError(f"Action handlers must be async functions. Got sync function for '{name}'.")
 
         # Genkit calls fn. With a metadata_fn, fn is a wrapper (the tool wrapper

@@ -57,7 +57,7 @@ requires-python = ">=3.10"
 version = "0.13.0"
 
 [project.optional-dependencies]
-# Anthropic(google_cloud=True): google-auth for application default credentials.
+# Anthropic(backend=GoogleCloud()): google-auth for application default credentials.
 google-cloud = ["anthropic[vertex]>=0.96.0,<1"]
 
 [project.urls]

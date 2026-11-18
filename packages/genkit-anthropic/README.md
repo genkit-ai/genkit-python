@@ -53,6 +53,39 @@ Anthropic(
 )
 ```
 
+## Claude on Google Cloud
+
+To bill Claude to a Google Cloud project instead of an Anthropic key, pass
+`backend=GoogleCloud(...)`. Requests authenticate with application default
+credentials. Refs, `AnthropicConfig` and `.prompt` files don't change.
+
+```bash
+uv add 'genkit-anthropic[google-cloud]'
+```
+
+```python
+from genkit import Genkit
+from genkit_anthropic import Anthropic, GoogleCloud
+
+# 1. Same plugin, billed to your project
+ai = Genkit(plugins=[Anthropic(backend=GoogleCloud(project='bistro-prod', location='global'))])
+
+# 2. Same typed ref and config as the Anthropic API
+res = await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
+print(res.text)
+# => Herb-Roasted Chicken with Lemon Rice
+```
+
+- `project` defaults to `GCLOUD_PROJECT`, then `GOOGLE_CLOUD_PROJECT`, then the
+  credentials' project, so `GoogleCloud()` works on Cloud Run.
+- `location` defaults to `GOOGLE_CLOUD_LOCATION`, then `global`.
+- Only `backend=` switches backends. A missing `ANTHROPIC_API_KEY` never falls
+  back to Google Cloud, and `api_key=` with `backend=GoogleCloud()` raises
+  `ValueError`.
+- `client_options` go to `AsyncAnthropicVertex` instead of `AsyncAnthropic`.
+- Google Cloud has no Models API, so the Dev UI lists the plugin's built-in
+  Claude catalog. Any other Claude id still resolves on demand.
+
 ## Typed config
 
 `AnthropicConfig` is flat. Choices are exported Literals (`ThinkingMode`,
@@ -174,7 +207,7 @@ res = await ai.generate(
 - A client whose credential can't be swapped refuses a tenant key with
   `FAILED_PRECONDITION` rather than billing its own account: an
   `Anthropic(client_options={'auth_token': ...})` client, one whose `default_headers` pin
-  `x-api-key` or `Authorization`, and Claude on Vertex AI Model Garden, which
+  `x-api-key` or `Authorization`, and `Anthropic(backend=GoogleCloud())`, which
   authenticates with Google Cloud credentials.
 
 ## Disclaimer

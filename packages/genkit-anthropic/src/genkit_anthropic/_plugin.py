@@ -34,6 +34,13 @@ from genkit.plugin_api import (
     loop_local_client,
 )
 from genkit_anthropic._config import AnthropicConfig
+from genkit_anthropic._google_cloud import (
+    GoogleCloud,
+    adc_project,
+    require_google_auth,
+    resolve_location,
+    resolve_project,
+)
 from genkit_anthropic._model_info import SUPPORTED_ANTHROPIC_MODELS, KnownClaude, get_model_info
 from genkit_anthropic._models import AnthropicModel, pinned_credential_header
 from genkit_anthropic._secrets import context_api_key, reject_config_api_key
@@ -43,16 +50,12 @@ logger = get_logger(__name__)
 ANTHROPIC_PLUGIN_NAME = 'anthropic'
 
 _CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncAnthropic.__init__).parameters) - {'self'}
-# region and project_id come from location= and project=, so they aren't client options.
+# region and project_id come from GoogleCloud(project=..., location=...), so they aren't client options.
 _GOOGLE_CLOUD_CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncAnthropicVertex.__init__).parameters) - {
     'self',
     'region',
     'project_id',
 }
-
-# Every project that enables Claude gets quota on the global endpoint;
-# regional endpoints need regional quota.
-_DEFAULT_GOOGLE_CLOUD_LOCATION = 'global'
 
 
 def _client_kwargs(
@@ -98,34 +101,6 @@ def _has_credential(client: AsyncAnthropic) -> bool:
     if client.api_key is not None or client.auth_token is not None or client.credentials is not None:
         return True
     return pinned_credential_header(client) is not None
-
-
-def _require_google_auth() -> None:
-    """Fail at setup, on the user's line, when the google-cloud extra isn't installed.
-
-    Raises:
-        ImportError: ``google-auth`` isn't installed.
-    """
-    # Optional dependency: google-auth ships with the [google-cloud] extra only.
-    try:
-        import google.auth  # noqa: F401, PLC0415
-    except ModuleNotFoundError as e:
-        raise ImportError(
-            "Anthropic(google_cloud=True) needs the google-cloud extra: uv add 'genkit-anthropic[google-cloud]'"
-        ) from e
-
-
-def _adc_project() -> str | None:
-    """The project of the application default credentials, or None (blocking: may hit the metadata server)."""
-    # Optional dependency, checked by _require_google_auth at setup.
-    import google.auth  # noqa: PLC0415
-    from google.auth.exceptions import DefaultCredentialsError  # noqa: PLC0415
-
-    try:
-        _, project = google.auth.default()
-    except DefaultCredentialsError:
-        return None
-    return project
 
 
 def _missing_key_error() -> GenkitError:
@@ -200,9 +175,7 @@ class Anthropic(Plugin):
         base_url: str | None = None,
         api_version: Literal['stable', 'beta'] | None = None,
         client_options: Mapping[str, Any] | None = None,
-        google_cloud: bool = False,
-        project: str | None = None,
-        location: str | None = None,
+        backend: GoogleCloud | None = None,
     ) -> None:
         """Initializes Anthropic plugin with given configuration.
 
@@ -214,7 +187,7 @@ class Anthropic(Plugin):
             Anthropic()
 
             # 2. Claude on Google Cloud, billed to your project (application default credentials)
-            Anthropic(google_cloud=True, project='bistro-prod')
+            Anthropic(backend=GoogleCloud(project='bistro-prod'))
 
             # 3. Refs, config and .prompt files don't change between the two
             await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
@@ -222,46 +195,45 @@ class Anthropic(Plugin):
 
         Args:
             api_key: Anthropic API key. Defaults to ``ANTHROPIC_API_KEY``. Not
-                used with ``google_cloud=True``.
+                used with ``backend=GoogleCloud(...)``.
             base_url: Anthropic API origin with no ``/v1`` suffix, e.g.
                 ``https://claude-proxy.example.com``; the SDK appends
                 ``/v1/messages``. Defaults to ``ANTHROPIC_BASE_URL``, then the
                 public API. A value ending in ``/v1`` raises. With
-                ``google_cloud=True`` it overrides the Google Cloud endpoint.
+                ``backend=GoogleCloud(...)`` it overrides the Google Cloud endpoint.
             api_version: Default API surface unless overridden by per-request
                 config. An explicit config ``apiVersion`` always takes
                 precedence. Defaults to stable.
             client_options: Other SDK client settings, such as ``timeout``,
                 ``max_retries``, ``default_headers``, or ``http_client``
                 (``AsyncAnthropic``, or ``AsyncAnthropicVertex`` with
-                ``google_cloud=True``).
-            google_cloud: Serve Claude from Google Cloud with application
-                default credentials, billed to ``project``. Needs the
-                ``google-cloud`` extra.
-            project: Google Cloud project. Defaults to ``GCLOUD_PROJECT``, then
-                ``GOOGLE_CLOUD_PROJECT``, then the credentials' project.
-            location: Google Cloud location. Defaults to
-                ``GOOGLE_CLOUD_LOCATION``, then ``global``.
+                ``backend=GoogleCloud(...)``).
+            backend: Where the models are served. ``None`` (the default) is the
+                Anthropic API; ``GoogleCloud(project=..., location=...)``
+                serves them from Google Cloud with application default
+                credentials. Needs the ``google-cloud`` extra.
 
         Raises:
             ValueError: If ``api_version`` is not ``'stable'``, ``'beta'``, or
-                ``None``, the base URL ends in ``/v1``, ``project`` or
-                ``location`` is passed without ``google_cloud=True``, or
-                ``api_key`` is passed with it.
-            TypeError: If ``client_options`` has a key the SDK client doesn't
-                take, or repeats ``api_key`` or ``base_url``.
-            ImportError: ``google_cloud=True`` without the ``google-cloud`` extra.
+                ``None``, the base URL ends in ``/v1``, or ``api_key`` is
+                passed with ``backend=GoogleCloud(...)``.
+            TypeError: If ``backend`` isn't a ``GoogleCloud``, or
+                ``client_options`` has a key the SDK client doesn't take or
+                repeats ``api_key`` or ``base_url``.
+            ImportError: ``backend=GoogleCloud(...)`` without the ``google-cloud`` extra.
         """
         if api_version not in (None, 'stable', 'beta'):
             raise ValueError("api_version must be 'stable', 'beta', or None")
 
-        self._google_cloud = google_cloud
-        if google_cloud:
+        if backend is not None and not isinstance(backend, GoogleCloud):
+            raise TypeError(f'Anthropic backend must be GoogleCloud(...) or None, got {type(backend).__name__}')
+        self._google_cloud = backend is not None
+        if backend is not None:
             if api_key is not None:
                 raise ValueError(
-                    'Anthropic(google_cloud=True) authenticates with Google Cloud credentials; drop api_key'
+                    'Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials; drop api_key'
                 )
-            _require_google_auth()
+            require_google_auth()
             options = _client_kwargs(
                 api_key=None,
                 base_url=base_url,
@@ -271,14 +243,10 @@ class Anthropic(Plugin):
             )
             # An explicit setting beats the environment; the SDK's own
             # ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION never pick these.
-            self._project: str | None = (
-                project or os.environ.get('GCLOUD_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT') or None
-            )
-            self._location: str = location or os.environ.get('GOOGLE_CLOUD_LOCATION') or _DEFAULT_GOOGLE_CLOUD_LOCATION
+            self._project: str | None = resolve_project(backend)
+            self._location: str = resolve_location(backend)
             self._adc_probed = False
         else:
-            if project is not None or location is not None:
-                raise ValueError('Anthropic got project/location without google_cloud=True; pass google_cloud=True')
             options = _client_kwargs(api_key=api_key, base_url=base_url, client_options=client_options)
             if 'base_url' in options:
                 _reject_v1_suffix(options['base_url'], source='base_url')
@@ -307,13 +275,13 @@ class Anthropic(Plugin):
             GenkitError: FAILED_PRECONDITION when no project can be found.
         """
         if self._project is None and not self._adc_probed:
-            self._project = await asyncio.to_thread(_adc_project)
+            self._project = await asyncio.to_thread(adc_project)
             self._adc_probed = True
         if self._project is None:
             raise GenkitError(
                 status='FAILED_PRECONDITION',
                 message=(
-                    'Anthropic(google_cloud=True) needs a Google Cloud project: pass project=... '
+                    'Anthropic(backend=GoogleCloud()) needs a Google Cloud project: pass GoogleCloud(project=...) '
                     'or set GOOGLE_CLOUD_PROJECT'
                 ),
             )

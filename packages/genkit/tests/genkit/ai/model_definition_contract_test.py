@@ -255,10 +255,8 @@ def test_wrapper_without_functools_wraps_rejected(ai: Genkit) -> None:
     async def chef(request: ModelRequest[Cfg], ctx: ModelContext) -> ModelResponse:
         return OK
 
-    with pytest.raises(GenkitError, match=r"Model 'timed': the function only takes \*args / \*\*kwargs") as exc:
+    with pytest.raises(TypeError, match=r"model 'timed' takes \*args, but Genkit passes only the input and context"):
         ai.define_model(name='timed', fn=chef)
-    assert exc.value.status == 'INVALID_ARGUMENT'
-    assert 'functools.wraps' in str(exc.value)
 
 
 @pytest.mark.asyncio

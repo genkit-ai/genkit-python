@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, TypeAlias, cast, get_args, get_origin, get_type_hints, overload
@@ -443,19 +442,6 @@ def _check_request_annotation(name: str, fn: ModelFn | CtxFirstModelFn) -> None:
     except Exception:  # noqa: BLE001 - unresolvable annotations or a bad shape: let Action report it
         return
     if request is None:
-        # A decorator without functools.wraps leaves only *args / **kwargs, so
-        # Genkit would call it with no request and every generate() would fail.
-        # A fn with no parameters at all just ignores the request; that's allowed.
-        variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-        if any(p.kind in variadic for p in inspect.signature(fn).parameters.values()):
-            raise GenkitError(
-                status='INVALID_ARGUMENT',
-                message=(
-                    f"Model '{name}': the function only takes *args / **kwargs, so Genkit can't "
-                    "find the request parameter. If a decorator wraps it, apply functools.wraps "
-                    'in the decorator, or declare the request (req: ModelRequest).'
-                ),
-            )
         return
     ann = hints.get(request.name)
     if ann is None:

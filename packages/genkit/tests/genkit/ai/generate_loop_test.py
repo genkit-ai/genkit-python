@@ -3,7 +3,7 @@
 # Copyright 2026 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Turn-loop invariants: max_turns, restart input, system= with history, docs=, and resume with prompt=."""
+"""Turn-loop invariants: max_turns, restart input, system= with history, docs=, resume with prompt=, and total_usage."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -26,15 +26,25 @@ from genkit._core import _tool as tool_mod
 from genkit._core._action import ActionContext
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._model import GenerateActionOptions, ModelRequest, MultipartToolResponse, reject_unanswered_interrupts
-from genkit._core._typing import FinishReason, Role, ToolRequest
+from genkit._core._typing import FinishReason, GenerationUsage, Role, ToolRequest
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams, ToolHookParams
+from genkit.model import ModelContext
 from genkit.testing import ScriptedModel, define_scripted_model
 
 
-def _answers(text: str) -> ModelResponse:
+def _answers(text: str, usage: GenerationUsage | None = None) -> ModelResponse:
     return ModelResponse(
         finish_reason=FinishReason.STOP,
         message=Message(role=Role.MODEL, content=[Part.from_text(text)]),
+        usage=usage,
+    )
+
+
+def _calls_tool(*, ref: str, usage: GenerationUsage | None = None) -> ModelResponse:
+    return ModelResponse(
+        finish_reason=FinishReason.STOP,
+        message=Message(role=Role.MODEL, content=[Part(tool_request=ToolRequest(name='lookup', input={}, ref=ref))]),
+        usage=usage,
     )
 
 
@@ -567,3 +577,316 @@ async def test_max_turns_accepts_numpy_integral() -> None:
     prompt = ai.define_prompt(name='np_turns', prompt='hi', max_turns=np.int64(3))  # type: ignore[arg-type]
     prompt_res = await prompt()
     assert prompt_res.text == 'ok'
+
+
+@pytest.mark.asyncio
+async def test_total_usage_sums_every_turn_of_a_tool_loop() -> None:
+    """usage is the last call; total_usage is what the whole loop billed."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='lookup')
+    async def lookup() -> str:
+        return 'in stock'
+
+    pm.responses = [
+        _calls_tool(
+            ref='1',
+            usage=GenerationUsage(input_tokens=10, output_tokens=5, thoughts_tokens=3, custom={'calls': 1, 'id': 'a'}),
+        ),
+        _calls_tool(ref='2', usage=GenerationUsage(input_tokens=20, output_tokens=6, custom={'calls': 1, 'id': 'b'})),
+        _answers('done', usage=GenerationUsage(input_tokens=30, output_tokens=7)),
+    ]
+
+    response = await ai.generate(prompt='check stock', tools=['lookup'])
+
+    assert response.text == 'done'
+    assert response.usage is not None
+    assert response.usage.input_tokens == 30
+    assert response.total_usage == GenerationUsage(
+        input_tokens=60,
+        output_tokens=18,
+        thoughts_tokens=3,
+        custom={'calls': 2, 'id': 'b'},
+    )
+
+
+@pytest.mark.asyncio
+async def test_total_usage_matches_usage_on_a_single_turn() -> None:
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('hi', usage=GenerationUsage(input_tokens=4, output_tokens=2))]
+
+    response = await ai.generate(prompt='hello')
+
+    assert response.total_usage == response.usage
+
+
+@pytest.mark.asyncio
+async def test_total_usage_survives_a_max_turns_abort() -> None:
+    """The rounds billed before the cap still show up on the aborted response."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='lookup')
+    async def lookup() -> str:
+        return 'again'
+
+    pm.responses = [
+        _calls_tool(ref='1', usage=GenerationUsage(input_tokens=10)),
+        _calls_tool(ref='2', usage=GenerationUsage(input_tokens=11)),
+    ]
+
+    response = await ai.generate(prompt='loop', tools=['lookup'], max_turns=1)
+
+    assert response.finish_reason == FinishReason.ABORTED
+    assert response.total_usage is not None
+    assert response.total_usage.input_tokens == 21
+
+
+@pytest.mark.asyncio
+async def test_total_usage_stays_off_when_no_model_reported_usage() -> None:
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('hi')]
+
+    response = await ai.generate(prompt='hello')
+
+    assert response.total_usage is None
+
+
+def _context_parts(request: ModelRequest | None) -> list[Part]:
+    assert request is not None
+    return [p for m in request.messages for p in m.content if (p.metadata or {}).get('purpose') == 'context']
+
+
+class DropPatientDocs(Middleware):
+    async def wrap_model(
+        self,
+        params: ModelHookParams,
+        ctx: MiddlewareContext,
+        next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        return await next_fn(ModelHookParams(request=params.request.model_copy(update={'docs': None})), ctx)
+
+
+@pytest.mark.asyncio
+async def test_wrap_model_clearing_docs_keeps_them_from_the_model() -> None:
+    """Docs are inlined in the model action, after wrap_model, so clearing them really drops them.
+
+    response.request echoes what the model got: no docs. Its messages stay the
+    resendable history.
+    """
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('ok')]
+
+    response = await ai.generate(
+        prompt='summarize',
+        docs=[Document.from_text('patient SSN 123-45-6789')],
+        use=[DropPatientDocs()],
+    )
+
+    assert pm.last_request is not None
+    assert pm.last_request.docs is None
+    assert _context_parts(pm.last_request) == []
+    assert all('123-45-6789' not in m.text for m in pm.last_request.messages)
+    assert response.request is not None
+    assert response.request.docs is None
+    assert [m.text for m in response.request.messages] == ['summarize']
+
+
+@pytest.mark.asyncio
+async def test_docs_reach_the_model_through_a_wrap_model_that_leaves_them() -> None:
+    """wrap_model sees docs only on request.docs; the model gets them as a context part."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [_answers('Lentil soup is vegan.')]
+    seen_by_middleware: list[ModelRequest] = []
+
+    class Audit(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            seen_by_middleware.append(params.request)
+            return await next_fn(params, ctx)
+
+    response = await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[Audit()],
+    )
+
+    assert _context_parts(seen_by_middleware[0]) == []
+    assert seen_by_middleware[0].docs is not None
+    context = _context_parts(pm.last_request)
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
+    assert response.request is not None
+    assert response.request.docs is not None
+    assert [d.text for d in response.request.docs] == ['Lentil soup']
+
+
+@pytest.mark.asyncio
+async def test_docs_reach_a_model_middleware_calls_directly() -> None:
+    """A backup model run through _run (how Fallback calls it) still gets docs inlined, once."""
+    ai = Genkit(model='primary')
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    ai.define_model(name='primary', fn=primary)
+    backup, _ = define_scripted_model(ai, 'backup')
+    backup.responses = [_answers('Lentil soup is vegan.')]
+
+    class SwitchToBackup(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            try:
+                return await next_fn(params, ctx)
+            except GenkitError:
+                model = await ctx.ai.lookup_model('backup')
+                assert model is not None
+                return (await model._run(input=params.request, context=ctx.context)).response
+
+    await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+        use=[SwitchToBackup()],
+    )
+
+    context = _context_parts(backup.last_request)
+    assert len(context) == 1
+    assert context[0].text is not None
+    assert '- [menu-7]: Lentil soup' in context[0].text
+
+
+@pytest.mark.asyncio
+async def test_a_model_forwarding_its_request_does_not_inline_docs_twice() -> None:
+    """A model that hands its (already inlined) request to another model adds no second context part."""
+    ai = Genkit(model='router')
+    backup, backup_action = define_scripted_model(ai, 'backup')
+    backup.responses = [_answers('Lentil soup is vegan.')]
+
+    async def router(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        assert len(_context_parts(request)) == 1
+        return (await backup_action._run(input=request)).response
+
+    ai.define_model(name='router', fn=router)
+
+    await ai.generate(
+        prompt='Which dishes are vegan?',
+        docs=[Document.from_text('Lentil soup', metadata={'ref': 'menu-7'})],
+    )
+
+    assert len(_context_parts(backup.last_request)) == 1
+
+
+@pytest.mark.asyncio
+async def test_middleware_calling_next_twice_echoes_the_last_request_and_bills_both() -> None:
+    """response.request is the second attempt's request; total_usage counts both attempts."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    pm.responses = [
+        _answers('draft', usage=GenerationUsage(input_tokens=10, output_tokens=1)),
+        _answers('final', usage=GenerationUsage(input_tokens=20, output_tokens=2)),
+    ]
+
+    class ReviseMenu(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            draft = params.request.model_copy(update={'docs': [Document.from_text('draft menu')]})
+            await next_fn(ModelHookParams(request=draft), ctx)
+            final = params.request.model_copy(update={'docs': [Document.from_text('final menu')]})
+            return await next_fn(ModelHookParams(request=final), ctx)
+
+    response = await ai.generate(prompt='what is on the menu?', use=[ReviseMenu()])
+
+    assert response.text == 'final'
+    assert response.request is not None
+    assert response.request.docs is not None
+    assert [d.text for d in response.request.docs] == ['final menu']
+    assert response.usage == GenerationUsage(input_tokens=20, output_tokens=2)
+    assert response.total_usage == GenerationUsage(input_tokens=30, output_tokens=3)
+
+
+@pytest.mark.asyncio
+async def test_total_usage_counts_a_model_middleware_calls_directly() -> None:
+    """A backup model called outside next() (how Fallback works) still lands in total_usage."""
+    ai = Genkit(model='primary')
+    calls = 0
+
+    async def primary(request: ModelRequest, ctx: ModelContext) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _calls_tool(ref='1', usage=GenerationUsage(input_tokens=10))
+        raise GenkitError(status='UNAVAILABLE', message='primary is down')
+
+    ai.define_model(name='primary', fn=primary)
+    backup, _ = define_scripted_model(ai, 'backup')
+    backup.responses = [_answers('in stock', usage=GenerationUsage(input_tokens=100))]
+
+    @ai.tool(name='lookup')
+    async def lookup() -> str:
+        return 'shelf 3'
+
+    class SwitchToBackup(Middleware):
+        async def wrap_model(
+            self,
+            params: ModelHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            try:
+                return await next_fn(params, ctx)
+            except GenkitError:
+                model = await ctx.ai.lookup_model('backup')
+                assert model is not None
+                return (await model.run(params.request, context=ctx.context)).response
+
+    response = await ai.generate(prompt='is the oat milk in stock?', tools=['lookup'], use=[SwitchToBackup()])
+
+    assert response.text == 'in stock'
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100
+    assert response.total_usage is not None
+    assert response.total_usage.input_tokens == 110
+
+
+@pytest.mark.asyncio
+async def test_total_usage_counts_a_nested_generate_inside_a_tool() -> None:
+    """A tool's own generate call reports its own total and adds to the outer one."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    summarizer, _ = define_scripted_model(ai, 'summarizer')
+    summarizer.responses = [_answers('two specials', usage=GenerationUsage(input_tokens=100))]
+    inner_totals: list[GenerationUsage | None] = []
+
+    @ai.tool(name='lookup')
+    async def lookup() -> str:
+        inner = await ai.generate(model='summarizer', prompt='summarize the specials board')
+        inner_totals.append(inner.total_usage)
+        return inner.text
+
+    pm.responses = [
+        _calls_tool(ref='1', usage=GenerationUsage(input_tokens=1)),
+        _answers('There are two specials.', usage=GenerationUsage(input_tokens=2)),
+    ]
+
+    response = await ai.generate(prompt='any specials?', tools=['lookup'])
+
+    assert inner_totals == [GenerationUsage(input_tokens=100)]
+    assert response.total_usage == GenerationUsage(input_tokens=103)

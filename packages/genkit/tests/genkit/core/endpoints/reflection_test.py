@@ -52,7 +52,7 @@ from genkit._core._middleware import Middleware
 from genkit._core._model import ModelConfig
 from genkit._core._reflection import create_reflection_asgi_app
 from genkit._core._registry import Registry
-from genkit._core._typing import ActionMetadata
+from genkit._core._typing import ActionMetadata, BaseDataPoint, EvaluatorRequest, EvaluatorResponse, Score
 from genkit.model import ModelRef
 
 
@@ -495,6 +495,52 @@ async def test_no_cors_headers_returned(asgi_client: AsyncClient) -> None:
     assert 'access-control-allow-origin' not in preflight.headers
 
 
+# What `genkit eval:run` and the Dev UI send: an EvaluatorRequest posted to
+# /api/runAction for the evaluator's action key.
+
+
+def _define_always_true_evaluators(ai: Genkit) -> None:
+    async def row_eval(datapoint: BaseDataPoint, options: object | None) -> EvaluatorResponse:
+        return EvaluatorResponse(test_case_id=datapoint.test_case_id or '', evaluation=[Score(score=True)])
+
+    async def batch_eval(req: EvaluatorRequest) -> list[EvaluatorResponse]:
+        return [
+            EvaluatorResponse(test_case_id=row.test_case_id or '', evaluation=[Score(score=True)])
+            for row in req.dataset
+        ]
+
+    ai.define_evaluator(name='row_eval', display_name='row_eval', definition='always true', fn=row_eval)
+    ai.define_batch_evaluator(name='batch_eval', display_name='batch_eval', definition='always true', fn=batch_eval)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('evaluator', ['row_eval', 'batch_eval'])
+async def test_reflection_run_evaluator_returns_json_array_of_rows(evaluator: str) -> None:
+    """Per-row and batch evaluators run through /api/runAction both return a JSON array of rows."""
+    ai = Genkit()
+    _define_always_true_evaluators(ai)
+    client = await _registry_asgi_client(ai._registry)
+    body = {
+        'key': f'/evaluator/{evaluator}',
+        'input': {
+            'dataset': [
+                {'testCaseId': 'case1', 'input': 'hi', 'output': 'hi'},
+                {'testCaseId': 'case2', 'input': 'bye', 'output': 'bye'},
+            ],
+            'evalRunId': 'run1',
+        },
+    }
+    try:
+        response = await client.post('/api/runAction', json=body)
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 200
+    result = response.json()['result']
+    assert [row['testCaseId'] for row in result] == ['case1', 'case2']
+    assert [row['evaluation'] for row in result] == [[{'score': True}], [{'score': True}]]
+
+
 @pytest.mark.asyncio
 async def test_reflection_run_slash_retriever_key_returns_404() -> None:
     """Running '/retriever/x' from the Dev UI gets a 404 'Action not found', not a server error."""
@@ -616,7 +662,8 @@ async def test_dev_ui_run_of_public_error_flow_returns_its_status_and_trace_id(h
         response = await client.post('/api/runAction', json={'key': '/flow/order', 'input': '99'})
 
     error = response.json()['error']
-    assert error['message'] == 'no order 99'
+    # Same `STATUS: message` the trace shows, and what JS sends.
+    assert error['message'] == 'NOT_FOUND: no order 99'
     assert error['code'] == 5
     assert error['details']['traceId'] == response.headers['x-genkit-trace-id']
 
@@ -630,7 +677,7 @@ async def test_run_action_flushes_dev_ui_collector_only() -> None:
     events: list[str] = []
 
     class RecordingSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -676,7 +723,7 @@ async def test_run_action_succeeds_when_dev_ui_collector_flush_raises() -> None:
     from genkit._core._telemetry._instrumentation import configure_instrumentation, reset_instrumentation
 
     class BrokenSink:
-        def export_spans(self, spans: Any, *, resource_attributes: Any) -> None:  # noqa: ANN401
+        def export_spans(self, spans: Any) -> None:  # noqa: ANN401
             pass
 
         def flush(self) -> None:
@@ -726,6 +773,10 @@ async def test_run_action_error_carries_python_traceback() -> None:
     assert 'Traceback (most recent call last)' in stack
     assert 'check_allergens' in stack
     assert 'ValueError: unknown allergen profile for Tartine' in stack
+    # The flow's own line comes first; the reflection server and action
+    # runtime frames that lead into it are dropped.
+    first_frame = next(line for line in stack.splitlines() if line.strip().startswith('File '))
+    assert __file__ in first_frame and 'in check_allergens' in first_frame
 
 
 @pytest.mark.asyncio

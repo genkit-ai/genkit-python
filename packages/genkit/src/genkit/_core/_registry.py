@@ -31,6 +31,7 @@ from typing_extensions import Never, TypeVar
 from genkit._core._action import (
     GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR,
     Action,
+    ActionContext,
     ActionKind,
     ActionName,
     FlowContext,
@@ -54,7 +55,7 @@ from genkit._core._model import (
 from genkit._core._operation import Operation
 from genkit._core._plugin import Plugin, resolved_action_name
 from genkit._core._tool import Tool
-from genkit._core._typing import ActionMetadata, EmbedResponse
+from genkit._core._typing import ActionMetadata, EmbedResponse, EvalResponse, EvaluatorRequest
 
 logger = get_logger(__name__)
 
@@ -84,6 +85,7 @@ ChunkT = TypeVar('ChunkT', default=Never)
 ActionFn = (
     Callable[[], OutputT | Awaitable[OutputT]]
     | Callable[[InputT], OutputT | Awaitable[OutputT]]
+    | Callable[[InputT, ActionContext], OutputT | Awaitable[OutputT]]
     | Callable[[InputT, FlowContext], OutputT | Awaitable[OutputT]]
     | Callable[[InputT, ModelContext], OutputT | Awaitable[OutputT]]
 )
@@ -427,8 +429,11 @@ class Registry:
                     raise ValueError(f'Invalid ActionMetadata from {plugin_name}: name required')
                 if not meta.action_type:
                     raise ValueError(f'Invalid ActionMetadata from {plugin_name}: action_type required')
-                key = f'/{meta.action_type}/{meta.name}'
-                catalog[key] = meta.model_copy(update={'key': key})
+                # Same prefix rule as ``register_action_instance`` in ``init()`` so
+                # the advertised key resolves through ``resolve_action``.
+                name = meta.name if meta.name.startswith(f'{plugin_name}/') else f'{plugin_name}/{meta.name}'
+                key = f'/{meta.action_type}/{name}'
+                catalog[key] = meta.model_copy(update={'key': key, 'name': name})
 
         # 2. Concrete registered actions. A local tool is ``/tool/<name>`` plus its
         #    ``/tool.v2/<name>`` envelope; the Dev UI shows the ``tool.v2`` row.
@@ -922,6 +927,20 @@ class Registry:
             action,
         )
 
+    async def resolve_evaluator(self, name: str) -> Action[EvaluatorRequest, EvalResponse, Never] | None:
+        """Resolve an evaluator action by name with full type information.
+
+        Args:
+            name: The evaluator name (e.g., "my-evaluator" or "plugin/evaluator").
+
+        Returns:
+            A fully typed evaluator action, or None if not found.
+        """
+        action = await self.resolve_action(ActionKind.EVALUATOR, name)
+        if action is None:
+            return None
+        return cast(Action[EvaluatorRequest, EvalResponse, Never], action)
+
 
 def define_dynamic_action_provider(
     registry: Registry,
@@ -945,10 +964,5 @@ def define_dynamic_action_provider(
         metadata={**(metadata or {}), 'type': 'dynamic-action-provider'},
     )
 
-    dap = DynamicActionProvider(action, fn, cache_ttl_millis)
-    # Attach the provider to the registered Action so anyone holding the
-    # Action (e.g. ``Registry.resolve_action_by_key`` for a DAP-qualified key,
-    # or ``Registry.list_actions`` expanding children for reflection) can
-    # recover the cache and helpers via ``getattr(action, ATTR, None)``.
-    setattr(action, GENKIT_DYNAMIC_ACTION_PROVIDER_ATTR, dap)
-    return dap
+    # DynamicActionProvider stamps itself on ``action``.
+    return DynamicActionProvider(action, fn, cache_ttl_millis)

@@ -33,9 +33,8 @@ from typing_extensions import Self
 
 from genkit._core._action import (
     Action,
+    ActionContext,
     ActionKind,
-    ActionRunContext,
-    FlowContext,
     get_current_context,
     set_action_name,
 )
@@ -53,9 +52,9 @@ OutT = TypeVar('OutT')
 # Annotation-only aliases. Operation[OutT] is a concrete pydantic class at
 # runtime, so CheckOpFn[X] can't be subscripted outside an annotation; spell
 # the Callable out when you need a runtime alias.
-StartOpFn = Callable[[InT, FlowContext], Awaitable[Operation]]
-CheckOpFn = Callable[[Operation[OutT], FlowContext], Awaitable[Operation]]
-CancelOpFn = Callable[[Operation[OutT], FlowContext], Awaitable[Operation]]
+StartOpFn = Callable[[InT, ActionContext], Awaitable[Operation]]
+CheckOpFn = Callable[[Operation[OutT], ActionContext], Awaitable[Operation]]
+CancelOpFn = Callable[[Operation[OutT], ActionContext], Awaitable[Operation]]
 
 
 def _make_action_key(action_type: ActionKind | str, name: str) -> str:
@@ -208,11 +207,11 @@ class BackgroundAction(Generic[InT, OutT]):
             pass
 
 
-        async def start(request: RenderRequest, ctx: FlowContext) -> Operation:
+        async def start(request: RenderRequest, ctx: ActionContext) -> Operation:
             return Operation(id=await renderer.submit(request.quarter))
 
 
-        async def check(op: Operation[Report], ctx: FlowContext) -> Operation:
+        async def check(op: Operation[Report], ctx: ActionContext) -> Operation:
             return await renderer.poll(op.id)
 
 
@@ -493,7 +492,7 @@ def _operation_action(
 
     # wraps keeps fn's annotations on the wrapper, e.g. ModelRequest[VeoConfig].
     @wraps(fn)
-    async def run_and_stamp(input: object, ctx: ActionRunContext) -> Operation:  # noqa: A002
+    async def run_and_stamp(input: object, ctx: ActionContext) -> Operation:  # noqa: A002
         if isinstance(input, Operation):
             # check/cancel: the caller's handle, often reloaded from storage.
             input = validate_operation(input, output_type=output_type, name=action.name, status='INVALID_ARGUMENT')  # noqa: A001

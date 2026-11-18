@@ -45,7 +45,7 @@ from pydantic import BaseModel, Field
 from websockets.asyncio.server import serve
 
 from genkit import Genkit, Interrupt
-from genkit._core._action import Action, ActionKind, ActionRunContext, BidiAction
+from genkit._core._action import Action, ActionContext, ActionKind, BidiAction
 from genkit._core._error import StatusCodes
 from genkit._core._middleware import Middleware
 from genkit._core._model import AgentInit, AgentInput, ModelConfig
@@ -584,7 +584,7 @@ async def test_reflection_server_v2_run_tool_that_interrupts_replies_with_error(
         assert isinstance(err, dict)
         assert err.get('data', {}).get('code') == StatusCodes.INTERNAL.value
         # Same wording as every other boundary, not Interrupt's empty str().
-        assert str(err.get('message')).startswith('Interrupt raised outside a tool')
+        assert str(err.get('message')).startswith('INTERNAL: Interrupt raised outside a tool')
     finally:
         await _stop_client(client, task)
 
@@ -593,7 +593,7 @@ async def test_reflection_server_v2_run_tool_that_interrupts_replies_with_error(
 async def test_reflection_server_v2_streaming_run_action(fake_manager: FakeReflectionManager) -> None:
     registry = Registry()
 
-    async def stream_inc(x: int, ctx: ActionRunContext) -> int:
+    async def stream_inc(x: int, ctx: ActionContext) -> int:
         for i in range(x):
             ctx.send_chunk(i)
         return x
@@ -1012,7 +1012,7 @@ async def test_reflection_v1_run_tool_that_interrupts_writes_error_payload() -> 
     assert body is not None
     error = json.loads(body)['error']
     assert error['code'] == StatusCodes.INTERNAL.value
-    assert error['message'].startswith('Interrupt raised outside a tool')
+    assert error['message'].startswith('INTERNAL: Interrupt raised outside a tool')
     assert runner.queue.get_nowait() is None
 
 
@@ -1048,11 +1048,11 @@ async def test_reflection_server_v2_run_action_context_reaches_flow_and_subflow(
     caller = {'auth': {'uid': 'u_42', 'tier': 'gold'}, 'locale': 'en-US'}
 
     @ai.flow()
-    async def allergy_check(dish: str, ctx: ActionRunContext) -> dict[str, Any]:
+    async def allergy_check(dish: str, ctx: ActionContext) -> dict[str, Any]:
         return dict(ctx.context)
 
     @ai.flow()
-    async def order_dish(dish: str, ctx: ActionRunContext) -> dict[str, Any]:
+    async def order_dish(dish: str, ctx: ActionContext) -> dict[str, Any]:
         return {'flow': dict(ctx.context), 'subflow': await allergy_check(dish)}
 
     client, task = await _run_client_lifecycle(ai._registry, fake_manager)

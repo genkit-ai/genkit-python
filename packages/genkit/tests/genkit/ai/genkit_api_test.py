@@ -5,6 +5,7 @@
 
 """Tests for the Genkit extra API methods."""
 
+import asyncio
 import json
 import os
 import signal
@@ -25,6 +26,7 @@ from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._model import ModelRequest, ModelResponse
 from genkit._core._operation import Operation
 from genkit._core._telemetry._log_exporter import build_log_record
+from genkit.evaluator import BaseDataPoint, EvaluatorResponse, Score
 from genkit.model import ModelContext
 from genkit.telemetry import (
     SpanMetadata,
@@ -157,8 +159,37 @@ async def test_genkit_run() -> None:
     def sync_fn() -> str:
         return 'hello'
 
-    with pytest.raises(TypeError, match='fn must be a coroutine function'):
+    with pytest.raises(TypeError, match='fn must return an awaitable'):
         await ai.run(name='test3', fn=sync_fn)  # type: ignore[arg-type]
+
+    # JS/Go shape: positional name and fn, lambdas, async-callable instances.
+    assert await ai.run('test4', async_fn) == 'world'
+    assert await ai.run('test5', lambda: async_fn()) == 'world'
+
+    class Fetch:
+        async def __call__(self) -> str:
+            return 'menu'
+
+    assert await ai.run('test6', Fetch()) == 'menu'
+
+
+@pytest.mark.asyncio
+async def test_genkit_run_accepts_sync_def_and_bound_method_returning_awaitable() -> None:
+    """Any callable returning an awaitable works, including named defs and bound methods."""
+    ai = Genkit()
+
+    async def inner(x: int) -> int:
+        return x * 2
+
+    def fan() -> asyncio.Future[tuple[int, int]]:
+        return asyncio.gather(inner(1), inner(2))
+
+    class Runner:
+        def go(self) -> asyncio.Future[tuple[int, int]]:
+            return asyncio.gather(inner(3), inner(4))
+
+    assert await ai.run('fan', fan) == [2, 4]
+    assert await ai.run('bound', Runner().go) == [6, 8]
 
 
 @pytest.mark.asyncio
@@ -647,3 +678,17 @@ def test_genkit_init_has_docstring() -> None:
     assert 'model:' in doc
     assert 'prompt_dir:' in doc
     assert "GoogleAI.gemini('gemini-flash-latest')" in doc
+
+
+def test_define_evaluator_takes_name_and_fn_positionally() -> None:
+    """define_evaluator(name, fn, *, ...) matches define_model; options stay keyword-only."""
+    ai = Genkit()
+
+    async def exact(row: BaseDataPoint, options: object | None) -> EvaluatorResponse:
+        return EvaluatorResponse(test_case_id=row.test_case_id or '', evaluation=[Score(score=True)])
+
+    action = ai.define_evaluator('exact', exact, display_name='Exact', definition='Matches exactly.')
+    assert action.name == 'exact'
+
+    with pytest.raises(TypeError):
+        ai.define_evaluator('exact2', exact, 'Exact', 'Matches exactly.')  # type: ignore[misc]  # pyright: ignore[reportCallIssue]

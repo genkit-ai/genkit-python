@@ -16,7 +16,7 @@
 
 """Tool registration, interruption, and request execution helpers for the Genkit framework."""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import Any, NoReturn, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
@@ -25,7 +25,13 @@ from genkit._core._action import Action
 from genkit._core._error import ErrorReason, GenkitError, Interrupt as Interrupt
 from genkit._core._logger import get_logger
 from genkit._core._middleware import MiddlewareContext
-from genkit._core._model import MultipartToolResponse as MultipartToolResponse, Part, as_part, as_resumed
+from genkit._core._model import (
+    MultipartToolResponse as MultipartToolResponse,
+    Part,
+    as_part,
+    as_resumed,
+    parts_to_wire as parts_to_wire,
+)
 from genkit._core._registry import Registry
 from genkit._core._tool import (
     ORIGINAL_OUTPUT_SCHEMA_KEY as ORIGINAL_OUTPUT_SCHEMA_KEY,
@@ -89,25 +95,6 @@ def normalize_pending_content(pending_content: object, *, tool_name: str) -> lis
     return out
 
 
-def parts_to_wire(parts: Sequence[Part] | None, *, tool_name: str | None = None) -> list[dict[str, Any]] | None:
-    """Dump parts the way a model plugin expects them on the tool message.
-
-    A bare dump keeps unused fields as null and uses snake_case names. The
-    model request — and anything that later re-parses that history — wants
-    only the live fields, in camelCase.
-    """
-    if not parts:
-        return None
-    out: list[dict[str, Any]] = []
-    name = tool_name if tool_name is not None else 'tool'
-    for part in parts:
-        dumped = dump_part(part, tool_name=name, what='content')
-        if not wire_part_is_live(dumped):
-            raise live_payload_error(tool_name=name, where='content')
-        out.append(dumped)
-    return out
-
-
 logger = get_logger(__name__)
 
 
@@ -162,7 +149,7 @@ async def run_tool_request(
     token_meta = _tool_resumed_metadata.set(resumed_meta)
     token_input = _tool_original_input.set(original_input)
     sink = _ScopedToolChunkSink(tool_request_part, on_tool_chunk) if on_tool_chunk is not None else None
-    run_context = dict(ctx.context) if ctx and ctx.context else None
+    run_context = dict(ctx.context) if ctx is not None and ctx.context is not None else None
     telemetry_labels = cast(dict[str, object], dict(ctx.telemetry_labels)) if ctx and ctx.telemetry_labels else None
     try:
         return (

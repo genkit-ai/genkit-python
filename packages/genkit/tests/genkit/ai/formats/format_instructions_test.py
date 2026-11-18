@@ -198,3 +198,23 @@ async def test_caller_constrained_false_wins_over_model_support() -> None:
     assert seen[-1].output is not None
     assert seen[-1].output.constrained is False
     assert _schema_in_prompt(seen[-1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('content_type', 'expected'),
+    [
+        ('application/vnd.restaurant+json', 'application/vnd.restaurant+json'),
+        (None, 'application/json'),
+    ],
+)
+async def test_caller_content_type_wins_over_the_format_default(content_type: str | None, expected: str) -> None:
+    """An explicit output_content_type reaches the model; without one, the format's value does."""
+    ai = Genkit()
+    seen = _define_menu_model(ai, 'menuModel', ConstrainedSupport.ALL)
+
+    await ai.generate(model='menuModel', prompt='Suggest a dish.', output_schema=Dish, output_content_type=content_type)
+
+    assert seen[-1].output is not None
+    assert seen[-1].output.format == 'json'
+    assert seen[-1].output.content_type == expected

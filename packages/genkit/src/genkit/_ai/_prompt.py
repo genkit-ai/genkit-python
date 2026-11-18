@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Any, ClassVar, Generic, NamedTuple, TypedDict, TypeVar, cast
 
@@ -33,7 +35,7 @@ from dotpromptz import (
     PromptInputConfig,
     PromptMetadata,
 )
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, field_validator
 from typing_extensions import Never, Self
 
 from genkit._ai import _aio
@@ -59,6 +61,7 @@ from genkit._ai._model import (
     clear_on_hop,
     config_schema_at_define,
     normalize_config,
+    python_config_schema,
     resolve_call_model,
     resolve_for_generate,
     resolve_model_name,
@@ -71,7 +74,7 @@ from genkit._core._action import (
     create_action_key,
     get_current_context,
 )
-from genkit._core._config_check import check_config_values, config_field_names
+from genkit._core._config_check import check_config_values, config_field_names, wire_config
 from genkit._core._error import ErrorReason, GenkitError
 from genkit._core._logger import get_logger
 from genkit._core._middleware import Middleware, _dump_middleware_ref_config, middleware_class_index
@@ -82,6 +85,7 @@ from genkit._core._model import (
     OutputConfig,
     Part,
     ToolChoice,
+    check_max_turns,
     resume_options_to_resume,
 )
 from genkit._core._registry import Registry
@@ -247,6 +251,16 @@ class GenerateCall(BaseModel):
     model: ModelArg | Action | None = None
     config: Mapping[str, Any] | BaseModel | None = None
 
+    @field_validator('max_turns', mode='before')
+    @classmethod
+    def _check_max_turns(cls, v: object) -> object:
+        check_max_turns(v)
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        if isinstance(v, Integral) and not isinstance(v, bool):
+            return int(v)
+        return v
+
     def with_overrides(self, opts: PromptSettings) -> Self:
         """Return a copy where every ``PromptSettings`` key the call passed replaces this one's.
 
@@ -254,6 +268,13 @@ class GenerateCall(BaseModel):
         ``PromptGenerateOptions``; keys outside ``PromptSettings`` are ignored here.
         """
         set_by_call = {k: v for k, v in opts.items() if k in PromptSettings.__optional_keys__ and v is not None}
+        if 'max_turns' in set_by_call:
+            check_max_turns(set_by_call['max_turns'])
+            mt = set_by_call['max_turns']
+            if isinstance(mt, float) and mt.is_integer():
+                set_by_call['max_turns'] = int(mt)
+            elif isinstance(mt, Integral) and not isinstance(mt, bool):
+                set_by_call['max_turns'] = int(mt)
         return self.model_copy(update=set_by_call)
 
 
@@ -849,6 +870,13 @@ async def to_generate_options(
     default_model = registry.lookup_value('defaultModel', 'defaultModel')
     uses_ref = isinstance(call.model, ModelRef) or isinstance(default_model, ModelRef)
     config = resolved.config if uses_ref else call.config
+    # The generate and render spans record these options, and the Dev UI
+    # model runner reads config back by camelCase key. Rename fields the
+    # model's class declares; with no class the keys are the model's own.
+    action = await registry.resolve_model(model)
+    schema = (python_config_schema(action.config_schema) if action is not None else None) or resolved.config_schema
+    if schema is not None and config is not None:
+        config = wire_config(config=normalize_config(config=config), schema=schema)
 
     resolved_msgs: list[Message] = list(call.messages or [])
 
@@ -1548,6 +1576,10 @@ def _transform_prompt_metadata(
                 if isinstance(output, dict) and 'instructions' in output
                 else (raw_output.get('instructions') if isinstance(raw_output, dict) else None)
             ),
+            # Same raw fallback: frontmatter `constrained: false` and
+            # `contentType` must reach the request.
+            'constrained': _output_key(output, raw_output, 'constrained'),
+            'contentType': _output_key(output, raw_output, 'contentType'),
         },
         'input': {
             'default': input_cfg.get('default') if isinstance(input_cfg, dict) else None,
@@ -1562,6 +1594,23 @@ def _transform_prompt_metadata(
     }
 
 
+def file_constrained(output: dict[str, Any]) -> bool | None:
+    """Frontmatter `constrained:` wins; a schema with no setting asks for native JSON mode."""
+    constrained = output.get('constrained')
+    if isinstance(constrained, bool):
+        return constrained
+    return True if output.get('jsonSchema') else None
+
+
+def _output_key(output: object, raw_output: object, key: str) -> Any:  # noqa: ANN401
+    for source in (output, raw_output):
+        if isinstance(source, dict):
+            value = cast(dict[str, Any], source).get(key)
+            if value is not None:
+                return value
+    return None
+
+
 def load_prompt(ai: _aio.Genkit, path: Path, filename: str, prefix: str = '', ns: str = '') -> None:
     """Load a .prompt file and register it as a lazy-loaded prompt."""
     registry = ai._registry
@@ -1573,9 +1622,8 @@ def load_prompt(ai: _aio.Genkit, path: Path, filename: str, prefix: str = '', ns
     base_name = filename.removesuffix('.prompt')
     variant: str | None = None
     if '.' in base_name:
-        parts = base_name.split('.')
-        base_name = parts[0]
-        variant = parts[1]
+        # `scorer.v2.1.prompt` is prompt `scorer`, variant `v2.1`.
+        base_name, variant = base_name.split('.', 1)
     name = f'{prefix}{base_name}'
 
     file_path = path / (prefix.rstrip('/') + '/' + filename if prefix else filename)
@@ -1619,7 +1667,8 @@ def load_prompt(ai: _aio.Genkit, path: Path, filename: str, prefix: str = '', ns
             input_schema=metadata.get('input', {}).get('jsonSchema'),
             input_default=file_default if isinstance(file_default, dict) else None,
             output_schema=output_schema,
-            output_constrained=True if metadata.get('output', {}).get('jsonSchema') else None,
+            output_constrained=file_constrained(metadata.get('output', {})),
+            output_content_type=metadata.get('output', {}).get('contentType'),
             output_format=metadata.get('output', {}).get('format'),
             output_instructions=metadata.get('output', {}).get('instructions'),
             messages=metadata.get('messages'),
@@ -1715,7 +1764,13 @@ def load_prompt_folder_recursively(
             if not entry.is_file() or not entry.name.endswith('.prompt'):
                 continue
             if not entry.name.startswith('_'):
-                load_prompt(ai, dir_path, entry.name, prefix, ns)
+                # One bad file (unreadable, bad frontmatter) must not take its
+                # siblings and subdirectories down with it. Templates compile
+                # on first use, so template errors surface there, not here.
+                try:
+                    load_prompt(ai, dir_path, entry.name, prefix, ns)
+                except Exception:  # noqa: BLE001 - logged with the file, siblings keep loading
+                    logger.exception(f'Failed to load prompt file {entry.path}')
                 continue
 
             short_name = entry.name[1:-7]  # Remove "_" prefix and ".prompt" suffix
@@ -1729,14 +1784,12 @@ def load_prompt_folder_recursively(
                 else:
                     names.append(short_name)
 
-            with Path(entry.path).open(encoding='utf-8') as f:
-                source = f.read()
-
-            # Strip frontmatter if present
-            if source.startswith('---'):
-                end_frontmatter = source.find('---', 3)
-                if end_frontmatter != -1:
-                    source = source[end_frontmatter + 3 :].strip()
+            try:
+                with Path(entry.path).open(encoding='utf-8') as f:
+                    source = strip_frontmatter(f.read())
+            except Exception:  # noqa: BLE001 - logged with the file, siblings keep loading
+                logger.exception(f'Failed to load partial file {entry.path}')
+                continue
 
             for name in names:
                 define_partial(ai._registry, name, source)
@@ -1749,6 +1802,21 @@ def load_prompt_folder_recursively(
         logger.warning(f'Permission denied accessing directory: {full_path}')
     except Exception as e:
         logger.exception(f'Error loading prompts from {full_path}', exc_info=e)
+
+
+_FRONTMATTER = re.compile(r'\A---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|\Z)', re.DOTALL)
+
+
+def strip_frontmatter(source: str) -> str:
+    """Drop a leading `---` frontmatter block; `---` lines in the body stay.
+
+    Both delimiters must be lines of their own, so a Markdown divider in a
+    partial without frontmatter is template text, not a delimiter.
+    """
+    match = _FRONTMATTER.match(source)
+    if match is None:
+        return source
+    return source[match.end() :].strip()
 
 
 def load_prompt_folder(ai: _aio.Genkit, dir_path: str | Path = './prompts', ns: str = '') -> None:
@@ -1773,7 +1841,7 @@ def load_prompt_folder(ai: _aio.Genkit, dir_path: str | Path = './prompts', ns: 
         return
 
     load_prompt_folder_recursively(ai, path, ns, '')
-    logger.info(f'Loaded prompts from directory: {path}')
+    logger.debug(f'Loaded prompts from directory: {path}')
 
 
 async def lookup_prompt(registry: Registry, name: str, variant: str | None = None) -> Prompt[Any, Any]:

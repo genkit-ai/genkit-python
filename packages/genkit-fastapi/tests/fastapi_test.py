@@ -1317,3 +1317,60 @@ async def test_fastapi_streaming_client_disconnect_cancels_flow() -> None:
     assert bodies == [b'data: {"message":1}\n\n']
     assert flow_cancelled.is_set()
     await asyncio.wait_for(cleanup_finished.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_fastapi_non_streaming_client_disconnect_cancels_flow() -> None:
+    """A client that disconnects during a non-streaming POST cancels the flow and awaits cleanup."""
+    ai = Genkit()
+    flow_started = asyncio.Event()
+    flow_cancelled = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    @ai.flow()
+    async def slow(_: str) -> str:
+        flow_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            flow_cancelled.set()
+            raise
+        finally:
+            await asyncio.sleep(0.02)
+            cleanup_finished.set()
+        return 'never'
+
+    app = FastAPI()
+    app.include_router(serve_flow(slow, base_path='/slow'))
+
+    request_read = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_read
+        if not request_read:
+            request_read = True
+            return {'type': 'http.request', 'body': json.dumps({'data': 'x'}).encode(), 'more_body': False}
+        await flow_started.wait()
+        return {'type': 'http.disconnect'}
+
+    async def send(_message: MutableMapping[str, Any]) -> None:
+        return
+
+    scope = {
+        'type': 'http',
+        'asgi': {'version': '3.0', 'spec_version': '2.3'},
+        'http_version': '1.1',
+        'method': 'POST',
+        'scheme': 'http',
+        'path': '/slow',
+        'raw_path': b'/slow',
+        'root_path': '',
+        'query_string': b'',
+        'headers': [(b'content-type', b'application/json')],
+        'client': ('testclient', 50000),
+        'server': ('testserver', 80),
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=5)
+
+    assert flow_cancelled.is_set()
+    await asyncio.wait_for(cleanup_finished.wait(), timeout=1.0)

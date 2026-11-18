@@ -22,11 +22,13 @@ properties and methods on top of the generated wire types.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
+from numbers import Integral
 from typing import Any, ClassVar, Final, Generic, Literal, TypeGuard, cast, get_args
 
 from pydantic import (
@@ -36,6 +38,7 @@ from pydantic import (
     GetJsonSchemaHandler,
     PrivateAttr,
     RootModel,
+    TypeAdapter,
     ValidationError,
     ValidationInfo,
     field_validator,
@@ -314,19 +317,20 @@ ConfigT = TypeVar('ConfigT', bound=ModelConfig, default=ModelConfig)
 # Bound to BaseModel so ModelRef is always parameterized with a concrete Pydantic config schema.
 # Covariant so ModelRef[GeminiConfig] is assignable to ModelRef[BaseModel] or ModelRef[Any].
 ModelRefConfigT = TypeVar('ModelRefConfigT', bound=BaseModel, covariant=True)
-# ModelRequest[X], EmbedRequest[X] and the evaluator requests take a pydantic
-# model class; __class_getitem__ rejects the rest. Not bound to BaseModel: type
-# checkers would then reject the common bare ModelRequest(config={...}), where
-# the config is solved as a dict. Invariant: config is writable, so
+# ModelRequest[X] and EmbedRequest[X] take a pydantic model class;
+# __class_getitem__ rejects the rest. Not bound to BaseModel: type checkers
+# would then reject the common bare ModelRequest(config={...}), where the
+# config is solved as a dict. Invariant: config is writable, so
 # ModelRequest[GeminiConfig] is not a ModelRequest[ModelConfig] you can assign
-# a ModelConfig into. Defaults to Any so bare ModelRequest means
-# ModelRequest[Any], and Callable[[ModelRequest], ...] accepts a fn typed
-# ModelRequest[GeminiConfig].
+# a ModelConfig into.
+#
+# Both default to Any, the way a bare generic does in Python (list is
+# list[Any]). A helper annotated with bare ModelRequest or EmbedRequest then
+# accepts a typed request, and Callable[[ModelRequest], ...] accepts a fn
+# typed ModelRequest[GeminiConfig]. At runtime an untyped request still gets
+# its config / options as a dict (see check_options_value).
 ModelRequestConfigT = TypeVar('ModelRequestConfigT', default=Any)
-# Bare EmbedRequest / evaluator request options are always a dict at runtime, so the
-# default says so. Fn aliases take EmbedRequest[Any] / EvaluatorRequest[Any] so a fn
-# typed EmbedRequest[CrmEmbedConfig] still fits them.
-RequestOptionsT = TypeVar('RequestOptionsT', default=dict[str, Any])
+RequestOptionsT = TypeVar('RequestOptionsT', default=Any)
 
 
 def declared_config_type(cls: type) -> type[BaseModel] | None:
@@ -660,8 +664,53 @@ class Part(GenkitModel):
         output: Any | None = None,  # noqa: ANN401
         ref: str | None = None,
         metadata: dict[str, Any] | None = None,
+        content: Sequence[Part] | None = None,
     ) -> Part:
-        return cls(tool_response=ToolResponse(name=name, output=output, ref=ref), metadata=metadata)
+        """Build a tool-response part, e.g. for a manual tool loop.
+
+        ``content`` carries media the model should see next to ``output``
+        (a screenshot, a chart). A ``MultipartToolResponse`` passed as
+        ``output`` is unwrapped the way the engine does it: its ``output``,
+        ``content``, and ``metadata`` land in their own slots instead of being
+        serialized as JSON text. Setting ``content`` or ``metadata`` both on
+        the ``MultipartToolResponse`` and as a keyword raises ``GenkitError``
+        (``INVALID_ARGUMENT``) instead of dropping one.
+
+        ``output`` and ``metadata`` are dumped to JSON and ``content`` to wire
+        parts, the same as a tool return inside ``generate``, so a Pydantic
+        output reaches the model plugin as JSON. Output that can't be dumped,
+        or a part with nothing in it (an empty media URL), raises
+        ``GenkitError`` (``INVALID_ARGUMENT``) here.
+        """
+        if isinstance(output, MultipartToolResponse):
+            multipart = cast('MultipartToolResponse[Any]', output)
+            # Two sources for one slot is a caller mistake; picking one would drop the other silently.
+            for slot, explicit, wrapped in (
+                ('content', content, multipart.content),
+                ('metadata', metadata, multipart.metadata),
+            ):
+                if explicit is not None and wrapped is not None:
+                    raise GenkitError(
+                        status='INVALID_ARGUMENT',
+                        message=(
+                            f"tool '{name}': {slot} is set on the MultipartToolResponse and passed as {slot}=. "
+                            'Pass it in one place.'
+                        ),
+                    )
+            if content is None:
+                content = multipart.content
+            if metadata is None:
+                metadata = multipart.metadata
+            output = multipart.output
+        return cls(
+            tool_response=ToolResponse(
+                name=name,
+                output=dump_tool_output(output, tool_name=name),
+                ref=ref,
+                content=parts_to_wire(content, tool_name=name),
+            ),
+            metadata=dump_tool_metadata(metadata, tool_name=name),
+        )
 
     @classmethod
     def from_data(cls, data: Any, metadata: dict[str, Any] | None = None) -> Part:  # noqa: ANN401
@@ -739,6 +788,128 @@ def as_part(value: object) -> Part:
     if isinstance(value, BaseModel):
         return Part.model_validate(dump_keeping_unknown(value))
     return Part.model_validate(value)
+
+
+# Tool-response wire dumps. Part.from_tool_response and the tool runner both
+# go through these, so a manual tool loop sends the model the same JSON.
+
+
+def _usable_locator(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def wire_part_is_live(dumped: dict[str, Any]) -> bool:
+    """True when a dumped part has a payload a model plugin can actually use."""
+    if isinstance(dumped.get('text'), str):
+        return True
+    media = dumped.get('media')
+    if isinstance(media, dict) and _usable_locator(media.get('url')):
+        return True
+    if dumped.get('data') is not None or dumped.get('custom') is not None:
+        return True
+    if isinstance(dumped.get('reasoning'), str):
+        return True
+    resource = dumped.get('resource')
+    if isinstance(resource, dict) and _usable_locator(resource.get('uri')):
+        return True
+    tool_request = dumped.get('toolRequest')
+    if isinstance(tool_request, dict) and _usable_locator(tool_request.get('name')):
+        return True
+    tool_response = dumped.get('toolResponse')
+    if isinstance(tool_response, dict) and _usable_locator(tool_response.get('name')):
+        return True
+    return False
+
+
+def _wire_fallback(obj: object) -> object:
+    if isinstance(obj, bytes):
+        try:
+            return base64.b64encode(obj).decode('utf-8')
+        except Exception:
+            return '<bytes>'
+    raise TypeError(f'{type(obj).__name__} is not JSON-serializable')
+
+
+def dump_part(part: Part, *, tool_name: str | None = None, what: str = 'content') -> dict[str, Any]:
+    """Dump a part to JSON-compatible wire dict, raising INVALID_ARGUMENT if unserializable."""
+    try:
+        return as_part(part).model_dump(mode='json', by_alias=True, exclude_none=True, fallback=_wire_fallback)
+    except GenkitError:
+        raise
+    except Exception as e:
+        if tool_name is not None:
+            message = f'Tool {tool_name!r} {what} is not JSON-serializable.'
+        else:
+            message = f'MultipartToolResponse {what} is not JSON-serializable.'
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=message,
+            cause=e,
+            reason=ErrorReason.INVALID_PART,
+        ) from e
+
+
+def live_payload_error(*, tool_name: str, where: str) -> GenkitError:
+    """Build the INVALID_ARGUMENT error for a part with no usable payload."""
+    return GenkitError(
+        status='INVALID_ARGUMENT',
+        message=f'Tool {tool_name!r} {where} includes a part with no live payload.',
+        reason=ErrorReason.INVALID_PART,
+    )
+
+
+def dump_tool_output(value: Any, *, tool_name: str | None = None, what: str = 'output') -> Any:  # noqa: ANN401
+    """Dump structured output the way the advertised JSON Schema describes it."""
+    try:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode='json', by_alias=True)
+        return TypeAdapter(object).dump_python(value, mode='json', by_alias=True)
+    except GenkitError:
+        raise
+    except Exception as e:
+        # The handler already ran. A dump crash here would look like an
+        # internal failure, and a retry would do the side effect twice.
+        name = tool_name if tool_name is not None else 'tool'
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'Tool {name!r} {what} is not JSON-serializable.',
+            cause=e,
+            reason=ErrorReason.INVALID_INPUT,
+        ) from e
+
+
+def dump_tool_metadata(value: dict[str, Any] | None, *, tool_name: str | None = None) -> dict[str, Any] | None:
+    """Dump envelope metadata the same way as structured output."""
+    if value is None:
+        return None
+    dumped = dump_tool_output(value, tool_name=tool_name, what='metadata')
+    if isinstance(dumped, dict):
+        return dumped
+    name = tool_name if tool_name is not None else 'tool'
+    raise GenkitError(
+        status='INVALID_ARGUMENT',
+        message=f'Tool {name!r} metadata is not a JSON object.',
+        reason=ErrorReason.INVALID_INPUT,
+    )
+
+
+def parts_to_wire(parts: Sequence[Part] | None, *, tool_name: str | None = None) -> list[dict[str, Any]] | None:
+    """Dump parts the way a model plugin expects them on the tool message.
+
+    A bare dump keeps unused fields as null and uses snake_case names. The
+    model request — and anything that later re-parses that history — wants
+    only the live fields, in camelCase.
+    """
+    if not parts:
+        return None
+    out: list[dict[str, Any]] = []
+    name = tool_name if tool_name is not None else 'tool'
+    for part in parts:
+        dumped = dump_part(part, tool_name=name, what='content')
+        if not wire_part_is_live(dumped):
+            raise live_payload_error(tool_name=name, where='content')
+        out.append(dumped)
+    return out
 
 
 def inbound_part_is_empty(value: object) -> bool:
@@ -923,6 +1094,7 @@ def reject_unanswered_interrupts(
                     f'resume part for {name!r} is still an interrupt; '
                     'use Part.restart(...) or Part.respond(...) before generate.'
                 ),
+                reason=ErrorReason.INVALID_RESUME,
             )
     for part in respond or []:
         if part.tool_request is not None and part.tool_response is None:
@@ -930,6 +1102,7 @@ def reject_unanswered_interrupts(
             raise GenkitError(
                 status='INVALID_ARGUMENT',
                 message=(f'resume_respond got the paused request for {name!r}; answer it with Part.respond(output)'),
+                reason=ErrorReason.INVALID_RESUME,
             )
 
 
@@ -961,6 +1134,11 @@ class Message(GenkitModel):
         return next((p.media for p in self.content if p.media is not None), None)
 
     @property
+    def reasoning(self) -> str:
+        """All reasoning (thinking) parts concatenated; ``''`` when the model sent none."""
+        return ''.join(p.reasoning for p in self.content if p.reasoning is not None)
+
+    @property
     def tool_requests(self) -> list[Part]:
         """All tool request parts in this message."""
         return [p for p in self.content if p.tool_request is not None]
@@ -969,6 +1147,38 @@ class Message(GenkitModel):
     def interrupts(self) -> list[Part]:
         """Tool requests marked as interrupted."""
         return [p for p in self.tool_requests if p.metadata and p.metadata.get('interrupt')]
+
+
+def check_max_turns(max_turns: object) -> None:
+    """Validate that ``max_turns`` is a whole, non-negative count of tool rounds.
+
+    ``True`` would pass as 1 and ``nan`` would fail deep in validation, so
+    both get the same INVALID_ARGUMENT as a negative count. ``3.0`` (what
+    dotprompt's float field carries) and ``numbers.Integral`` values (such as
+    ``np.int64``) are accepted.
+    """
+    if max_turns is None:
+        return
+    if isinstance(max_turns, bool):
+        whole = False
+    elif isinstance(max_turns, Integral):
+        whole = True
+    elif isinstance(max_turns, float):
+        whole = max_turns.is_integer()
+    else:
+        whole = False
+    if not whole:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns must be a whole number, got {max_turns!r}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
+    if cast(float, max_turns) < 0:
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'max turns cannot be negative, got {max_turns}',
+            reason=ErrorReason.INVALID_INPUT,
+        )
 
 
 class GenerateActionOptions(GenkitModel):
@@ -987,6 +1197,12 @@ class GenerateActionOptions(GenkitModel):
     max_turns: float | None = None
     step_name: str | None = None
     use: list[MiddlewareRef] | None = None
+
+    @field_validator('max_turns', mode='before')
+    @classmethod
+    def _check_max_turns(cls, v: object) -> object:
+        check_max_turns(v)
+        return v
 
     @field_validator('messages', mode='before')
     @classmethod
@@ -1123,8 +1339,17 @@ def _untyped_options_schema(schema: JsonDict, cls: type) -> None:
 class EmbedRequest(GenkitModel, Generic[RequestOptionsT]):
     """Embed request whose documents are the public Document type.
 
-    Bare ``EmbedRequest`` gives the fn ``options`` as a dict.
-    ``EmbedRequest[CrmEmbedConfig]`` gives it a validated ``CrmEmbedConfig``.
+    What ``options`` holds depends on how the embedder annotates ``request``:
+
+    * **No annotation**: Genkit infers ``EmbedRequest[Cfg]`` from the
+      embedder's Pydantic ``config_schema``, so ``options`` is a ``Cfg``.
+    * ``EmbedRequest[CrmEmbedConfig]``: ``options`` is a validated
+      ``CrmEmbedConfig``.
+    * Bare ``EmbedRequest``: ``options`` is a ``dict``. An explicit annotation
+      is honored as written, the same as ``ModelRequest``.
+
+    Bare ``EmbedRequest`` means ``EmbedRequest[Any]`` to type checkers, so a
+    helper annotated with it accepts any typed request.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(json_schema_extra=_untyped_options_schema)
@@ -1356,6 +1581,15 @@ class OutputConfig(GenkitModel):
     json_schema: dict[str, Any] | None = Field(default=None, validation_alias='schema', serialization_alias='schema')
     constrained: bool | None = None
     content_type: str | None = None
+
+    @property
+    def schema(self) -> dict[str, Any] | None:  # pyright: ignore[reportIncompatibleMethodOverride]  # pyrefly: ignore[bad-override]
+        """Read-only alias for ``json_schema``, matching the wire key and JS.
+
+        Shadows Pydantic's deprecated ``BaseModel.schema()`` classmethod so
+        ``request.output.schema`` returns the schema dict, or ``None``.
+        """
+        return self.json_schema
 
 
 class ModelRequest(GenkitModel, Generic[ModelRequestConfigT]):
@@ -1689,6 +1923,13 @@ class ModelResponse(GenkitModel, Generic[OutputT]):
         return self.message.text
 
     @property
+    def reasoning(self) -> str:
+        """The reply's reasoning (thinking) text, kept out of ``.text``; ``''`` when there is none."""
+        if self.message is None:
+            return ''
+        return self.message.reasoning
+
+    @property
     def output(self) -> OutputT | None:
         """Parsed structured output, or None when the reply is not that shape.
 
@@ -1814,6 +2055,11 @@ class ModelResponseChunk(GenkitModel, Generic[OutputT]):
     def text(self) -> str:
         """Text content of this chunk."""
         return ''.join(p.text for p in self.content if p.text is not None)
+
+    @property
+    def reasoning(self) -> str:
+        """Reasoning (thinking) text in this chunk."""
+        return ''.join(p.reasoning for p in self.content if p.reasoning is not None)
 
     @property
     def accumulated_text(self) -> str:
@@ -2052,3 +2298,93 @@ GenerateActionOptions.model_rebuild(
         'Role': Role,
     }
 )
+
+
+# docs= inlining. Runs in the model action (Action._run), after every wrap_model.
+
+
+CONTEXT_PREFACE = '\n\nUse the following information to complete your task:\n\n'
+
+
+def last_user_message(*, messages: list[Message]) -> Message | None:
+    """Find the last user message in a list."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == 'user':
+            return messages[i]
+    return None
+
+
+def context_item_template(d: Document, index: int) -> str:
+    """Render a document as a citation line for context injection.
+
+    Only ``ref``/``id`` goes on the line, same as JS. Other metadata (ACLs,
+    embeddings, tenant ids) stays out of the prompt. Only the document's text
+    is rendered; media parts in a document are not sent.
+    """
+    out = '- '
+    ref = (d.metadata and (d.metadata.get('ref') or d.metadata.get('id'))) or index
+    out += f'[{ref}]: '
+    out += text_from_content(d.content) + '\n'
+    return out
+
+
+def augment_with_context(
+    request: ModelRequest,
+    *,
+    preface: str | None = CONTEXT_PREFACE,
+    item_template: Callable[[Document, int], str] | None = None,
+    citation_key: str | None = None,
+) -> ModelRequest:
+    """Return a deepcopy of ``request`` with ``request.docs`` injected as a context part on the last user message.
+
+    No-op (returns ``request`` unchanged) when there are no docs, no user message, or the last user message
+    already has a non-pending ``purpose: 'context'`` part.
+    """
+    if not request.docs:
+        return request
+
+    user_message = last_user_message(messages=request.messages)
+    if user_message is None:
+        return request
+
+    # Find any existing context part in the last user message
+    context_idx = -1
+    for i, part in enumerate(user_message.content):
+        metadata = part.metadata or {}
+        if metadata.get('purpose') == 'context':
+            context_idx = i
+            break
+
+    # If context already exists, only proceed if it is a pending placeholder
+    if context_idx >= 0:
+        meta = user_message.content[context_idx].metadata or {}
+        if not meta.get('pending'):
+            logger.warning(
+                'docs= not injected: the last user message already has a context part',
+                docs=len(request.docs),
+            )
+            return request
+
+    # Render all documents as a single formatted text string
+    template = item_template or context_item_template
+    rendered_docs = []
+    for i, doc_data in enumerate(request.docs):
+        doc = Document(content=doc_data.content, metadata=doc_data.metadata)
+        if citation_key and doc.metadata:
+            doc.metadata['ref'] = doc.metadata.get(citation_key, i)
+        rendered_docs.append(template(doc, i))
+
+    text_content = (preface or '') + ''.join(rendered_docs) + '\n'
+    text_part = Part.from_text(text_content, metadata={'purpose': 'context'})
+
+    # Safe-mutation via deep copy
+    new_req = deepcopy(request)
+    new_user = last_user_message(messages=new_req.messages)
+    assert new_user is not None
+
+    if context_idx >= 0:
+        new_user.content[context_idx] = text_part
+    else:
+        new_user.content.append(text_part)
+
+    return new_req

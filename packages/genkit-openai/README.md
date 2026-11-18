@@ -57,42 +57,54 @@ OpenAI(
 
 ## Mistral
 
-Point `base_url` at Mistral's API. Models keep the `openai/` prefix here; the
-JS and Dart SDKs register them as `mistral/...`, so a model id written for one
-SDK (in a `.prompt` file, say) doesn't resolve in the other:
+`Mistral()` registers Mistral's models and embedders under `mistral/`, as the
+JS and Dart SDKs do, so it can sit beside `OpenAI()`:
 
 ```python
 from genkit import Genkit
-from genkit_openai import OpenAI
+from genkit_openai import Mistral, OpenAI
 
-# The key comes from MISTRAL_API_KEY.
-ai = Genkit(plugins=[OpenAI(base_url='https://api.mistral.ai/v1')])
+# The Mistral key comes from MISTRAL_API_KEY, the OpenAI one from OPENAI_API_KEY.
+ai = Genkit(plugins=[OpenAI(), Mistral()])
 
 res = await ai.generate(
-    model='openai/mistral-small-latest',
+    model=Mistral.model('mistral-small-latest'),  # or 'mistral/mistral-small-latest'
     prompt='Suggest 2 names for a French bakery.',
     config={'temperature': 0.3, 'seed': 42, 'max_output_tokens': 200},
 )
 
-embeddings = await ai.embed(embedder='openai/mistral-embed', content='croissant')
+embeddings = await ai.embed(embedder='mistral/mistral-embed', content='croissant')
 ```
 
-With a Mistral target the plugin key comes from `api_key=` or
-`MISTRAL_API_KEY`, never `OPENAI_API_KEY`. The EU and US endpoints,
-`https://api.eu.mistral.ai/v1` and `https://api.us.mistral.ai/v1`, work the
-same way.
+`Mistral()` is `OpenAI(provider='mistral')`. `OpenAI(base_url=...)` with one of
+Mistral's hosts (`OPENAI_BASE_URL` too) is the same plugin, also named
+`mistral`. Its key comes from `api_key=` or `MISTRAL_API_KEY`, never
+`OPENAI_API_KEY`. The EU and US endpoints, `https://api.eu.mistral.ai/v1` and
+`https://api.us.mistral.ai/v1`, work the same way.
 
-A gateway in front of Mistral on another host needs `provider='mistral'`;
-without it the plugin can't tell the API behind it is Mistral's and sends
-OpenAI's field names, which Mistral rejects. Pass the gateway's own key as
-`api_key=`, or the plugin reads `MISTRAL_API_KEY`:
+At startup it registers Mistral's own catalog, not OpenAI's:
+`mistral-large-latest`, `mistral-large-4`, `mistral-small-latest`,
+`ministral-14b-latest`, `ministral-8b-latest`, `ministral-3b-latest`,
+`codestral-latest` and `mistral-medium-latest` (deprecated by Mistral), and
+the `mistral-embed` (1024 dimensions) and `codestral-embed` (1536) embedders.
+The Dev UI's model list comes from Mistral's `/models`, read by each entry's
+`capabilities`: ids with `embed` are embedders, entries with `completion_chat`
+are chat models, and OCR, moderation, transcription and speech models are left
+out. A model outside the catalog takes tool and image support from
+`function_calling` and `vision`. Any other id still resolves as a chat model
+when named, e.g. `mistral/magistral-medium-latest`.
+
+A gateway in front of Mistral on another host needs `Mistral(base_url=...)`
+(or `provider='mistral'`); without it the plugin can't tell the API behind it
+is Mistral's and sends OpenAI's field names, which Mistral rejects. Pass the
+gateway's own key as `api_key=`, or the plugin reads `MISTRAL_API_KEY`:
 
 ```python
-OpenAI(base_url='https://llm-gateway.example.com/v1', api_key=gateway_key, provider='mistral')
+Mistral(base_url='https://llm-gateway.example.com/v1', api_key=gateway_key)
 ```
 
-`OpenAI(provider='mistral')` with no `base_url` goes to
-`https://api.mistral.ai/v1`; `OPENAI_BASE_URL` isn't read then.
+`Mistral()` with no `base_url` goes to `https://api.mistral.ai/v1`;
+`OPENAI_BASE_URL` isn't read then.
 
 Mistral rejects any request field it doesn't declare, so with a Mistral host
 (or `provider='mistral'`) the plugin sends Mistral's names for the settings
@@ -114,25 +126,30 @@ that differ:
   out: every media part goes out as `image_url`. The type comes from the part's
   `content_type`, else a `data:` URL's header; a remote URL with neither is
   sent as an image.
+- OpenAI-only settings Mistral doesn't declare are left out of the request,
+  with a warning in the log: `verbosity`, `safety_identifier`, `store`,
+  `logit_bias`, `prompt_cache_retention`, `web_search_options`, `modalities`
+  and `audio`. Mistral would fail the call with a 422 naming them.
+  `logprobs`, `top_logprobs`, `service_tier`, `prompt_cache_key`, `metadata`,
+  `prediction` and `parallel_tool_calls` are Mistral fields too and go out as
+  given, though Mistral decides per model what it accepts (its current models
+  answer `logprobs` with "Logprobs are not enabled for this model", and
+  `service_tier` takes only `auto` or `standard_only`).
 - `extra` gets the same renames: `seed` and `max_completion_tokens` there go
   out as `random_seed` and `max_tokens`, and `stream_options` is dropped.
+  Nothing else in `extra` is dropped.
 
 With `reasoning_effort` set, replies carry their reasoning in `thinking`
-chunks. Each comes back as its own reasoning part, ahead of the text, with its
-own signature in `metadata['thoughtSignature']`; a streamed reply's final
-message joins each chunk's fragments back into one part, ending a part at
-the fragment that carries a signature. On the next turn each part goes back to Mistral as its own
+chunks. Each comes back as its own reasoning part, in the order it came among
+the text, with its own signature in `metadata['thoughtSignature']`; a streamed
+reply's final message keeps the same order and joins each chunk's fragments
+back into one part, ending a part at the fragment that carries a signature. On the next turn each part goes back to Mistral as its own
 `thinking` chunk, in order, as Mistral asks, so a signature stays with the text
 it signs. Only reasoning that came from Mistral goes back: each such part is
 marked `metadata['reasoningSource'] == 'mistral'`, which survives saving the
 history as JSON. Reasoning another model left in a mixed history is dropped.
 
-Other OpenAI-only settings, such as `verbosity` or `store`, are sent as given
-and Mistral fails the call naming them. Mistral-only fields like `min_tokens`
-go in `extra`.
-
-The plugin doesn't know Mistral's embedders, so their info reports the default
-1536 dimensions; `mistral-embed` returns 1024.
+Mistral-only fields like `min_tokens` go in `extra`.
 
 ## Config
 

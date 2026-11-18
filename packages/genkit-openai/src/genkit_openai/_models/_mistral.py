@@ -16,11 +16,12 @@
 
 """Request rewrites for Mistral's OpenAI-compatible API.
 
-``OpenAI(base_url='https://api.mistral.ai/v1')`` talks to Mistral. Its chat and
-embeddings endpoints take the OpenAI shape with a few fields renamed or
-missing, and reject any field they don't declare, so a body built for OpenAI
-fails with a 422. The plugin rewrites the few fields that differ; everything
-else goes out unchanged.
+``Mistral()`` (``OpenAI(provider='mistral')``, or ``OpenAI`` with a Mistral
+``base_url``) talks to Mistral. Its chat and embeddings endpoints take the
+OpenAI shape with a few fields renamed or missing, and reject any field they
+don't declare, so a body built for OpenAI fails with a 422. The plugin
+renames the fields that differ and leaves out the OpenAI-only ones. This
+module also holds the catalog and ``/models`` reading a Mistral target uses.
 
 The target is read from the client's base URL, not the model id as DeepSeek's
 JSON handling is, or set with ``OpenAI(provider='mistral')`` for a gateway in
@@ -34,13 +35,15 @@ Source: https://docs.mistral.ai/openapi.yaml (``ChatCompletionRequest``,
 ``EmbeddingRequest``).
 """
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 import httpx
 from genkit_openai._models._utils import parse_data_uri_content_type
 from openai import AsyncOpenAI
 
 from genkit import GenkitError, Message, get_logger
+from genkit.model import ConstrainedSupport, ModelInfo, ModelStage, ModelSupports
 
 logger = get_logger(__name__)
 
@@ -56,6 +59,9 @@ MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
 
 # The key Mistral's own SDKs, and Genkit's JS and Dart plugins, read.
 MISTRAL_API_KEY_ENV = 'MISTRAL_API_KEY'
+
+# The plugin namespace for a Mistral target, as in JS and Dart: mistral/<id>.
+MISTRAL_NAMESPACE = 'mistral'
 
 # The top-level fields Mistral's ChatCompletionRequest declares
 # (https://docs.mistral.ai/openapi.yaml). Its schema is closed: anything else
@@ -93,6 +99,103 @@ MISTRAL_CHAT_FIELDS = frozenset({
     'service_tier',
     'safe_prompt',
 })
+
+# Chat models with vision, tools and structured output (JS's
+# MISTRAL_MODEL_INFO, Dart's multimodalSupports).
+_MISTRAL_MULTIMODAL_SUPPORTS = ModelSupports(
+    multiturn=True,
+    media=True,
+    tools=True,
+    tool_choice=True,
+    system_role=True,
+    output=['json', 'text'],
+    constrained=ConstrainedSupport.ALL,
+)
+
+# Codestral: the same without image input.
+_MISTRAL_TEXT_SUPPORTS = ModelSupports(
+    multiturn=True,
+    media=False,
+    tools=True,
+    tool_choice=True,
+    system_role=True,
+    output=['json', 'text'],
+    constrained=ConstrainedSupport.ALL,
+)
+
+# A model outside the catalog with no /models capabilities to go by: text in,
+# text out, as JS's and Dart's unknown-model info.
+MISTRAL_UNKNOWN_MODEL_SUPPORTS = ModelSupports(
+    multiturn=True,
+    media=False,
+    tools=False,
+    tool_choice=False,
+    system_role=True,
+    output=['text'],
+)
+
+# The chat models a Mistral target registers at init, the set JS's
+# SUPPORTED_MISTRAL_MODELS and Dart's KnownMistralModel register.
+SUPPORTED_MISTRAL_MODELS: dict[str, ModelInfo] = {
+    'mistral-large-latest': ModelInfo(label='Mistral Large', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'mistral-large-4': ModelInfo(label='Mistral Large 4', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'mistral-small-latest': ModelInfo(label='Mistral Small', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'ministral-14b-latest': ModelInfo(label='Ministral 14B', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'ministral-8b-latest': ModelInfo(label='Ministral 8B', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'ministral-3b-latest': ModelInfo(label='Ministral 3B', supports=_MISTRAL_MULTIMODAL_SUPPORTS),
+    'codestral-latest': ModelInfo(label='Codestral', supports=_MISTRAL_TEXT_SUPPORTS),
+    # Mistral Medium 3.5, which Mistral has deprecated (retiring 2027-04-30).
+    'mistral-medium-latest': ModelInfo(
+        label='Mistral Medium', supports=_MISTRAL_MULTIMODAL_SUPPORTS, stage=ModelStage.LEGACY
+    ),
+}
+
+# The embedders a Mistral target registers at init.
+SUPPORTED_MISTRAL_EMBEDDERS: dict[str, dict[str, Any]] = {
+    'mistral-embed': {'label': 'Mistral Embed', 'dimensions': 1024, 'supports': {'input': ['text']}},
+    'codestral-embed': {'label': 'Codestral Embed', 'dimensions': 1536, 'supports': {'input': ['text']}},
+}
+
+
+def mistral_model_supports(name: str, capabilities: Mapping[str, object] | None = None) -> ModelSupports:
+    """What a Mistral chat model supports.
+
+    The catalog's entry when ``name`` is in it; else read from the ``/models``
+    entry's ``capabilities`` (``function_calling`` for tools, ``vision`` for
+    media), with text-only output since capabilities don't say whether the
+    model takes a JSON schema; else :data:`MISTRAL_UNKNOWN_MODEL_SUPPORTS`.
+    """
+    if (known := SUPPORTED_MISTRAL_MODELS.get(name)) is not None and known.supports is not None:
+        return known.supports
+    if capabilities is None:
+        return MISTRAL_UNKNOWN_MODEL_SUPPORTS
+    tools = capabilities.get('function_calling') is True
+    return MISTRAL_UNKNOWN_MODEL_SUPPORTS.model_copy(
+        update={'tools': tools, 'tool_choice': tools, 'media': capabilities.get('vision') is True}
+    )
+
+
+def listed_capabilities(entry: object) -> Mapping[str, object] | None:
+    """The ``capabilities`` object of a Mistral ``/models`` entry, or None when it has none.
+
+    It is a Mistral field, not part of OpenAI's ``Model``; the SDK keeps it in
+    ``model_extra``.
+    """
+    extra = getattr(entry, 'model_extra', None) or {}
+    capabilities = extra.get('capabilities') if isinstance(extra, Mapping) else None
+    return cast(Mapping[str, object], capabilities) if isinstance(capabilities, Mapping) else None
+
+
+def mistral_serves_chat(model_id: str, capabilities: Mapping[str, object] | None) -> bool:
+    """Whether a ``/models`` entry is a chat model, from ``capabilities.completion_chat``.
+
+    That leaves out OCR, moderation, transcription and speech models. An
+    entry with no ``capabilities`` counts as chat unless its id names OCR,
+    which ``/v1/ocr`` serves, as Dart's plugin does.
+    """
+    if capabilities is None:
+        return 'ocr' not in model_id.lower()
+    return capabilities.get('completion_chat') is True
 
 
 def is_mistral_url(url: str | httpx.URL) -> bool:

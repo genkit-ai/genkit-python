@@ -23,11 +23,12 @@ from typing import Any, Literal, cast
 
 import httpx
 import pytest
-from genkit_openai import OpenAI
+from genkit_openai import Mistral, OpenAI, OpenAIConfig
 from genkit_openai._models._mistral import MISTRAL_CHAT_FIELDS, mistral_chat_body
 from pydantic import BaseModel
 
 from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
+from genkit.plugin_api import Action, ActionKind
 
 MISTRAL_URL = 'https://api.mistral.ai/v1'
 CODESTRAL_URL = 'https://codestral.mistral.ai/v1'
@@ -193,9 +194,13 @@ class _Server:
         # Replaces the reply's content, or the streamed deltas, when set.
         self.content: Any = None
         self.deltas: list[Any] | None = None
+        # GET /models answers with these entries.
+        self.models: list[dict[str, Any]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.method == 'GET' and request.url.path.endswith('/models'):
+            return httpx.Response(200, json={'object': 'list', 'data': self.models})
         body = json.loads(request.content)
         embeddings = request.url.path.endswith('/embeddings')
         if request.url.host in _MISTRAL_HOSTS:
@@ -250,8 +255,8 @@ def openai(server: _Server) -> Genkit:
 
 @pytest.mark.asyncio
 async def test_mistral_generate_goes_to_mistral_with_the_plugin_key(mistral: Genkit, server: _Server) -> None:
-    """`ai.generate(model='openai/mistral-small-latest')` posts to Mistral's chat endpoint with the plugin's key."""
-    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut')
+    """`ai.generate(model='mistral/mistral-small-latest')` posts to Mistral's chat endpoint with the plugin's key."""
+    response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert response.text == 'bonjour'
     [request] = server.requests
@@ -263,7 +268,7 @@ async def test_mistral_generate_goes_to_mistral_with_the_plugin_key(mistral: Gen
 @pytest.mark.asyncio
 async def test_mistral_stream_sends_no_stream_options_and_reads_usage(mistral: Genkit, server: _Server) -> None:
     """A streamed call to Mistral sends no `stream_options`, and usage still comes back from the last chunk."""
-    stream = mistral.generate_stream(model='openai/mistral-small-latest', prompt='salut')
+    stream = mistral.generate_stream(model='mistral/mistral-small-latest', prompt='salut')
     chunks = [chunk.text async for chunk in stream.stream]
     response = await stream.response
 
@@ -280,7 +285,7 @@ async def test_mistral_stream_sends_no_stream_options_and_reads_usage(mistral: G
 async def test_mistral_stream_drops_stream_options_from_config(mistral: Genkit, server: _Server) -> None:
     """`config={'stream_options': {...}}` is not sent to Mistral, which has no such field."""
     stream = mistral.generate_stream(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt='salut',
         config={'stream_options': {'include_usage': True}},
     )
@@ -302,7 +307,7 @@ async def test_mistral_max_output_tokens_goes_out_as_max_tokens(
     mistral: Genkit, server: _Server, config: dict[str, Any]
 ) -> None:
     """`max_output_tokens` reaches Mistral as `max_tokens`, even with `reasoning_effort` set."""
-    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+    await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
 
     [body] = server.bodies()
     caps_sent = {k: body[k] for k in ('max_tokens', 'max_completion_tokens') if k in body}
@@ -314,7 +319,7 @@ async def test_mistral_max_output_tokens_goes_out_as_max_tokens(
 async def test_mistral_seed_goes_out_as_random_seed(mistral: Genkit, server: _Server) -> None:
     """`config={'seed': 7}` reaches Mistral as `random_seed`, beside the other settings."""
     await mistral.generate(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt='salut',
         config={'seed': 7, 'temperature': 0.2, 'extra': {'min_tokens': 5}},
     )
@@ -330,7 +335,7 @@ async def test_mistral_seed_goes_out_as_random_seed(mistral: Genkit, server: _Se
 async def test_mistral_random_seed_in_extra_wins_over_seed(mistral: Genkit, server: _Server) -> None:
     """`extra={'random_seed': 9}` replaces `seed=7`, as any `extra` key replaces a setting of the same name."""
     await mistral.generate(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt='salut',
         config={'seed': 7, 'extra': {'random_seed': 9}},
     )
@@ -344,7 +349,7 @@ async def test_mistral_random_seed_in_extra_wins_over_seed(mistral: Genkit, serv
 async def test_mistral_tenant_key_call_is_rewritten_too(mistral: Genkit, server: _Server) -> None:
     """A call with a `context.secrets` key still goes to Mistral with Mistral's field names."""
     stream = mistral.generate_stream(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt='salut',
         config={'seed': 7},
         context={'secrets': {'api_key': 'tenant-key'}},
@@ -363,7 +368,7 @@ async def test_mistral_tenant_key_call_is_rewritten_too(mistral: Genkit, server:
 async def test_mistral_embed_dimensions_goes_out_as_output_dimension(mistral: Genkit, server: _Server) -> None:
     """`config={'dimensions': 256}` reaches Mistral's embeddings endpoint as `output_dimension`."""
     response = await mistral.embed(
-        embedder='openai/codestral-embed', content='def f(): ...', config={'dimensions': 256}
+        embedder='mistral/codestral-embed', content='def f(): ...', config={'dimensions': 256}
     )
 
     assert response[0].embedding == [0.5, 0.25]
@@ -378,7 +383,7 @@ async def test_mistral_embed_dimensions_goes_out_as_output_dimension(mistral: Ge
 async def test_mistral_embed_float_encoding_still_goes_out(mistral: Genkit, server: _Server) -> None:
     """`encodingFormat='float'` with `dimensions` sends both, `dimensions` under Mistral's name."""
     await mistral.embed(
-        embedder='openai/codestral-embed',
+        embedder='mistral/codestral-embed',
         content='def f(): ...',
         config={'dimensions': 256, 'encodingFormat': 'float'},
     )
@@ -409,7 +414,7 @@ async def test_codestral_host_gets_mistral_field_names(server: _Server) -> None:
     """OpenAI(base_url='https://codestral.mistral.ai/v1') sends Mistral's names too."""
     ai = _ai(server, CODESTRAL_URL)
 
-    await ai.generate(model='openai/codestral-latest', prompt='def add(a, b):', config={'seed': 7})
+    await ai.generate(model='mistral/codestral-latest', prompt='def add(a, b):', config={'seed': 7})
 
     [request] = server.requests
     assert str(request.url) == f'{CODESTRAL_URL}/chat/completions'
@@ -426,7 +431,7 @@ async def test_openai_base_url_env_pointing_at_mistral_gets_mistral_field_names(
     monkeypatch.setenv('OPENAI_BASE_URL', MISTRAL_URL)
     ai = _ai(server, None)
 
-    stream = ai.generate_stream(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+    stream = ai.generate_stream(model='mistral/mistral-small-latest', prompt='salut', config={'seed': 7})
     await stream.response
 
     [request] = server.requests
@@ -440,7 +445,7 @@ async def test_openai_base_url_env_pointing_at_mistral_gets_mistral_field_names(
 async def test_mistral_generate_drops_stream_options_from_config(mistral: Genkit, server: _Server) -> None:
     """`config={'stream_options': {...}}` on a non-streamed call is not sent to Mistral either."""
     await mistral.generate(
-        model='openai/mistral-small-latest', prompt='salut', config={'stream_options': {'include_usage': True}}
+        model='mistral/mistral-small-latest', prompt='salut', config={'stream_options': {'include_usage': True}}
     )
 
     [body] = server.bodies()
@@ -450,7 +455,7 @@ async def test_mistral_generate_drops_stream_options_from_config(mistral: Genkit
 @pytest.mark.asyncio
 async def test_mistral_refuses_top_k(mistral: Genkit, server: _Server) -> None:
     """`config={'top_k': 5}` fails the turn before the request goes out: Mistral's models reject `top_k`."""
-    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'top_k': 5})
+    response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config={'top_k': 5})
 
     assert response.finish_reason == FinishReason.FAILED
     assert 'top_k' in str(response.error)
@@ -464,7 +469,7 @@ _REASONING_CONFIG = {'reasoning_effort': 'high'}
 async def test_mistral_reasoning_reply_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
     """With `reasoning_effort` set, the reply's `thinking` chunk is a reasoning part and its `text` chunk the text."""
     response = await mistral.generate(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
     )
 
     assert response.text == 'bonjour'
@@ -478,7 +483,7 @@ async def test_mistral_reasoning_reply_splits_reasoning_from_text(mistral: Genki
 async def test_mistral_reasoning_stream_splits_reasoning_from_text(mistral: Genkit, server: _Server) -> None:
     """Streamed thinking chunks arrive as reasoning parts, through all three delta shapes Mistral sends."""
     stream = mistral.generate_stream(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
     )
     chunks = [chunk async for chunk in stream.stream]
     response = await stream.response
@@ -496,15 +501,15 @@ async def test_mistral_replays_reasoning_as_a_thinking_chunk(mistral: Genkit, se
     """The next turn sends the reply's reasoning back as one leading `thinking` chunk, signature included."""
     if streamed:
         stream = mistral.generate_stream(
-            model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+            model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
         )
         first = await stream.response
     else:
         first = await mistral.generate(
-            model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+            model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
         )
 
-    second = await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+    second = await mistral.generate(model='mistral/mistral-small-latest', messages=first.messages, prompt='And three?')
 
     assert second.finish_reason == FinishReason.STOP
     body = server.bodies()[-1]
@@ -535,7 +540,7 @@ async def test_mistral_model_length_finish_is_length(mistral: Genkit, server: _S
     """Mistral's `model_length` finish reason comes back as LENGTH."""
     server.finish_reason = 'model_length'
 
-    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut')
+    response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert response.finish_reason == FinishReason.LENGTH
 
@@ -546,7 +551,7 @@ async def test_mistral_regional_hosts_get_mistral_field_names(server: _Server, h
     """The EU and US endpoints get the same rewrite as the global one."""
     ai = _ai(server, f'https://{host}/v1')
 
-    stream = ai.generate_stream(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+    stream = ai.generate_stream(model='mistral/mistral-small-latest', prompt='salut', config={'seed': 7})
     await stream.response
 
     [request] = server.requests
@@ -565,7 +570,7 @@ async def test_mistral_tools_pass_the_schema(mistral: Genkit, server: _Server) -
         return f'{dish}: in stock'
 
     response = await mistral.generate(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt='Is the baguette in stock?',
         tools=['lookup_menu'],
         tool_choice='auto',
@@ -585,7 +590,7 @@ class _Loaf(BaseModel):
 @pytest.mark.asyncio
 async def test_mistral_output_schema_goes_out_as_json_schema(mistral: Genkit, server: _Server) -> None:
     """`output_schema=` reaches Mistral as a `json_schema` response format."""
-    await mistral.generate(model='openai/mistral-small-latest', prompt='Describe a loaf.', output_schema=_Loaf)
+    await mistral.generate(model='mistral/mistral-small-latest', prompt='Describe a loaf.', output_schema=_Loaf)
 
     [body] = server.bodies()
     assert body['response_format']['type'] == 'json_schema'
@@ -596,7 +601,7 @@ async def test_mistral_output_schema_goes_out_as_json_schema(mistral: Genkit, se
 async def test_mistral_image_input_goes_out_as_image_url(mistral: Genkit, server: _Server) -> None:
     """An image part reaches Mistral as an `image_url` content block."""
     await mistral.generate(
-        model='openai/pixtral-large-latest',
+        model='mistral/pixtral-large-latest',
         prompt=[Part.from_text('What bread is this?'), Part.from_media('https://example.com/loaf.png', 'image/png')],
     )
 
@@ -627,10 +632,10 @@ async def test_mistral_drops_openai_only_settings(mistral: Genkit, server: _Serv
     config = {field: _OPENAI_ONLY_SETTINGS[field]}
     if streamed:
         response = await mistral.generate_stream(
-            model='openai/mistral-small-latest', prompt='salut', config=config
+            model='mistral/mistral-small-latest', prompt='salut', config=config
         ).response
     else:
-        response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+        response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
 
     assert response.finish_reason == FinishReason.STOP
     [body] = server.bodies()
@@ -653,7 +658,7 @@ async def test_mistral_sends_the_settings_it_declares(mistral: Genkit, server: _
         'presence_penalty': 0.2,
     }
 
-    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+    await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
 
     [body] = server.bodies()
     assert {k: body[k] for k in config} == config
@@ -696,7 +701,7 @@ def test_mistral_chat_fields_match_the_fake_servers_schema() -> None:
 @pytest.mark.asyncio
 async def test_mistral_embed_without_options_sends_only_mistral_fields(mistral: Genkit, server: _Server) -> None:
     """An embed call with no options sends `model`, `input`, and the SDK's default `encoding_format`."""
-    response = await mistral.embed(embedder='openai/mistral-embed', content='croissant')
+    response = await mistral.embed(embedder='mistral/mistral-embed', content='croissant')
 
     assert response[0].embedding == [0.5, 0.25]
     [body] = server.bodies()
@@ -755,7 +760,7 @@ async def test_mistral_replays_only_mistral_reasoning_from_a_mixed_history(mistr
         Message(role=Role.MODEL, content=[_mistral_reasoning(REASONING), Part.from_text('Four.')]),
     ]
 
-    response = await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And five?')
+    response = await mistral.generate(model='mistral/mistral-small-latest', messages=history, prompt='And five?')
 
     assert response.finish_reason == FinishReason.STOP
     [body] = server.bodies()
@@ -772,12 +777,12 @@ async def test_mistral_replays_only_mistral_reasoning_from_a_mixed_history(mistr
 async def test_mistral_reasoning_replays_after_a_json_round_trip(mistral: Genkit, server: _Server) -> None:
     """A history saved as JSON and loaded back still replays Mistral's reasoning, signature included."""
     first = await mistral.generate(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
     )
     saved = json.dumps([m.model_dump(mode='json', by_alias=True, exclude_none=True) for m in first.messages])
     history = [Message.model_validate(m) for m in json.loads(saved)]
 
-    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=history, prompt='And three?')
 
     [assistant] = _assistant_messages(server.bodies()[-1])
     assert assistant['content'][0] == {
@@ -807,7 +812,7 @@ async def test_mistral_replays_reasoning_onto_a_tool_call_message_with_no_conten
         ),
     ]
 
-    response = await mistral.generate(model='openai/mistral-small-latest', messages=history)
+    response = await mistral.generate(model='mistral/mistral-small-latest', messages=history)
 
     assert response.finish_reason == FinishReason.STOP
     [body] = server.bodies()
@@ -826,7 +831,7 @@ async def test_mistral_replays_a_reasoning_only_turn(mistral: Genkit, server: _S
         Message(role=Role.MODEL, content=[_mistral_reasoning(REASONING, signature=None)]),
     ]
 
-    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='Well?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=history, prompt='Well?')
 
     [assistant] = _assistant_messages(server.bodies()[0])
     assert assistant['content'] == [{'type': 'thinking', 'thinking': [{'type': 'text', 'text': REASONING}]}]
@@ -858,10 +863,10 @@ async def test_mistral_renames_openai_fields_in_extra(mistral: Genkit, server: _
     """`extra` with `seed`, `max_completion_tokens` or `stream_options` goes out under Mistral's names, not as a 422."""
     config = {'extra': {'seed': 1, 'max_completion_tokens': 50, 'stream_options': {'include_usage': True}}}
     if streamed:
-        stream = mistral.generate_stream(model='openai/mistral-small-latest', prompt='salut', config=config)
+        stream = mistral.generate_stream(model='mistral/mistral-small-latest', prompt='salut', config=config)
         response = await stream.response
     else:
-        response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+        response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
 
     assert response.finish_reason == FinishReason.STOP
     [body] = server.bodies()
@@ -886,11 +891,11 @@ async def test_provider_mistral_sends_mistral_names_through_a_gateway(server: _S
     ai = _ai(server, GATEWAY_URL, provider='mistral')
 
     stream = ai.generate_stream(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config={'seed': 7, **_REASONING_CONFIG}
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config={'seed': 7, **_REASONING_CONFIG}
     )
     first = await stream.response
-    await ai.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
-    await ai.embed(embedder='openai/mistral-embed', content='croissant', config={'dimensions': 256})
+    await ai.generate(model='mistral/mistral-small-latest', messages=first.messages, prompt='And three?')
+    await ai.embed(embedder='mistral/mistral-embed', content='croissant', config={'dimensions': 256})
 
     streamed, replay, embed = server.requests
     assert {r.url.host for r in server.requests} == {'llm-gateway.example.com'}
@@ -935,8 +940,8 @@ async def test_mistral_without_api_key_uses_mistral_api_key_env(
     monkeypatch.setenv('MISTRAL_API_KEY', 'mistral-env')
     ai = _ai(server, base_url, api_key=None, provider=provider)
 
-    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
-    await ai.embed(embedder='openai/mistral-embed', content='croissant')
+    await ai.generate(model='mistral/mistral-small-latest', prompt='salut')
+    await ai.embed(embedder='mistral/mistral-embed', content='croissant')
 
     assert [r.headers['authorization'] for r in server.requests] == ['Bearer mistral-env'] * 2
 
@@ -949,7 +954,7 @@ async def test_mistral_explicit_api_key_beats_mistral_api_key_env(
     monkeypatch.setenv('MISTRAL_API_KEY', 'mistral-env')
     ai = _ai(server, MISTRAL_URL)
 
-    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+    await ai.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert server.requests[0].headers['authorization'] == f'Bearer {PLUGIN_KEY}'
 
@@ -963,7 +968,7 @@ async def test_mistral_without_any_key_does_not_send_openai_api_key(
     monkeypatch.delenv('MISTRAL_API_KEY', raising=False)
     ai = _ai(server, MISTRAL_URL, api_key=None)
 
-    response = await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+    response = await ai.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert response.finish_reason == FinishReason.FAILED
     assert response.error is not None
@@ -996,7 +1001,7 @@ async def test_mistral_replays_each_reasoning_part_as_its_own_thinking_chunk(mis
         ),
     ]
 
-    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=history, prompt='And three?')
 
     [assistant] = _assistant_messages(server.bodies()[0])
     assert assistant['content'] == [
@@ -1015,7 +1020,7 @@ async def test_mistral_sends_no_thinking_chunk_when_reasoning_parts_are_empty(mi
         Message(role=Role.MODEL, content=[_mistral_reasoning('', signature=None), Part.from_text('Two loaves.')]),
     ]
 
-    await mistral.generate(model='openai/mistral-small-latest', messages=history, prompt='And three?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=history, prompt='And three?')
 
     [assistant] = _assistant_messages(server.bodies()[0])
     assert assistant['content'] == 'Two loaves.'
@@ -1032,8 +1037,8 @@ async def test_mistral_reply_with_two_thinking_chunks_gives_two_reasoning_parts(
         {'type': 'text', 'text': 'Two loaves.'},
     ]
 
-    first = await mistral.generate(model='openai/mistral-small-latest', prompt='Bread for two?')
-    await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+    first = await mistral.generate(model='mistral/mistral-small-latest', prompt='Bread for two?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=first.messages, prompt='And three?')
 
     assert first.message is not None
     assert [(p.reasoning, p.metadata) for p in first.message.content if p.reasoning is not None] == [
@@ -1048,7 +1053,7 @@ async def test_mistral_reply_with_two_thinking_chunks_gives_two_reasoning_parts(
 async def test_mistral_stream_joins_a_thinking_chunks_fragments_into_one_part(mistral: Genkit, server: _Server) -> None:
     """A streamed thinking chunk's fragments end up as one reasoning part, with the signature, in the final message."""
     stream = mistral.generate_stream(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
     )
     response = await stream.response
 
@@ -1066,7 +1071,7 @@ async def test_provider_mistral_without_base_url_goes_to_mistral(
     monkeypatch.setenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
     ai = _ai(server, None, provider='mistral')
 
-    await ai.generate(model='openai/mistral-small-latest', prompt='salut', config={'seed': 7})
+    await ai.generate(model='mistral/mistral-small-latest', prompt='salut', config={'seed': 7})
 
     [request] = server.requests
     assert str(request.url) == f'{MISTRAL_URL}/chat/completions'
@@ -1087,7 +1092,7 @@ async def test_provider_mistral_keeps_base_url_from_client_options(server: _Serv
         ]
     )
 
-    await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+    await ai.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert server.requests[0].url.host == 'llm-gateway.example.com'
 
@@ -1101,7 +1106,7 @@ async def test_mistral_missing_key_error_leaves_out_openai_api_key_when_unset(
     monkeypatch.delenv('MISTRAL_API_KEY', raising=False)
     ai = _ai(server, MISTRAL_URL, api_key=None)
 
-    response = await ai.generate(model='openai/mistral-small-latest', prompt='salut')
+    response = await ai.generate(model='mistral/mistral-small-latest', prompt='salut')
 
     assert response.error is not None
     assert response.error.status == 'FAILED_PRECONDITION'
@@ -1135,10 +1140,10 @@ async def test_mistral_stream_keeps_two_signed_thinking_chunks_apart(mistral: Ge
     ]
 
     stream = mistral.generate_stream(
-        model='openai/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread for two?', config=_REASONING_CONFIG
     )
     first = await stream.response
-    await mistral.generate(model='openai/mistral-small-latest', messages=first.messages, prompt='And three?')
+    await mistral.generate(model='mistral/mistral-small-latest', messages=first.messages, prompt='And three?')
 
     assert first.message is not None
     assert [(p.reasoning, p.metadata) for p in first.message.content if p.reasoning is not None] == [
@@ -1156,7 +1161,7 @@ async def test_mistral_stream_keeps_two_signed_thinking_chunks_apart(mistral: Ge
 @pytest.mark.asyncio
 async def test_mistral_takes_reasoning_effort_max(mistral: Genkit, server: _Server) -> None:
     """`reasoning_effort='max'`, in Mistral's ReasoningEffort, goes out to Mistral as given."""
-    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'reasoning_effort': 'max'})
+    await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config={'reasoning_effort': 'max'})
 
     assert server.bodies()[0]['reasoning_effort'] == 'max'
 
@@ -1195,7 +1200,7 @@ async def test_mistral_refuses_non_image_media(
 ) -> None:
     """Non-image media fails before the request instead of reaching Mistral as an image_url."""
     response = await mistral.generate(
-        model='openai/mistral-small-latest',
+        model='mistral/mistral-small-latest',
         prompt=[Part.from_text('Summarize this.'), Part.from_media(url, content_type)],
     )
 
@@ -1217,7 +1222,7 @@ async def test_mistral_refuses_non_image_media(
 async def test_mistral_sends_image_media(mistral: Genkit, server: _Server, url: str, content_type: str | None) -> None:
     """Images, and remote URLs whose type isn't known, still go out as image_url."""
     await mistral.generate(
-        model='openai/pixtral-large-latest',
+        model='mistral/pixtral-large-latest',
         prompt=[Part.from_text('What bread is this?'), Part.from_media(url, content_type)],
     )
 
@@ -1268,9 +1273,9 @@ async def test_mistral_keeps_thinking_and_text_in_the_order_they_came(mistral: G
         ('text', ' Water.'),
     ]
 
-    full = await mistral.generate(model='openai/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG)
+    full = await mistral.generate(model='mistral/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG)
     streamed = await mistral.generate_stream(
-        model='openai/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG
+        model='mistral/mistral-small-latest', prompt='Bread?', config=_REASONING_CONFIG
     ).response
 
     assert _order(full.message) == expected
@@ -1280,3 +1285,191 @@ async def test_mistral_keeps_thinking_and_text_in_the_order_they_came(mistral: G
         {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-1'},
         {'reasoningSource': 'mistral', 'thoughtSignature': 'sig-2'},
     ]
+
+
+# Namespace and catalog
+
+
+def _plugin(server: _Server, plugin_class: type[OpenAI] = OpenAI, **kwargs: Any) -> OpenAI:  # noqa: ANN401
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(server.handler))
+    return plugin_class(api_key=PLUGIN_KEY, client_options={'http_client': http_client, 'max_retries': 0}, **kwargs)
+
+
+@pytest.mark.parametrize(
+    'kwargs',
+    [{'provider': 'mistral'}, {'base_url': MISTRAL_URL}, {'base_url': CODESTRAL_URL}],
+    ids=['provider', 'base_url', 'codestral'],
+)
+def test_mistral_target_is_named_mistral(server: _Server, kwargs: dict[str, Any]) -> None:
+    """Any Mistral target is the `mistral` plugin; a plain OpenAI() stays `openai`."""
+    assert _plugin(server, **kwargs).name == 'mistral'
+    assert _plugin(server).name == 'openai'
+    assert _plugin(server, Mistral).name == 'mistral'
+
+
+@pytest.mark.asyncio
+async def test_mistral_init_registers_mistrals_catalog_not_openais(server: _Server) -> None:
+    """init() on a Mistral target registers Mistral's models and embedders, under mistral/."""
+    actions = await _plugin(server, Mistral).init()
+
+    names = {(a.kind, a.name) for a in actions}
+    assert (ActionKind.MODEL, 'mistral/mistral-small-latest') in names
+    assert (ActionKind.MODEL, 'mistral/mistral-large-latest') in names
+    assert (ActionKind.MODEL, 'mistral/codestral-latest') in names
+    assert (ActionKind.EMBEDDER, 'mistral/mistral-embed') in names
+    assert (ActionKind.EMBEDDER, 'mistral/codestral-embed') in names
+    assert all(a.name.startswith('mistral/') for a in actions)
+    assert not any('gpt' in a.name or 'dall-e' in a.name or 'tts' in a.name for a in actions)
+    embed = next(a for a in actions if a.name == 'mistral/mistral-embed')
+    assert embed.metadata is not None
+    assert cast(dict[str, Any], embed.metadata['embedder'])['dimensions'] == 1024
+    codestral = next(a for a in actions if a.name == 'mistral/codestral-latest')
+    assert codestral.metadata is not None
+    assert cast(dict[str, Any], codestral.metadata['model'])['supports']['media'] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_and_mistral_side_by_side(server: _Server) -> None:
+    """OpenAI() and OpenAI(provider='mistral') register together, each call going to its own host and names."""
+    ai = Genkit(plugins=[_plugin(server), _plugin(server, provider='mistral')])
+
+    await ai.generate(model='openai/gpt-4o', prompt='hi', config={'seed': 1})
+    await ai.generate(model='mistral/mistral-small-latest', prompt='salut', config={'seed': 1})
+
+    openai_request, mistral_request = server.requests
+    assert openai_request.url.host == 'api.openai.com'
+    assert json.loads(openai_request.content)['seed'] == 1
+    assert mistral_request.url.host == 'api.mistral.ai'
+    assert json.loads(mistral_request.content)['random_seed'] == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_and_mistral_list_without_clashing(server: _Server) -> None:
+    """Both catalogs list, each under its own namespace, with no OpenAI model under mistral/."""
+    ai = Genkit(plugins=[_plugin(server), _plugin(server, Mistral)])
+
+    catalog = await ai._registry.list_actions()
+
+    assert '/model/openai/gpt-4o' in catalog
+    assert '/embedder/openai/text-embedding-3-small' in catalog
+    assert '/model/mistral/mistral-small-latest' in catalog
+    assert '/embedder/mistral/mistral-embed' in catalog
+    assert not [key for key in catalog if key.startswith('/model/mistral/gpt')]
+    assert '/model/openai/mistral-small-latest' not in catalog
+
+
+def test_mistral_model_ref() -> None:
+    """Mistral.model names mistral/<id>, once, and binds OpenAIConfig."""
+    ref = Mistral.model('mistral-small-latest', config=OpenAIConfig(temperature=0.2))
+
+    assert ref.name == 'mistral/mistral-small-latest'
+    assert Mistral.model('mistral/mistral-small-latest').name == 'mistral/mistral-small-latest'
+    assert ref.config_schema is OpenAIConfig
+    with pytest.raises(GenkitError):
+        Mistral.gpt('gpt-4o')
+    assert OpenAI.gpt('gpt-4o').name == 'openai/gpt-4o'
+
+
+@pytest.mark.asyncio
+async def test_mistral_resolves_any_id_as_chat(server: _Server) -> None:
+    """On Mistral an id with `tts` in it is a chat model, not OpenAI's speech endpoint."""
+    plugin = _plugin(server, Mistral)
+
+    action = await plugin.resolve(ActionKind.MODEL, 'voxtral-mini-tts-latest')
+
+    assert action is not None
+    assert action.name == 'mistral/voxtral-mini-tts-latest'
+    assert action.metadata is not None
+    assert 'media' not in cast(dict[str, Any], action.metadata['model'])['supports'].get('output', [])
+
+
+# Listing
+
+
+def _entry(model_id: str, **capabilities: bool) -> dict[str, Any]:
+    return {
+        'id': model_id,
+        'object': 'model',
+        'created': 0,
+        'owned_by': 'mistralai',
+        'capabilities': capabilities,
+    }
+
+
+_LISTING = [
+    _entry('mistral-small-latest', completion_chat=True, function_calling=True, vision=True),
+    _entry('codestral-2508', completion_chat=True, function_calling=True),
+    _entry('pixtral-next', completion_chat=True, vision=True),
+    _entry('voxtral-small-latest', completion_chat=True, function_calling=True, audio=True),
+    _entry('mistral-embed'),
+    _entry('codestral-embed-2505'),
+    _entry('voxtral-mini-tts-latest', function_calling=True, audio_speech=True),
+    _entry('voxtral-mini-transcribe-3', audio_transcription=True),
+    _entry('mistral-ocr-latest', function_calling=True, vision=True, ocr=True),
+    _entry('mistral-moderation-2603', classification=True, moderation=True),
+]
+
+
+def _supports(action: Action) -> dict[str, Any]:
+    assert action.metadata is not None
+    return cast(dict[str, Any], action.metadata['model'])['supports']
+
+
+@pytest.mark.asyncio
+async def test_mistral_lists_models_by_capabilities(server: _Server) -> None:
+    """Chat from completion_chat, embedders by id; OCR, moderation, speech and transcription are left out."""
+    server.models = _LISTING
+    plugin = _plugin(server, Mistral)
+
+    actions = await plugin.list_actions()
+
+    assert {(a.kind, a.name) for a in actions} == {
+        (ActionKind.MODEL, 'mistral/mistral-small-latest'),
+        (ActionKind.MODEL, 'mistral/codestral-2508'),
+        (ActionKind.MODEL, 'mistral/pixtral-next'),
+        (ActionKind.MODEL, 'mistral/voxtral-small-latest'),
+        (ActionKind.EMBEDDER, 'mistral/mistral-embed'),
+        (ActionKind.EMBEDDER, 'mistral/codestral-embed-2505'),
+    }
+    by_name = {a.name: a for a in actions}
+    assert _supports(by_name['mistral/codestral-2508'])['tools'] is True
+    assert _supports(by_name['mistral/codestral-2508'])['media'] is False
+    assert _supports(by_name['mistral/pixtral-next'])['tools'] is False
+    assert _supports(by_name['mistral/pixtral-next'])['media'] is True
+    assert _supports(by_name['mistral/pixtral-next'])['output'] == ['text']
+    # A catalog model keeps its catalog info.
+    assert _supports(by_name['mistral/mistral-small-latest'])['output'] == ['json', 'text']
+    # A listed model resolves with the info it was listed with.
+    resolved = await plugin.resolve(ActionKind.MODEL, 'codestral-2508')
+    assert resolved is not None
+    assert _supports(resolved)['tools'] is True
+
+
+@pytest.mark.asyncio
+async def test_mistral_listing_without_capabilities_skips_only_ocr(server: _Server) -> None:
+    """An entry with no capabilities is a chat model unless its id names OCR, as in Dart."""
+    server.models = [
+        {'id': 'mistral-next', 'object': 'model', 'created': 0, 'owned_by': 'mistralai'},
+        {'id': 'mistral-ocr-next', 'object': 'model', 'created': 0, 'owned_by': 'mistralai'},
+    ]
+
+    actions = await _plugin(server, Mistral).list_actions()
+
+    assert [a.name for a in actions] == ['mistral/mistral-next']
+    assert _supports(actions[0])['tools'] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_listing_still_classifies_by_name(server: _Server) -> None:
+    """A plain OpenAI() target keeps the name rules: a tts id is a speech model there."""
+    server.models = [_entry('gpt-4o'), _entry('tts-1'), _entry('text-embedding-3-small')]
+
+    actions = await _plugin(server).list_actions()
+
+    assert {(a.kind, a.name) for a in actions} == {
+        (ActionKind.MODEL, 'openai/gpt-4o'),
+        (ActionKind.MODEL, 'openai/tts-1'),
+        (ActionKind.EMBEDDER, 'openai/text-embedding-3-small'),
+    }
+    tts = next(a for a in actions if a.name == 'openai/tts-1')
+    assert _supports(tts)['output'] == ['media']

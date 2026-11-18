@@ -15,12 +15,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 version: 2
+
+# Policy notes:
+# 1. Cooldowns satisfy zizmor (`dependabot-cooldown` >= 7d).
+# 2. The `uv` group scopes weekly PRs to `minor` + `patch` and suppresses routine
+#    `version-update:semver-major` PRs via `ignore` (so breaking major jumps that
+#    require code migrations are handled intentionally rather than turning the
+#    weekly PR red). Security/CVE updates bypass both `cooldown` and `ignore`,
+#    opening standalone PRs (including major bumps when required) outside the
+#    weekly group.
 updates:
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
@@ -31,7 +42,16 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       py-dependencies:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"

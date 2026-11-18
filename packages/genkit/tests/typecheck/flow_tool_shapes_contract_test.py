@@ -20,11 +20,13 @@
 
 Every shape the ``@ai.flow`` / ``@ai.tool`` / ``define_flow`` /
 ``define_tool`` overloads cover is pinned here with its exact type, so a
-shape that resolves to the wrong overload fails CI. Shapes Genkit doesn't
-support (a keyword-only parameter, two inputs) fail at the decorator in all
-three checkers and raise ``TypeError`` at definition. The runtime checks
-assert the built object is a ``DefaultedFlow`` / ``DefaultedTool`` exactly
-when the input has a default, so ``isinstance`` agrees with the static type.
+shape that resolves to the wrong overload fails CI. Unsupported shapes raise
+``TypeError`` at definition: a required keyword-only parameter or two inputs
+also fails at the decorator in all three checkers, while a defaulted
+keyword-only parameter matches the 1-arg ``Callable`` overload statically and
+is caught at definition. The runtime checks assert the built object is a
+``DefaultedFlow`` / ``DefaultedTool`` exactly when the input has a default, so
+``isinstance`` agrees with the static type.
 """
 
 import copy
@@ -109,10 +111,15 @@ async def echo_order(order: Any) -> str:  # noqa: ANN401 - pins the Any-input sh
     return str(order)
 
 
-# Unsupported: a keyword-only context, and two inputs.
+# Unsupported: a keyword-only context (required or defaulted), and two inputs.
 
 
 async def kwonly_special(cuisine: str = 'thai', *, ctx: FlowContext) -> str:
+    del ctx
+    return cuisine
+
+
+async def kwonly_default_special(cuisine: str = 'thai', *, ctx: FlowContext | None = None) -> str:
     del ctx
     return cuisine
 
@@ -173,6 +180,11 @@ async def echo_ticket(ticket: Any) -> str:  # noqa: ANN401 - pins the Any-input 
 
 
 async def kwonly_soup(day: str = 'monday', *, ctx: ToolContext) -> str:
+    del ctx
+    return day
+
+
+async def kwonly_default_soup(day: str = 'monday', *, ctx: ToolContext | None = None) -> str:
     del ctx
     return day
 
@@ -293,16 +305,22 @@ def test_define_tool_shapes() -> None:
 
 
 def test_unsupported_shapes_fail_at_the_decorator() -> None:
-    """A keyword-only parameter or a second input fails every checker at the decorator, and raises at definition."""
+    """Unsupported shapes raise ``TypeError`` at definition; required ``*, ctx`` and two inputs fail the decorator."""
     ai = Genkit()
 
-    # 1. Keyword-only context
+    # 1. Required keyword-only context: fails all three checkers and raises at definition
     with pytest.raises(TypeError, match="flow 'kwonly_special' parameter 'ctx' is keyword-only"):
         ai.flow(kwonly_special)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
     with pytest.raises(TypeError, match="tool 'kwonly_soup' parameter 'ctx' is keyword-only"):
         ai.tool()(kwonly_soup)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
-    # 2. Two inputs
+    # 2. Defaulted keyword-only context: matches the 1-arg overload statically, rejected at definition
+    with pytest.raises(TypeError, match="flow 'kwonly_default_special' parameter 'ctx' is keyword-only"):
+        ai.flow(kwonly_default_special)
+    with pytest.raises(TypeError, match="tool 'kwonly_default_soup' parameter 'ctx' is keyword-only"):
+        ai.tool()(kwonly_default_soup)
+
+    # 3. Two inputs
     with pytest.raises(TypeError, match="flow 'pair_dishes' takes one input, but 'side' is a second parameter"):
         ai.flow(pair_dishes)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
     with pytest.raises(TypeError, match="tool 'split_bill' takes one input, but 'guests' is a second parameter"):
@@ -422,8 +440,9 @@ async def test_defaulted_tool_calls() -> None:
         await check_allergens(None)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
 
 
-def test_defaulted_flows_fit_flow_annotations() -> None:
-    """A ``DefaultedFlow`` / ``DefaultedTool`` is assignable wherever a ``Flow[T, O]`` / ``Tool[T, O]`` is."""
+@pytest.mark.asyncio
+async def test_defaulted_flows_fit_flow_annotations() -> None:
+    """A ``DefaultedFlow`` / ``DefaultedTool`` fits ``Flow[T, O]`` / ``Tool[T, O]``, where callers pass ``T``."""
     ai = Genkit()
 
     @ai.flow
@@ -440,7 +459,7 @@ def test_defaulted_flows_fit_flow_annotations() -> None:
     def menu_tool(t: Tool[str, str]) -> str:
         return t.name
 
-    # 1. Annotate as Flow[str, str]
+    # 1. Annotate as Flow[str, str] / Tool[str, str]
     by_cuisine: Flow[str, str] = todays_special
     allergens: Tool[str, str] = check_allergens
 
@@ -449,6 +468,18 @@ def test_defaulted_flows_fit_flow_annotations() -> None:
     assert menu_tool(check_allergens) == 'check_allergens'
     assert by_cuisine is todays_special
     assert allergens is check_allergens
+
+    async def call_flow_no_input(f: Flow[str, str]) -> str:
+        return await f()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
+
+    async def call_tool_no_input(t: Tool[str, str]) -> str:
+        return await t()  # pyright: ignore[reportCallIssue]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[invalid-argument-type]
+
+    # 3. Through a Flow[str, str] / Tool[str, str] parameter, passing str works and omitting input fails the type check
+    assert await by_cuisine('thai') == 'thai: risotto'
+    assert await allergens('larb') == 'larb: peanuts'
+    assert await call_flow_no_input(todays_special) == 'italian: risotto'
+    assert await call_tool_no_input(check_allergens) == 'pad thai: peanuts'
 
 
 @pytest.mark.asyncio

@@ -346,6 +346,7 @@ def parse_plugin_name_from_action_name(name: str) -> str | None:
 #   async def ping(ctx: FlowContext) -> str: ...                      # no input
 #
 # Rules for the function:
+#   - Input and context are regular parameters (neither positional-only nor keyword-only).
 #   - The context is the parameter annotated ActionContext or a subclass
 #     (FlowContext, ToolContext, ModelContext, AgentContext).
 #   - Any other parameter is the input, so there's only one. Put more fields
@@ -465,10 +466,10 @@ def find_input_and_context(
                 f"{owner} parameter '{p.name}' is positional-only, but Genkit passes the input "
                 "and context by name. Remove the '/' from the signature."
             )
-        # Genkit could pass it by name, but the flow and tool overloads only
-        # model one input and one context as regular parameters, so a
-        # keyword-only one fails the type check at the decorator. Raise here
-        # too, so runtime agrees.
+        # Every action kind takes at most one input and one context as regular
+        # parameters. A required `*, ctx` fails the handler overloads, and a
+        # defaulted one (`*, ctx: FlowContext | None = None`) still matches
+        # `Callable[[InputT], ...]` statically, so reject both here.
         if p.kind is inspect.Parameter.KEYWORD_ONLY:
             raise TypeError(
                 f"{owner} parameter '{p.name}' is keyword-only. Take the input and context as "

@@ -56,11 +56,12 @@ from genkit_anthropic._utils import (
 logger = get_logger(__name__)
 
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
+TASK_BUDGET_BETA = 'task-budgets-2026-03-13'
 BETA_APIS: tuple[str, ...] = (
     'files-api-2025-04-14',
     'effort-2025-11-24',
     'structured-outputs-2025-11-13',
-    'task-budgets-2026-03-13',
+    TASK_BUDGET_BETA,
 )
 
 
@@ -513,8 +514,12 @@ class AnthropicModel:
         params['max_tokens'] = max_tokens
 
         if use_beta:
-            # Resold surfaces (Vertex, Bedrock) do not offer every default beta, so only the direct API gets them.
-            default_betas = list(BETA_APIS) if isinstance(self.client, AsyncAnthropic) else []
+            # Resold surfaces (Vertex, Bedrock) do not offer every default beta, so only the direct API gets
+            # them. A beta-only field still needs its own header there: Vertex rejects task_budget without it.
+            if isinstance(self.client, AsyncAnthropic):
+                default_betas = list(BETA_APIS)
+            else:
+                default_betas = [TASK_BUDGET_BETA] if config.task_budget is not None else []
             beta_headers = betas if betas is not None else default_betas
             # The Python SDK serializes [] as an empty anthropic-beta header,
             # which the API rejects. Omit the kwarg to request no beta headers.

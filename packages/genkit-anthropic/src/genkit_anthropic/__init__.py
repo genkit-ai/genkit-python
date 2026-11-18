@@ -50,6 +50,11 @@ Credentials:
     can bring its own key as ``context={'secrets': {'api_key': ...}}``; a
     plugin with no key of its own serves only those calls.
 
+    ``Anthropic(google_cloud=True, project=...)`` serves the same models from
+    Google Cloud instead, authenticated with application default credentials
+    and billed to the project (``uv add 'genkit-anthropic[google-cloud]'``).
+    Refs, config and ``.prompt`` files stay the same.
+
 See Also:
     - Anthropic documentation: https://docs.anthropic.com/
 """

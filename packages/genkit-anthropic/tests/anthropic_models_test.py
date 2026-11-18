@@ -1001,8 +1001,8 @@ async def test_resold_surface_omits_default_betas() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resold_surface_beta_only_field_routes_beta_without_defaults() -> None:
-    """A beta-only field still selects the beta surface without assuming default headers."""
+async def test_resold_surface_task_budget_sends_its_own_beta() -> None:
+    """task_budget routes to beta and brings its header; Vertex rejects the field without it."""
     mock_client = _mock_vertex_client_for_generate()
     model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
 
@@ -1010,6 +1010,17 @@ async def test_resold_surface_beta_only_field_routes_beta_without_defaults() -> 
 
     mock_client.beta.messages.create.assert_awaited_once()
     mock_client.messages.create.assert_not_called()
+    assert mock_client.beta.messages.create.call_args.kwargs['betas'] == ['task-budgets-2026-03-13']
+
+
+@pytest.mark.asyncio
+async def test_resold_surface_explicit_betas_replace_task_budget_beta() -> None:
+    """An explicit betas list wins over the derived header, as it does over the direct-API defaults."""
+    mock_client = _mock_vertex_client_for_generate()
+    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+
+    await model.generate(_text_request({'taskBudget': 20000, 'betas': []}))
+
     assert 'betas' not in mock_client.beta.messages.create.call_args.kwargs
 
 

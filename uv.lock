@@ -171,6 +171,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/26/ea71185027956325be1903d4fcaf7461d5ef40ca8f0e64f992e24ea9db0e/anthropic-0.112.0-py3-none-any.whl", hash = "sha256:bcc6268612c716dbb77133dd60fc41d26016d1b81dee9a52314d210193638751", size = 931954, upload-time = "2026-06-24T18:45:58.205Z" },
 ]
 
+[package.optional-dependencies]
+vertex = [
+    { name = "google-auth", extra = ["requests"] },
+]
+
 [[package]]
 name = "anthropic-sample"
 version = "0.1.0"
@@ -1730,11 +1735,18 @@ dependencies = [
     { name = "genkit" },
 ]
 
+[package.optional-dependencies]
+google-cloud = [
+    { name = "anthropic", extra = ["vertex"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.96.0,<1" },
+    { name = "anthropic", extras = ["vertex"], marker = "extra == 'google-cloud'", specifier = ">=0.96.0,<1" },
     { name = "genkit", editable = "packages/genkit" },
 ]
+provides-extras = ["google-cloud"]
 
 [[package]]
 name = "genkit-django"

@@ -230,7 +230,9 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
       settings such as ``verbosity``, ``safety_identifier``, ``store``,
       ``logit_bias``, ``prompt_cache_retention``, ``web_search_options``,
       ``modalities`` and ``audio`` would otherwise fail the call with a 422.
-      ``logprobs`` and ``top_logprobs`` are Mistral fields and go out.
+    - ``logprobs=True`` and any ``top_logprobs`` are refused, as in JS:
+      Mistral's schema declares them, but its models answer "Logprobs are not
+      enabled for this model". ``logprobs=False`` is left out.
 
     The SDK has no ``random_seed`` kwarg, so it rides in ``extra_body``; the
     same key in the caller's ``extra`` wins, as every ``extra`` key does.
@@ -247,14 +249,28 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
         A copy with Mistral's field names.
 
     Raises:
-        GenkitError: ``INVALID_ARGUMENT`` when ``top_k`` is set.
+        GenkitError: ``INVALID_ARGUMENT`` when ``top_k``, ``logprobs=True``
+            or ``top_logprobs`` is set.
     """
     if top_k is not None:
         raise GenkitError(
             status='INVALID_ARGUMENT',
             message="Mistral doesn't support top_k: its models reject top_k sampling. Remove top_k from the config.",
         )
+    # top_logprobs=0 is still a request for logprobs; only logprobs=False isn't.
+    asked = [('logprobs', body.get('logprobs') is True), ('top_logprobs', body.get('top_logprobs') is not None)]
+    for field, set_ in asked:
+        if set_:
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message=(
+                    f"Mistral doesn't support {field}: its models answer 'Logprobs are not enabled for this model'. "
+                    f'Remove {field} from the config.'
+                ),
+            )
     out = dict(body)
+    out.pop('logprobs', None)
+    out.pop('top_logprobs', None)
     out.pop('stream_options', None)
     if 'max_completion_tokens' in out:
         out['max_tokens'] = out.pop('max_completion_tokens')

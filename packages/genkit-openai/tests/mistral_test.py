@@ -462,6 +462,51 @@ async def test_mistral_refuses_top_k(mistral: Genkit, server: _Server) -> None:
     assert server.bodies() == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('config', 'field'),
+    [
+        ({'logprobs': True}, 'logprobs'),
+        ({'top_logprobs': 2}, 'top_logprobs'),
+        ({'top_logprobs': 0}, 'top_logprobs'),
+        ({'logprobs': True, 'top_logprobs': 2}, 'logprobs'),
+    ],
+)
+async def test_mistral_refuses_logprobs(mistral: Genkit, server: _Server, config: dict[str, Any], field: str) -> None:
+    """`logprobs=True` or any `top_logprobs` fails before the request: Mistral's models don't enable logprobs."""
+    response = await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
+
+    assert response.finish_reason == FinishReason.FAILED
+    assert field in str(response.error)
+    assert 'INVALID_ARGUMENT' in str(response.error)
+    assert server.bodies() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streamed', [False, True], ids=['generate', 'stream'])
+async def test_mistral_leaves_out_logprobs_false(mistral: Genkit, server: _Server, streamed: bool) -> None:
+    """`logprobs=False` asks for nothing, so it isn't sent."""
+    config = {'logprobs': False}
+    if streamed:
+        await mistral.generate_stream(model='mistral/mistral-small-latest', prompt='salut', config=config).response
+    else:
+        await mistral.generate(model='mistral/mistral-small-latest', prompt='salut', config=config)
+
+    [body] = server.bodies()
+    assert 'logprobs' not in body
+    assert 'top_logprobs' not in body
+
+
+@pytest.mark.asyncio
+async def test_openai_host_keeps_logprobs(openai: Genkit, server: _Server) -> None:
+    """OpenAI still gets logprobs and top_logprobs."""
+    await openai.generate(model='openai/gpt-4o', prompt='hi', config={'logprobs': True, 'top_logprobs': 2})
+
+    [body] = server.bodies()
+    assert body['logprobs'] is True
+    assert body['top_logprobs'] == 2
+
+
 _REASONING_CONFIG = {'reasoning_effort': 'high'}
 
 
@@ -646,8 +691,6 @@ async def test_mistral_drops_openai_only_settings(mistral: Genkit, server: _Serv
 async def test_mistral_sends_the_settings_it_declares(mistral: Genkit, server: _Server) -> None:
     """Settings Mistral declares under the same name go out as given."""
     config = {
-        'logprobs': True,
-        'top_logprobs': 2,
         'service_tier': 'auto',
         'prompt_cache_key': 'bakery',
         'metadata': {'shop': 'paris'},
@@ -681,14 +724,14 @@ def test_mistral_chat_body_keeps_only_declared_fields_and_extra() -> None:
         'messages': [],
         'verbosity': 'low',
         'safety_identifier': 'user-1',
-        'logprobs': True,
+        'n': 1,
         'extra_body': {'user': 'u', 'min_tokens': 3},
     })
 
     assert out == {
         'model': 'mistral-small-latest',
         'messages': [],
-        'logprobs': True,
+        'n': 1,
         'extra_body': {'user': 'u', 'min_tokens': 3},
     }
 

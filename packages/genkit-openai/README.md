@@ -114,7 +114,9 @@ that differ:
   even with `reasoning_effort` set.
 - `seed` goes out as `random_seed`.
 - `top_k` is refused before the request goes out: Mistral's models reject
-  `top_k` sampling.
+  `top_k` sampling. So are `logprobs=True` and any `top_logprobs`: Mistral's
+  models answer "Logprobs are not enabled for this model". `logprobs=False`
+  is left out of the request.
 - `reasoning_effort` also takes `'max'`, which Mistral's API declares and
   OpenAI's doesn't; other targets refuse it before the request goes out.
   Which values a model accepts varies: Mistral Small takes `none` and `high`,
@@ -130,11 +132,9 @@ that differ:
   with a warning in the log: `verbosity`, `safety_identifier`, `store`,
   `logit_bias`, `prompt_cache_retention`, `web_search_options`, `modalities`
   and `audio`. Mistral would fail the call with a 422 naming them.
-  `logprobs`, `top_logprobs`, `service_tier`, `prompt_cache_key`, `metadata`,
-  `prediction` and `parallel_tool_calls` are Mistral fields too and go out as
-  given, though Mistral decides per model what it accepts (its current models
-  answer `logprobs` with "Logprobs are not enabled for this model", and
-  `service_tier` takes only `auto` or `standard_only`).
+  `service_tier`, `prompt_cache_key`, `metadata`, `prediction` and
+  `parallel_tool_calls` are Mistral fields too and go out as given
+  (`service_tier` takes only `auto` or `standard_only`).
 - `extra` gets the same renames: `seed` and `max_completion_tokens` there go
   out as `random_seed` and `max_tokens`, and `stream_options` is dropped.
   Nothing else in `extra` is dropped.

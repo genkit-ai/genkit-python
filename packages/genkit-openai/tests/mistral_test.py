@@ -24,7 +24,7 @@ from typing import Any, Literal, cast
 import httpx
 import pytest
 from genkit_openai import OpenAI
-from genkit_openai._models._mistral import mistral_chat_body
+from genkit_openai._models._mistral import MISTRAL_CHAT_FIELDS, mistral_chat_body
 from pydantic import BaseModel
 
 from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
@@ -605,15 +605,92 @@ async def test_mistral_image_input_goes_out_as_image_url(mistral: Genkit, server
     assert {'type': 'image_url', 'image_url': {'url': 'https://example.com/loaf.png'}} in blocks
 
 
-@pytest.mark.asyncio
-async def test_mistral_rejects_an_openai_only_setting(mistral: Genkit, server: _Server) -> None:
-    """An OpenAI-only setting such as `verbosity` is sent as given, and Mistral's 422 fails the turn."""
-    response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config={'verbosity': 'low'})
+# OpenAI settings Mistral's chat schema doesn't declare; each was checked
+# live against api.mistral.ai, which answers it with a 422.
+_OPENAI_ONLY_SETTINGS = {
+    'verbosity': 'low',
+    'safety_identifier': 'user-1',
+    'store': False,
+    'logit_bias': {'1': 1},
+    'prompt_cache_retention': '24h',
+    'web_search_options': {},
+    'modalities': ['text'],
+    'audio': {'voice': 'alloy', 'format': 'mp3'},
+}
 
-    assert response.finish_reason == FinishReason.FAILED
-    assert 'verbosity' in str(response.error)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streamed', [False, True], ids=['generate', 'stream'])
+@pytest.mark.parametrize('field', sorted(_OPENAI_ONLY_SETTINGS))
+async def test_mistral_drops_openai_only_settings(mistral: Genkit, server: _Server, field: str, streamed: bool) -> None:
+    """An OpenAI-only setting such as `verbosity` is left out, so Mistral answers instead of failing with a 422."""
+    config = {field: _OPENAI_ONLY_SETTINGS[field]}
+    if streamed:
+        response = await mistral.generate_stream(
+            model='openai/mistral-small-latest', prompt='salut', config=config
+        ).response
+    else:
+        response = await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+
+    assert response.finish_reason == FinishReason.STOP
+    [body] = server.bodies()
+    assert field not in body
+
+
+@pytest.mark.asyncio
+async def test_mistral_sends_the_settings_it_declares(mistral: Genkit, server: _Server) -> None:
+    """Settings Mistral declares under the same name go out as given."""
+    config = {
+        'logprobs': True,
+        'top_logprobs': 2,
+        'service_tier': 'auto',
+        'prompt_cache_key': 'bakery',
+        'metadata': {'shop': 'paris'},
+        'prediction': {'type': 'content', 'content': 'bonjour'},
+        'parallel_tool_calls': False,
+        'n': 1,
+        'frequency_penalty': 0.1,
+        'presence_penalty': 0.2,
+    }
+
+    await mistral.generate(model='openai/mistral-small-latest', prompt='salut', config=config)
+
+    [body] = server.bodies()
+    assert {k: body[k] for k in config} == config
+
+
+@pytest.mark.asyncio
+async def test_openai_host_keeps_openai_only_settings(openai: Genkit, server: _Server) -> None:
+    """OpenAI's own settings still go out to OpenAI."""
+    await openai.generate(model='openai/gpt-4o', prompt='hi', config={'verbosity': 'low', 'store': True})
+
     [body] = server.bodies()
     assert body['verbosity'] == 'low'
+    assert body['store'] is True
+
+
+def test_mistral_chat_body_keeps_only_declared_fields_and_extra() -> None:
+    """`mistral_chat_body` drops top-level fields Mistral doesn't declare but sends `extra` as written."""
+    out = mistral_chat_body({
+        'model': 'mistral-small-latest',
+        'messages': [],
+        'verbosity': 'low',
+        'safety_identifier': 'user-1',
+        'logprobs': True,
+        'extra_body': {'user': 'u', 'min_tokens': 3},
+    })
+
+    assert out == {
+        'model': 'mistral-small-latest',
+        'messages': [],
+        'logprobs': True,
+        'extra_body': {'user': 'u', 'min_tokens': 3},
+    }
+
+
+def test_mistral_chat_fields_match_the_fake_servers_schema() -> None:
+    """The plugin's allowlist is Mistral's ChatCompletionRequest, the schema the fake enforces."""
+    assert MISTRAL_CHAT_FIELDS == _CHAT_FIELDS
 
 
 @pytest.mark.asyncio

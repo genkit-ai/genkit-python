@@ -40,7 +40,9 @@ import httpx
 from genkit_openai._models._utils import parse_data_uri_content_type
 from openai import AsyncOpenAI
 
-from genkit import GenkitError, Message
+from genkit import GenkitError, Message, get_logger
+
+logger = get_logger(__name__)
 
 # Mistral's API hosts: global, EU and US, the servers in the mistralai SDK's
 # sdkconfiguration.py. codestral.mistral.ai, for Codestral-only keys, is not in
@@ -54,6 +56,43 @@ MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
 
 # The key Mistral's own SDKs, and Genkit's JS and Dart plugins, read.
 MISTRAL_API_KEY_ENV = 'MISTRAL_API_KEY'
+
+# The top-level fields Mistral's ChatCompletionRequest declares
+# (https://docs.mistral.ai/openapi.yaml). Its schema is closed: anything else
+# is a 422 "Extra inputs are not permitted". ``extra_body`` is the SDK's
+# passthrough, not a wire field, and is kept.
+MISTRAL_CHAT_FIELDS = frozenset({
+    'model',
+    'messages',
+    'temperature',
+    'top_p',
+    'max_tokens',
+    'stream',
+    'stop',
+    'random_seed',
+    'metadata',
+    'response_format',
+    'tools',
+    'tool_choice',
+    'presence_penalty',
+    'frequency_penalty',
+    'min_tokens',
+    'repetition_penalty',
+    'top_k',
+    'logprobs',
+    'top_logprobs',
+    'prompt_logprobs',
+    'top_prompt_logprobs',
+    'n',
+    'prediction',
+    'parallel_tool_calls',
+    'reasoning_effort',
+    'prompt_mode',
+    'guardrails',
+    'prompt_cache_key',
+    'service_tier',
+    'safe_prompt',
+})
 
 
 def is_mistral_url(url: str | httpx.URL) -> bool:
@@ -83,12 +122,19 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
     - ``seed`` goes out as ``random_seed``.
     - ``top_k`` is refused. Mistral's schema declares it, but its models
       answer "top_k sampling is not enabled for this model".
+    - Any other field Mistral's schema doesn't declare is dropped, as Dart's
+      ``mistralChatBody`` drops ``user`` and ``verbosity``: OpenAI-only
+      settings such as ``verbosity``, ``safety_identifier``, ``store``,
+      ``logit_bias``, ``prompt_cache_retention``, ``web_search_options``,
+      ``modalities`` and ``audio`` would otherwise fail the call with a 422.
+      ``logprobs`` and ``top_logprobs`` are Mistral fields and go out.
 
     The SDK has no ``random_seed`` kwarg, so it rides in ``extra_body``; the
     same key in the caller's ``extra`` wins, as every ``extra`` key does.
     ``extra`` gets the same renames: its ``seed``, ``max_completion_tokens``
     and ``stream_options`` would otherwise reach Mistral as given and fail
-    with a 422. Where ``extra`` has both names, Mistral's wins.
+    with a 422. Where ``extra`` has both names, Mistral's wins. Nothing else
+    in ``extra`` is dropped: it is sent as the caller wrote it.
 
     Args:
         body: The kwargs the plugin built for OpenAI. Not modified.
@@ -112,6 +158,10 @@ def mistral_chat_body(body: dict[str, Any], *, top_k: int | None = None) -> dict
     renamed: dict[str, Any] = {}
     if 'seed' in out:
         renamed['random_seed'] = out.pop('seed')
+    if dropped := sorted(k for k in out if k not in MISTRAL_CHAT_FIELDS and k != 'extra_body'):
+        logger.warning('Mistral does not define these OpenAI settings; not sending them', fields=dropped)
+        for key in dropped:
+            del out[key]
     extra = dict(out.pop('extra_body', None) or {})
     extra.pop('stream_options', None)
     _rename(extra, 'max_completion_tokens', 'max_tokens')

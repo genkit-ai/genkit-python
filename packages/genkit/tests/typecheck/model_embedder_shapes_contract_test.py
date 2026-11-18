@@ -21,10 +21,11 @@
 A handler takes its request plus an optional context, in either order, the
 same rule as flows and tools. Every supported shape type-checks at
 ``ai.define_*``, the plugin-level constructors (``Model``, ``Embedder``,
-``BackgroundModel``) and the registry-level ``define_*``, and runs. A
-``ModelRequest[Cfg]`` request keeps its config class with the context in
-either position. Two inputs or a keyword-only parameter fail every checker
-and raise ``TypeError`` at definition.
+``BackgroundModel``) and the registry-level ``define_*``, and runs. A lambda
+infers its parameter as the request. A ``ModelRequest[Cfg]`` request
+keeps its config class with the context in either position. Two inputs or a
+keyword-only parameter fail every checker and raise ``TypeError`` at
+definition.
 """
 
 import pytest
@@ -219,7 +220,7 @@ def test_embedder_shapes_type_check_at_every_entry_point() -> None:
 
 
 def test_background_model_shapes_type_check() -> None:
-    """Start, check and cancel take their input plus an optional context, in either order."""
+    """Start, check and cancel take their input plus an optional context, in either order, mixed freely."""
     ai = Genkit()
 
     ai.define_background_model(name='render', start=start_render, check=check_render, cancel=check_render)
@@ -232,7 +233,40 @@ def test_background_model_shapes_type_check() -> None:
         check=check_render_ctx_first,
         cancel=check_render_ctx_first,
     )
+    ai.define_background_model(name='render_mixed', start=start_render_ctx_first, check=check_render)
     BackgroundModel('render_plugin', start=start_render_ctx_first, check=check_render_ctx_first)
+
+
+def test_lambdas_infer_the_request_at_every_entry_point() -> None:
+    """``lambda req: ...`` infers ``req`` as the request, not the context.
+
+    A two-argument lambda can't run: its ``ctx`` has no ``ModelContext``
+    annotation, so Genkit reads it as a second input. Background-model
+    handlers must be ``async def``, so they take no lambdas at all.
+    """
+    ai = Genkit()
+    registry = Registry()
+
+    # 1. Models
+    ai.define_model(name='m1', fn=lambda req: chef(req))
+    Model('m2', lambda req: chef(req))
+    define_model(registry, 'm3', lambda req: chef(req))
+
+    # 2. Embedders
+    ai.define_embedder(name='e1', fn=lambda req: embed_menu(req))
+    Embedder('e2', lambda req: embed_menu(req))
+    define_embedder(registry, 'e3', lambda req: embed_menu(req))
+
+
+@pytest.mark.asyncio
+async def test_lambda_handlers_run() -> None:
+    """Lambda handlers answer generate and embed."""
+    ai = Genkit()
+    ai.define_model(name='chef_lambda', fn=lambda req: chef(req))
+    ai.define_embedder(name='embed_lambda', fn=lambda req: embed_menu(req))
+
+    assert (await ai.generate(model='chef_lambda', prompt='hi')).text == 'chef: 1 messages'
+    assert (await ai.embed(embedder='embed_lambda', content='tartine'))[0].embedding == [0.25]
 
 
 def test_unsupported_shapes_fail_at_definition() -> None:
@@ -241,15 +275,15 @@ def test_unsupported_shapes_fail_at_definition() -> None:
 
     # 1. Models
     with pytest.raises(TypeError, match="model 'chef_two_inputs' takes one input, but 'table' is a second parameter"):
-        ai.define_model(name='chef_two_inputs', fn=chef_two_inputs)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[bad-argument-type]  # ty: ignore[invalid-argument-type]
+        ai.define_model(name='chef_two_inputs', fn=chef_two_inputs)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
     with pytest.raises(TypeError, match="model 'chef_kwonly' parameter 'ctx' is keyword-only"):
-        ai.define_model(name='chef_kwonly', fn=chef_kwonly)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[bad-argument-type]  # ty: ignore[invalid-argument-type]
+        ai.define_model(name='chef_kwonly', fn=chef_kwonly)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
     # 2. Embedders
     with pytest.raises(TypeError, match="embedder 'embed_two_inputs' takes one input, but 'locale' is a second"):
-        ai.define_embedder(name='embed_two_inputs', fn=embed_two_inputs)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[bad-argument-type]  # ty: ignore[invalid-argument-type]
+        ai.define_embedder(name='embed_two_inputs', fn=embed_two_inputs)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
     with pytest.raises(TypeError, match="embedder 'embed_kwonly' parameter 'ctx' is keyword-only"):
-        ai.define_embedder(name='embed_kwonly', fn=embed_kwonly)  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[bad-argument-type]  # ty: ignore[invalid-argument-type]
+        ai.define_embedder(name='embed_kwonly', fn=embed_kwonly)  # pyright: ignore[reportCallIssue, reportArgumentType]  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
 @pytest.mark.asyncio

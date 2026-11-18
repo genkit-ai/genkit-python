@@ -18,9 +18,10 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Annotated, Any, TypeAlias, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, TypeAlias, cast, get_args, get_origin, get_type_hints, overload
 
 from pydantic import BaseModel, ValidationError
 
@@ -70,13 +71,17 @@ from genkit._core._registry import Registry
 from genkit._core._schema import custom_options_schema, fixed_json_schema
 from genkit._core._typing import GenerationCommonConfig, ModelInfo
 
-# A model fn takes the request and an optional ModelContext, in either order,
-# like a flow or tool takes its input and context. Use ctx.send_chunk() to stream.
+# A model fn takes the request and an optional ModelContext, like a flow or
+# tool takes its input and context. Use ctx.send_chunk() to stream.
 ModelFn = (
     Callable[[ModelRequest, ModelContext], Awaitable[ModelResponse[Any]]]
-    | Callable[[ModelContext, ModelRequest], Awaitable[ModelResponse[Any]]]
     | Callable[[ModelRequest], Awaitable[ModelResponse[Any]]]
 )
+# The context can also come first. Entry points take this through a second
+# overload instead of a third arm on ModelFn: in one union, pyright and pyrefly
+# infer a lambda's first parameter as ModelContext, so `lambda req: ...` stops
+# type-checking.
+CtxFirstModelFn = Callable[[ModelContext, ModelRequest], Awaitable[ModelResponse[Any]]]
 
 logger = get_logger(__name__)
 
@@ -422,7 +427,7 @@ def _model_options(
     return options
 
 
-def _check_request_annotation(name: str, fn: ModelFn) -> None:
+def _check_request_annotation(name: str, fn: ModelFn | CtxFirstModelFn) -> None:
     """Reject model fns whose request annotation is not a ModelRequest class.
 
     Unions like ``ModelRequest[X] | None`` are an antipattern: generate() never
@@ -438,6 +443,19 @@ def _check_request_annotation(name: str, fn: ModelFn) -> None:
     except Exception:  # noqa: BLE001 - unresolvable annotations or a bad shape: let Action report it
         return
     if request is None:
+        # A decorator without functools.wraps leaves only *args / **kwargs, so
+        # Genkit would call it with no request and every generate() would fail.
+        # A fn with no parameters at all just ignores the request; that's allowed.
+        variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        if any(p.kind in variadic for p in inspect.signature(fn).parameters.values()):
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message=(
+                    f"Model '{name}': the function only takes *args / **kwargs, so Genkit can't "
+                    "find the request parameter. If a decorator wraps it, apply functools.wraps "
+                    'in the decorator, or declare the request (req: ModelRequest).'
+                ),
+            )
         return
     ann = hints.get(request.name)
     if ann is None:
@@ -485,10 +503,34 @@ class Model(Action[ModelRequest, ModelResponse, ModelResponseChunk]):
     annotation; given both, they must be the same class.
     """
 
+    @overload
     def __init__(
         self,
         name: str,
         fn: ModelFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: ModelInfo | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        name: str,
+        fn: CtxFirstModelFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: ModelInfo | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        name: str,
+        fn: ModelFn | CtxFirstModelFn,
         *,
         config_schema: type[BaseModel] | dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
@@ -519,10 +561,34 @@ class Model(Action[ModelRequest, ModelResponse, ModelResponseChunk]):
             model_options['customOptions'] = custom_options_schema(self.config_schema)
 
 
+@overload
 def define_model(
     registry: Registry,
     name: str,
     fn: ModelFn,
+    config_schema: type[BaseModel] | dict[str, object] | None = None,
+    metadata: dict[str, object] | None = None,
+    info: ModelInfo | None = None,
+    description: str | None = None,
+) -> Model: ...
+
+
+@overload
+def define_model(
+    registry: Registry,
+    name: str,
+    fn: CtxFirstModelFn,
+    config_schema: type[BaseModel] | dict[str, object] | None = None,
+    metadata: dict[str, object] | None = None,
+    info: ModelInfo | None = None,
+    description: str | None = None,
+) -> Model: ...
+
+
+def define_model(
+    registry: Registry,
+    name: str,
+    fn: ModelFn | CtxFirstModelFn,
     config_schema: type[BaseModel] | dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
     info: ModelInfo | None = None,

@@ -6,7 +6,7 @@
 import sys
 import types
 from collections.abc import Awaitable, Callable
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 import pytest
 from pydantic import TypeAdapter
@@ -15,7 +15,8 @@ from genkit import Document, Genkit, GenkitError, Message, ModelResponse, Operat
 from genkit._ai._background_model import CheckModelOpFn, StartModelOpFn
 from genkit._core._action import Action, ActionContext, ActionKind
 from genkit._core._typing import Role
-from genkit.model import ModelRequest
+from genkit.embedder import Embedder
+from genkit.model import Model, ModelRequest
 from genkit.plugin_api import Plugin
 
 _REPLY = ModelResponse(message=Message(role=Role.MODEL, content=[Part.from_text('Smoked Salmon Tartine')]))
@@ -224,6 +225,59 @@ def test_action_with_keyword_only_parameter_raises_type_error() -> None:
         Action(ActionKind.EMBEDDER, 'menu', index_menu)
     with pytest.raises(TypeError, match="custom 'menu' parameter 'ctx' is keyword-only"):
         Action(ActionKind.CUSTOM, 'menu', index_menu)
+
+
+async def _wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - a decorator's wrapper without functools.wraps
+    del args, kwargs
+
+
+async def _plate_with_extras(dish: str, **extras: Any) -> Any:  # noqa: ANN401 - the shape under test
+    del extras
+    return dish
+
+
+async def _start_ok(request: ModelRequest) -> Operation:
+    return Operation(id='op-1')
+
+
+async def _check_ok(op: Operation) -> Operation:
+    return op
+
+
+# Every entry point whose handler Genkit calls by name, as (expected owner, build).
+_BY_NAME_ENTRY_POINTS: list[tuple[str, Callable[[Genkit, Callable[..., Any]], object]]] = [
+    ("flow 'h'", lambda ai, fn: ai.flow('h')(fn)),
+    ("tool 'h'", lambda ai, fn: ai.tool('h')(fn)),
+    ("model 'h'", lambda ai, fn: ai.define_model(name='h', fn=fn)),
+    ("model 'h'", lambda ai, fn: Model('h', fn)),
+    ("embedder 'h'", lambda ai, fn: ai.define_embedder(name='h', fn=fn)),
+    ("embedder 'h'", lambda ai, fn: Embedder('h', fn)),
+    ("background model 'h'", lambda ai, fn: ai.define_background_model(name='h', start=fn, check=_check_ok)),
+    ('h', lambda ai, fn: ai.define_background_model(name='h', start=_start_ok, check=fn)),
+    ('h', lambda ai, fn: ai.define_background_model(name='h', start=_start_ok, check=_check_ok, cancel=fn)),
+    (
+        "evaluator 'h'",
+        lambda ai, fn: ai.define_batch_evaluator(name='h', fn=fn, display_name='H', definition='scores rows'),
+    ),
+    ("custom 'h'", lambda ai, fn: Action(ActionKind.CUSTOM, 'h', fn)),
+]
+
+
+@pytest.mark.parametrize(('owner', 'build'), _BY_NAME_ENTRY_POINTS)
+def test_variadic_only_handler_raises_at_definition(owner: str, build: Callable[..., object]) -> None:
+    """A ``(*args, **kwargs)`` wrapper raises at definition and names functools.wraps."""
+    with pytest.raises(TypeError, match=r'takes \*args, but Genkit passes only the input and context') as exc:
+        build(Genkit(), _wrapper)
+    assert owner in str(exc.value)
+    assert 'functools.wraps' in str(exc.value)
+
+
+@pytest.mark.parametrize(('owner', 'build'), _BY_NAME_ENTRY_POINTS)
+def test_extra_kwargs_next_to_the_input_raise_at_definition(owner: str, build: Callable[..., object]) -> None:
+    """``(dish, **extras)`` raises too: ``extras`` would never receive anything."""
+    with pytest.raises(TypeError, match=r'takes \*\*extras, but Genkit passes only the input and context') as exc:
+        build(Genkit(), _plate_with_extras)
+    assert owner in str(exc.value)
 
 
 @pytest.mark.asyncio

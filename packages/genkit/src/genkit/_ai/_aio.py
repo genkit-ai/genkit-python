@@ -44,7 +44,15 @@ from genkit._ai._background_model import (
     check_operation,
     define_background_model,
 )
-from genkit._ai._embedding import Embedder, EmbedderFn, EmbedderInfo, EmbedderRef, EmbedderRefConfigT, define_embedder
+from genkit._ai._embedding import (
+    CtxFirstEmbedderFn,
+    Embedder,
+    EmbedderFn,
+    EmbedderInfo,
+    EmbedderRef,
+    EmbedderRefConfigT,
+    define_embedder,
+)
 from genkit._ai._evaluator import (
     BatchEvaluator,
     BatchEvaluatorFn,
@@ -69,6 +77,7 @@ from genkit._ai._generate import (
     start_generate_stream,
 )
 from genkit._ai._model import (
+    CtxFirstModelFn,
     Message,
     Model,
     ModelArg,
@@ -782,10 +791,37 @@ class Genkit:
             description=description,
         )
 
+    # define_model and define_embedder: the first overload takes the request
+    # and an optional context after it, so `lambda req: ...` infers req as the
+    # request. The second takes the context first. See CtxFirstModelFn.
+    @overload
     def define_model(
         self,
         name: str,
         fn: ModelFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: ModelInfo | None = None,
+        description: str | None = None,
+    ) -> Model: ...
+
+    @overload
+    def define_model(
+        self,
+        name: str,
+        fn: CtxFirstModelFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: ModelInfo | None = None,
+        description: str | None = None,
+    ) -> Model: ...
+
+    def define_model(
+        self,
+        name: str,
+        fn: ModelFn | CtxFirstModelFn,
         *,
         config_schema: type[BaseModel] | dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
@@ -820,10 +856,34 @@ class Genkit:
             description=description,
         )
 
+    @overload
     def define_embedder(
         self,
         name: str,
         fn: EmbedderFn,
+        *,
+        info: EmbedderInfo | None = None,
+        metadata: dict[str, object] | None = None,
+        description: str | None = None,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> Embedder: ...
+
+    @overload
+    def define_embedder(
+        self,
+        name: str,
+        fn: CtxFirstEmbedderFn,
+        *,
+        info: EmbedderInfo | None = None,
+        metadata: dict[str, object] | None = None,
+        description: str | None = None,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> Embedder: ...
+
+    def define_embedder(
+        self,
+        name: str,
+        fn: EmbedderFn | CtxFirstEmbedderFn,
         *,
         info: EmbedderInfo | None = None,
         metadata: dict[str, object] | None = None,

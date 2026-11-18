@@ -348,7 +348,7 @@ def parse_plugin_name_from_action_name(name: str) -> str | None:
 #   async def ping(ctx: FlowContext) -> str: ...                      # no input
 #
 # Rules for the function:
-#   - Input and context are regular parameters (neither positional-only nor keyword-only).
+#   - Input and context are regular parameters: no '/', no '*', no *args or **kwargs.
 #   - The context is the parameter annotated ActionContext or a subclass
 #     (FlowContext, ToolContext, ModelContext, AgentContext).
 #   - Any other parameter is the input, so there's only one. Put more fields
@@ -451,18 +451,23 @@ def find_input_and_context(
 ) -> ActionParams:
     """Find ``fn``'s input and run-context parameters, or raise a TypeError saying how to fix it.
 
-    ``hints`` is ``resolve_type_hints(fn)``. ``*args`` and ``**kwargs`` are ignored.
+    ``hints`` is ``resolve_type_hints(fn)``.
     """
     owner = describe_action(kind, name)
     context_class = _public_context_name(context_kind if context_kind is not None else kind)
 
-    params = [
-        p
-        for p in signature_of(fn).parameters.values()
-        if p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-    ]
+    params = list(signature_of(fn).parameters.values())
 
     for p in params:
+        # Genkit passes only the input and context, by name, so *args and
+        # **kwargs would never receive anything. A decorator without
+        # functools.wraps is the usual source: the fn would run with no input.
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            star = '*' if p.kind is inspect.Parameter.VAR_POSITIONAL else '**'
+            raise TypeError(
+                f'{owner} takes {star}{p.name}, but Genkit passes only the input and context. '
+                'Remove it, or if a decorator added it, apply functools.wraps in the decorator.'
+            )
         if p.kind is inspect.Parameter.POSITIONAL_ONLY:
             raise TypeError(
                 f"{owner} parameter '{p.name}' is positional-only, but Genkit passes the input "

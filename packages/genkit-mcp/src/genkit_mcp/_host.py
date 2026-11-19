@@ -48,6 +48,11 @@ class McpHost:
     other failure to list a server, such as a protocol violation, an error the
     server returns, or two of its tools sharing a name, fails the listing.
 
+    A server that failed before completing a request, including one that never
+    finished its handshake, is started again only once the delay
+    :class:`McpClient` describes is up, not on every listing of the other
+    servers.
+
     A host holds no Genkit instance. Registering the provider is
     :func:`define_mcp_host`.
 
@@ -219,7 +224,8 @@ class McpHost:
 
         The calling loop reconnects and re-lists before this returns, so a
         server which still cannot be started says so here rather than on the
-        next generate. The server stays in this host either way.
+        next generate. The server stays in this host either way. A server
+        waiting to be started again after a failure is started at once.
 
         Args:
             server_name: Name of the server within this host.

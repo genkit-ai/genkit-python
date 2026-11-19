@@ -220,6 +220,26 @@ def test_extract_system() -> None:
     assert system == 'You are helpful.'
 
 
+def test_extract_system_keeps_cache_control_on_system_parts() -> None:
+    """cache_control on a system part reaches the API as a text block."""
+    mock_client = MagicMock()
+    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    cache = {'type': 'ephemeral'}
+
+    messages = [
+        Message(
+            role=Role.SYSTEM,
+            content=[Part.from_text('Long reference.', metadata={'cache_control': cache}), Part.from_text('Be brief.')],
+        ),
+        Message(role=Role.USER, content=[Part.from_text('Hello')]),
+    ]
+
+    assert model._extract_system(messages) == [
+        {'type': 'text', 'text': 'Long reference.', 'cache_control': cache},
+        {'type': 'text', 'text': 'Be brief.'},
+    ]
+
+
 def test_extract_system_keeps_all_system_messages() -> None:
     """Every system message is sent, not only the first."""
     mock_client = MagicMock()

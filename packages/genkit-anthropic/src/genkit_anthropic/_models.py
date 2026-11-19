@@ -558,7 +558,10 @@ class AnthropicModel:
                 if request.output_schema is not None:
                     schema_str = json.dumps(request.output_schema, indent=2)
                     instruction += f'\n\nFollow this JSON schema:\n{schema_str}'
-                system = (system or '') + instruction
+                if isinstance(system, list):
+                    system = [*system, {'type': 'text', 'text': instruction.lstrip()}]
+                else:
+                    system = (system or '') + instruction
 
         if system:
             params['system'] = system
@@ -704,12 +707,27 @@ class AnthropicModel:
 
             return cast(AnthropicMessage, await stream.get_final_message())
 
-    def _extract_system(self, messages: list[Message]) -> str | None:
+    def _extract_system(self, messages: list[Message]) -> str | list[dict[str, Any]] | None:
         """Extract system prompt from messages.
 
-        Text from every system message is kept, in order, joined by blank lines.
-        System messages with no text are skipped.
+        Text from every system message is kept, in order. System messages with
+        no text are skipped. Without ``cache_control`` metadata the text is
+        joined by blank lines into one string. If any text part carries
+        ``cache_control``, a list of text blocks is returned instead, so the
+        marker reaches the API.
         """
+        parts = [part for msg in messages if msg.role == Role.SYSTEM for part in msg.content if part.text is not None]
+        if any(get_cache_control(part) for part in parts):
+            blocks: list[dict[str, Any]] = []
+            for part in parts:
+                if not part.text:
+                    continue
+                block: dict[str, Any] = {'type': 'text', 'text': part.text}
+                cache_meta = get_cache_control(part)
+                if cache_meta:
+                    block['cache_control'] = cache_meta
+                blocks.append(block)
+            return blocks or None
         system_texts = []
         for msg in messages:
             if msg.role == Role.SYSTEM:

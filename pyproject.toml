@@ -44,8 +44,9 @@ version = "0.1.0"
 [dependency-groups]
 # Dev and lint groups are never published, so they cap at the next major.
 # That keeps a blanket `uv lock --upgrade` from jumping a tool's major.
-# Published packages under packages/ keep floor-only bounds; see
-# docs/dependencies.md.
+# Published packages under packages/ cap only integration targets and
+# contracts (REQUIRED_CAPS / SCOPED_CAPS in scripts/check_consistency.py);
+# everything else is floor-only. See docs/dependencies.md.
 dev = [
   "nox-uv>=0.2.2,<1",
   "numpy>=2.0,<3",       # generate_loop_test.py

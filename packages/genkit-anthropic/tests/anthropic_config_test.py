@@ -240,7 +240,7 @@ def test_json_schema_advertises_js_shaped_keys() -> None:
 @pytest.mark.parametrize(
     ('raw', 'expected'),
     [
-        ({'extra': {'speed': 'fast'}}, {'speed'}),
+        ({'extra': {'context_management': {'edits': []}}}, {'context_management'}),
         ({'betas': ['x']}, {'betas'}),
         # Setting a beta-only feature at all is intent, even when the value is empty.
         ({'extra': {'mcp_servers': []}}, {'mcp_servers'}),
@@ -261,7 +261,7 @@ def test_beta_only_fields_detection(raw: dict, expected: set[str]) -> None:
     'raw',
     [
         {'apiVersion': 'stable', 'betas': ['x']},
-        {'apiVersion': 'stable', 'extra': {'speed': 'fast'}},
+        {'apiVersion': 'stable', 'extra': {'context_management': {'edits': []}}},
         {'apiVersion': 'stable', 'taskBudget': 20000},
     ],
 )
@@ -274,8 +274,8 @@ def test_beta_only_fields_rejected_on_stable_surface(raw: dict) -> None:
 @pytest.mark.parametrize(
     'raw',
     [
-        {'apiVersion': 'beta', 'extra': {'speed': 'fast'}},
-        {'extra': {'speed': 'fast'}},
+        {'apiVersion': 'beta', 'extra': {'context_management': {'edits': []}}},
+        {'extra': {'context_management': {'edits': []}}},
         {'apiVersion': 'stable', 'temperature': 0.5},
     ],
 )

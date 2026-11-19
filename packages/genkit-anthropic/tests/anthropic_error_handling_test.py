@@ -21,7 +21,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 from anthropic import (
     APIConnectionError,
@@ -31,6 +30,7 @@ from anthropic import (
     APITimeoutError,
     AsyncAnthropic,
 )
+from genkit_anthropic._compat import httpx
 from genkit_anthropic._models import AnthropicModel
 
 from genkit import GenkitError, Message, Part, Role

@@ -24,9 +24,9 @@ runtime asserts pin the config dump and the Messages request body.
 import json
 from typing import Any
 
-import httpx
 import pytest
 from genkit_anthropic import Anthropic, AnthropicConfig, Effort, ThinkingDisplay, ThinkingMode
+from genkit_anthropic._compat import httpx
 from typing_extensions import assert_type
 
 from genkit import Genkit

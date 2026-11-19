@@ -27,7 +27,6 @@ See:
 import json
 from typing import Any, Literal, Protocol, cast
 
-import httpx
 from anthropic import (
     APIConnectionError,
     APIError,
@@ -41,6 +40,7 @@ from anthropic.types import Message as AnthropicMessage
 from genkit import FinishReason, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role, get_logger
 from genkit.model import ConstrainedSupport, GenerationUsage, ModelContext, ModelRequest, ToolRequest
 from genkit.plugin_api import StatusName, provider_error
+from genkit_anthropic._compat import SDK_MESSAGE_KWARGS, TRANSPORT_DROP_ERRORS, TRANSPORT_TIMEOUT_ERRORS
 from genkit_anthropic._config import AnthropicConfig
 from genkit_anthropic._model_info import get_model_info
 from genkit_anthropic._secrets import context_api_key
@@ -286,7 +286,7 @@ def _merge_config_extra(params: dict[str, Any], extra: dict[str, Any] | None) ->
                     'and cannot be set from config'
                 )
             raise GenkitError(status='INVALID_ARGUMENT', message=message)
-    extra_body = dict(extra)
+    extra_body = {**params.get('extra_body', {}), **extra}
     if 'tools' not in params:
         extra_body.pop('tool_choice', None)
     if extra_body:
@@ -382,9 +382,9 @@ class AnthropicModel:
             raise _from_anthropic_error(error) from error
         # The SDK wraps httpx failures only while sending; a connection that
         # drops while the stream is being read comes out raw.
-        except httpx.TimeoutException as error:
+        except TRANSPORT_TIMEOUT_ERRORS as error:
             raise provider_error(error, status='DEADLINE_EXCEEDED') from error
-        except (httpx.NetworkError, httpx.RemoteProtocolError) as error:
+        except TRANSPORT_DROP_ERRORS as error:
             raise provider_error(error, status='UNAVAILABLE') from error
 
         logger.debug(
@@ -503,6 +503,8 @@ class AnthropicModel:
         # Only the fields create() takes as is; a new config field stays out
         # of the request until it's listed here or built below.
         params = config.model_dump(include=set(AnthropicConfig.CREATE_KWARGS), exclude_none=True)
+        # anthropic>=1 dropped temperature/top_p/top_k from create(); the API still reads them from the body.
+        body_only = {key: params.pop(key) for key in sorted(params.keys() - SDK_MESSAGE_KWARGS)}
         extra = config.extra
         max_tokens = config.max_output_tokens if config.max_output_tokens is not None else DEFAULT_MAX_OUTPUT_TOKENS
         betas = config.betas
@@ -591,6 +593,8 @@ class AnthropicModel:
             if tool_choice is not None:
                 params['tool_choice'] = tool_choice
 
+        if body_only:
+            params['extra_body'] = body_only
         _merge_config_extra(params, extra)
         return params
 

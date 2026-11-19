@@ -14,15 +14,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A fake Vertex Claude endpoint shared by the Model Garden tests."""
+"""A fake Vertex Claude endpoint shared by the Model Garden tests.
+
+anthropic>=1 rejects an `httpx.AsyncClient` (it runs on httpx2), so the mock
+transport comes from whichever module the installed SDK uses.
+"""
 
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
-import httpx
 import pytest
 from anthropic import AsyncAnthropicVertex
+from genkit_anthropic._compat import httpx  # httpx or httpx2, whichever the installed anthropic SDK uses
 
 
 class FakeVertexClaude:

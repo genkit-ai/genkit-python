@@ -54,7 +54,7 @@ Don't run `uv lock --upgrade` in feature PRs—it moves every uncapped dep at on
   - **Capped dep:** widens the cap (`<3` -> `<4`). Check `packages/*/pyproject.toml`, skim the changelog for behavior mocked tests miss (exceptions, transport, defaults), merge, and release so users get the wider range.
   - **Contract dep (`pydantic`, `dotpromptz`):** widening affects user code. Merge deliberately with a release note.
   - **Red capped PR:** leave it open as the migration ticket; the cap protects users meanwhile.
-- **Daily newest-deps canary (`python-newest-deps-canary.yml`):** tests the newest PyPI versions our bounds allow—what `pip install` gets today (catching upstream regressions during Dependabot's 7-day cooldown). Not a PR gate since upstream releases trigger it. Opens/updates one `dependency-canary-failure` issue while red and closes it when green; fix our code or add `!=x.y.z`, and cut a patch release if users are hit.
+- **Weekly newest-deps canary (`python-newest-deps-canary.yml`):** tests the newest PyPI versions our bounds allow—what `pip install` gets today (catching upstream regressions during Dependabot's 7-day cooldown). Not a PR gate since upstream releases trigger it. Opens/updates one `dependency-canary-failure` issue while red and closes it when green; fix our code or add `!=x.y.z`, and cut a patch release if users are hit.
 - **Security alerts:** Dependabot security PRs bypass cooldown and grouping. To clear a batch manually:
 
   ```bash

@@ -23,11 +23,11 @@
 #
 # Scheduled runs on the default branch keep one open `dependency-canary-failure` issue:
 # opened on the first failure, commented on while it stays red, closed on green.
-name: Python Newest Dependencies Canary (Daily)
+name: Python Newest Dependencies Canary (Weekly)
 
 on:
   schedule:
-    - cron: "0 14 * * *" # Daily 14:00 UTC.
+    - cron: "0 14 * * 1" # Weekly, Monday 14:00 UTC.
   workflow_dispatch:
 
 permissions:
@@ -153,5 +153,5 @@ jobs:
           2. **Fix:** update our code for the upstream change, or exclude a broken upstream release in \`packages/<pkg>/pyproject.toml\` with \`!=x.y.z\`. Do **not** add \`<N\` caps to internal deps (\`scripts/check_consistency.py\` enforces \`docs/dependencies.md\`).
           3. **Verify & ship:** run \`python3 scripts/check_consistency.py\`, merge the fix, and cut a patch release if published users are affected.
 
-          This issue gets a comment on each failing daily run and closes itself on the next green run.
+          This issue gets a comment on each failing weekly run and closes itself on the next green run.
           EOF

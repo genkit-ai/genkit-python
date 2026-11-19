@@ -72,7 +72,7 @@ Resolvers skip yanked versions unless pinned with `==`, so existing exact pins k
 **Two jobs:** publish → verify
 
 - **publish**: Builds all packages with `uv build`, then uploads to PyPI via `pypa/gh-action-pypi-publish`. All-or-nothing — if any build fails, the job fails.
-- **verify**: `pip install genkit==<version>` + import test.
+- **verify**: `pip install genkit==<version>` + import test. It polls for up to 10 minutes, since PyPI's index can lag the upload.
 
 ## Auth
 

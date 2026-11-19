@@ -63,6 +63,22 @@ jobs:
       - name: Run consistency checks
         run: python3 ./scripts/check_consistency.py
 
+      - name: Ensure minor/patch Dependabot PRs only update uv.lock
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'dependabot[bot]' &&
+          (startsWith(github.head_ref, 'dependabot/uv/py-minor-and-patch') ||
+           startsWith(github.head_ref, 'dependabot/uv/py-dependencies'))
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          touched=$(git diff --name-only "$BASE_SHA" HEAD -- 'packages/*/pyproject.toml')
+          if [[ -n "$touched" ]]; then
+            echo "::error title=Unexpected pyproject.toml edit::Routine minor/patch Dependabot PRs must only update uv.lock, not published bounds in packages/*/pyproject.toml ($touched). Revert the pyproject.toml edit and run 'uv lock'."
+            exit 1
+          fi
+
   type-check:
     name: Type Check (${{ matrix.checker }})
     runs-on: ubuntu-latest
@@ -199,6 +215,68 @@ jobs:
             uv run --no-sync --python "$PY_VER" pytest
           fi
 
+  # Floors in packages/*/pyproject.toml are what users resolve against, but the
+  # tests job only runs uv.lock (newest). This job resolves every direct dep at
+  # its declared floor. If it fails, the PR started using a newer API: run
+  # `bin/find_min_dep_version <package> <dep>` and raise the floor in the same PR.
+  tests-minimum-deps:
+    name: Tests (minimum pyproject.toml versions, Python 3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev cmake libjpeg-dev zlib1g-dev
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          python-version: "3.10"
+
+      - name: Resolve direct deps at their floors
+        run: |
+          uv lock --resolution lowest-direct
+          echo "=== Direct deps downgraded from uv.lock -> declared floors ==="
+          git diff -U1 uv.lock | grep -E '^[ +-](name|version) = ' || echo 'uv.lock already at floors'
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.10
+
+      - name: Generate schema typing
+        run: ./bin/generate_schema_typing --ci
+
+      - name: Run tests
+        run: uv run --no-sync --python 3.10 pytest
+
+      - name: Print self-triage guide on failure
+        if: failure()
+        run: |
+          cat <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          ### `tests-minimum-deps` failed — how to fix
+
+          This job tests `packages/*/pyproject.toml` at their minimum `>=` versions (`uv lock --resolution lowest-direct`). If regular `tests` passed and this job failed, a package calls an API newer than its declared floor.
+
+          1. **Find the failing package & dep** from the pytest traceback above (e.g. `packages/genkit-openai/tests/...` -> package `genkit-openai`, dep `openai`; check the `Resolve direct deps` step above to see which deps moved down).
+          2. **Auto-bump the exact minimum passing floor and refresh `uv.lock`:**
+             ```bash
+             bin/find_min_dep_version <package> <dep> --apply
+             ```
+             *(Shortcut if `find_min_dep_version` has too many releases to search: set the floor in `packages/<package>/pyproject.toml` straight to the version in `uv.lock`, then run `uv lock`.)*
+          3. **Verify policy & commit** `packages/<package>/pyproject.toml` + `uv.lock` (keep existing `<N` caps intact; see `docs/dependencies.md`):
+             ```bash
+             python3 scripts/check_consistency.py
+             ```
+          EOF
+          echo "::error title=tests-minimum-deps failed::A declared '>=' floor in packages/*/pyproject.toml is too old. Run 'bin/find_min_dep_version <package> <dep> --apply' locally (see step log / summary for full steps and docs/dependencies.md)."
+
   build:
     name: Build Distributions
     runs-on: ubuntu-latest
@@ -206,7 +284,7 @@ jobs:
     permissions:
       contents: read
     if: always() && !failure() && !cancelled()
-    needs: [lint-and-format, type-check, security-and-compliance, tests]
+    needs: [lint-and-format, type-check, security-and-compliance, tests, tests-minimum-deps]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -263,16 +341,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    needs: [lint-and-format, type-check, security-and-compliance, tests, build]
+    needs: [lint-and-format, type-check, security-and-compliance, tests, tests-minimum-deps, build]
     if: always()
     steps:
       - name: Verify all Python jobs succeeded
         env:
           RESULTS: >-
-            ${{ needs.lint-and-format.result }},${{ needs.type-check.result }},${{ needs.security-and-compliance.result }},${{ needs.tests.result }},${{ needs.build.result }}
+            ${{ needs.lint-and-format.result }},${{ needs.type-check.result }},${{ needs.security-and-compliance.result }},${{ needs.tests.result }},${{ needs.tests-minimum-deps.result }},${{ needs.build.result }}
         run: |
           echo "Python job results: $RESULTS"
-          if [[ "$RESULTS" != "success,success,success,success,success" ]]; then
+          if [[ "$RESULTS" != "success,success,success,success,success,success" ]]; then
             echo "::error::One or more Python checks did not succeed: $RESULTS"
             exit 1
           fi

@@ -49,6 +49,7 @@ _THIRD_PARTY_RE = re.compile(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s
 #   (2) contract: users write code or files against it and hand them to genkit.
 # Everything else is an internal implementation detail and stays floor-only, so
 # users can take upstream fixes without waiting on a genkit release.
+# See docs/dependencies.md.
 REQUIRED_CAPS: dict[str, str] = {
     # (1) Integration targets.
     'anthropic': 'integration target: genkit-anthropic',

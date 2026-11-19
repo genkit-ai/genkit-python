@@ -258,7 +258,7 @@ If you're contributing to the Python SDK:
 2. **Install Dependencies**: `uv sync`
 3. **Run Linters & Tests**: `just lint` and `just test`
 
-For coding standards and detailed guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For coding standards and detailed guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md). For version bounds and lockfile updates, see [docs/dependencies.md](docs/dependencies.md).
 
 ---
 

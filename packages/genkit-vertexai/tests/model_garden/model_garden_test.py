@@ -24,10 +24,10 @@ from types import ModuleType
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-import httpx
 import pytest
 from anthropic import AsyncAnthropicVertex
 from genkit_anthropic import AnthropicConfig
+from genkit_anthropic._compat import httpx  # httpx or httpx2, whichever the installed anthropic SDK uses
 from genkit_openai import OpenAIConfig
 from genkit_vertexai import ModelGarden
 from genkit_vertexai._model_garden._anthropic import AnthropicModelGarden

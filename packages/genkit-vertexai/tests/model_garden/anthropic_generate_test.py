@@ -16,8 +16,8 @@
 
 """Model Garden Claude rejects a per-request Anthropic key, driven through ``ai.generate``."""
 
-import httpx
 import pytest
+from genkit_anthropic._compat import httpx  # httpx or httpx2, whichever the installed anthropic SDK uses
 from genkit_vertexai import ModelGarden
 
 from genkit import FinishReason, Genkit

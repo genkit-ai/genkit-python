@@ -18,12 +18,10 @@ version: 2
 
 # Policy notes:
 # 1. Cooldowns satisfy zizmor (`dependabot-cooldown` >= 7d).
-# 2. The `uv` group scopes weekly PRs to `minor` + `patch` and suppresses routine
-#    `version-update:semver-major` PRs via `ignore` (so breaking major jumps that
-#    require code migrations are handled intentionally rather than turning the
-#    weekly PR red). Security/CVE updates bypass both `cooldown` and `ignore`,
-#    opening standalone PRs (including major bumps when required) outside the
-#    weekly group.
+# 2. The `uv` workspace batches `minor` + `patch` into one weekly PR. Majors aren't
+#    ignored and aren't grouped: each gets its own PR, because each needs its own
+#    review (cap diff, changelog, contract or not) and one red major shouldn't
+#    block the others. Security/CVE updates bypass `cooldown` and open standalone PRs.
 updates:
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
@@ -38,6 +36,8 @@ updates:
           - "*"
 
   # Maintain dependencies for Python (uv workspace)
+  # Majors open one PR per dep instead of being ignored: a green one widens the
+  # cap, a red one is the migration ticket. See docs/dependencies.md.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
@@ -45,13 +45,22 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      py-dependencies:
+      py-minor-and-patch:
         patterns:
           - "*"
         update-types:
           - "minor"
           - "patch"
-    ignore:
-      - dependency-name: "*"
+      # Majors open one PR per dep, except families that release in lockstep:
+      # splitting those would leave each PR unresolvable (sdk 2 needs api 2).
+      opentelemetry-major:
+        patterns:
+          - "opentelemetry-*"
         update-types:
-          - "version-update:semver-major"
+          - "major"
+      aws-major:
+        patterns:
+          - "boto3"
+          - "botocore"
+        update-types:
+          - "major"

@@ -144,7 +144,6 @@ def _usage_from_completion(usage: CompletionUsage | None) -> GenerationUsage:
     if usage is None:
         return GenerationUsage()
 
-    extras = usage.model_extra or {}
     prompt = usage.prompt_tokens_details or PromptTokensDetails()
     completion = usage.completion_tokens_details or CompletionTokensDetails()
 
@@ -154,16 +153,17 @@ def _usage_from_completion(usage: CompletionUsage | None) -> GenerationUsage:
         ('acceptedPredictionTokens', completion.accepted_prediction_tokens),
         ('rejectedPredictionTokens', completion.rejected_prediction_tokens),
         # xAI counts the live-search sources it consulted and breaks image
-        # tokens out of the prompt; neither is in OpenAI's usage shape.
-        ('numSourcesUsed', extras.get('num_sources_used')),
-        ('imageTokens', (prompt.model_extra or {}).get('image_tokens')),
+        # tokens out of the prompt. Read by name: a field the SDK does not
+        # declare is a pydantic extra, and openai 3.x declares image_tokens.
+        ('numSourcesUsed', getattr(usage, 'num_sources_used', None)),
+        ('imageTokens', getattr(prompt, 'image_tokens', None)),
     ):
         count = _token_count(value)
         if count is not None:
             custom[name] = count
     # Presence decides for the price a gateway charged, not the value: a
     # free-tier request is priced at an explicit zero, which is an answer.
-    cost = extras.get('cost')
+    cost = getattr(usage, 'cost', None)
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         custom['cost'] = float(cost)
 
@@ -175,7 +175,7 @@ def _usage_from_completion(usage: CompletionUsage | None) -> GenerationUsage:
         # DeepSeek reports cache hits in a usage field of its own and sends no
         # prompt_tokens_details at all.
         cached_content_tokens=(
-            _token_count(prompt.cached_tokens) or _token_count(extras.get('prompt_cache_hit_tokens'))
+            _token_count(prompt.cached_tokens) or _token_count(getattr(usage, 'prompt_cache_hit_tokens', None))
         ),
         custom=custom or None,
     )

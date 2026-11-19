@@ -178,11 +178,11 @@ def test_real_workspace_passes_consistency_and_extras_contract() -> None:
     }
     assert referenced_plugins == all_plugins
 
-    # genkit-openai bounds openai>=1.60.0,<3.
+    # genkit-openai bounds openai>=1.68.0,<4.
     openai_project = consistency.load_pyproject(str(PY_DIR / 'packages' / 'genkit-openai' / 'pyproject.toml'))[
         'project'
     ]
-    assert 'openai>=1.60.0,<3' in openai_project['dependencies']
+    assert 'openai>=1.68.0,<4' in openai_project['dependencies']
 
 
 def test_bump_transition_0_12_0_to_0_13_0_rolls_floors_and_advances_minor_cap(tmp_path: Path) -> None:

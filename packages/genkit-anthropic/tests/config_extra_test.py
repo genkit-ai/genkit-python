@@ -54,7 +54,6 @@ def test_extra_colliding_key_wins_through_extra_body() -> None:
     """A key in both the declared field and `extra` is sent from `extra`, since the SDK merges it last."""
     params = _params(AnthropicConfig(temperature=0.2, extra={'temperature': 0.9}))
 
-    assert params['temperature'] == 0.2
     assert params['extra_body']['temperature'] == 0.9
 
 

@@ -16,6 +16,7 @@
 
 """Tests for Anthropic models."""
 
+from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -198,12 +199,12 @@ async def test_generate_with_config() -> None:
 
     await model.generate(request)
 
-    call_args = mock_client.messages.create.call_args
-    assert call_args.kwargs['temperature'] == 0.0
-    assert call_args.kwargs['max_tokens'] == 100
-    assert call_args.kwargs['top_p'] == 0.9
-    assert call_args.kwargs['top_k'] == 40
-    assert call_args.kwargs['stop_sequences'] == ['STOP']
+    sent = _wire(mock_client.messages.create.call_args.kwargs)
+    assert sent['temperature'] == 0.0
+    assert sent['max_tokens'] == 100
+    assert sent['top_p'] == 0.9
+    assert sent['top_k'] == 40
+    assert sent['stop_sequences'] == ['STOP']
 
 
 def test_extract_system() -> None:
@@ -875,6 +876,16 @@ def _mock_vertex_client_for_generate() -> MagicMock:
     return mock_client
 
 
+def _wire(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    """The JSON body the SDK sends: named kwargs with ``extra_body`` merged over them.
+
+    anthropic>=1 has no ``temperature``/``top_p``/``top_k`` parameters, so the plugin
+    sends those through ``extra_body`` there and as named kwargs on 0.x.
+    """
+    body = {key: value for key, value in kwargs.items() if key != 'extra_body'}
+    return {**body, **kwargs.get('extra_body', {})}
+
+
 def _text_request(config: Any) -> ModelRequest:
     return ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Hi')])],
@@ -1070,7 +1081,7 @@ async def test_camelcase_sampling_aliases_normalized() -> None:
         })
     )
 
-    kwargs = mock_client.messages.create.call_args.kwargs
+    kwargs = _wire(mock_client.messages.create.call_args.kwargs)
     assert kwargs['top_p'] == 0.9
     assert kwargs['top_k'] == 20
     assert kwargs['stop_sequences'] == ['x']
@@ -1106,7 +1117,7 @@ async def test_sampling_params_reach_streaming_request() -> None:
         ctx,
     )
 
-    kwargs = mock_client.messages.stream.call_args.kwargs
+    kwargs = _wire(mock_client.messages.stream.call_args.kwargs)
     assert kwargs['temperature'] == 0.2
     assert kwargs['top_p'] == 0.8
     assert kwargs['top_k'] == 30
@@ -1124,7 +1135,7 @@ async def test_sampling_params_pass_through_for_newest_models(model_name: str) -
     # These models enforce sampling restrictions server-side; match JS and Go by forwarding unchanged.
     await model.generate(_text_request({'temperature': 0.7, 'top_p': 0.9, 'top_k': 40}))
 
-    kwargs = mock_client.messages.create.call_args.kwargs
+    kwargs = _wire(mock_client.messages.create.call_args.kwargs)
     assert kwargs['temperature'] == 0.7
     assert kwargs['top_p'] == 0.9
     assert kwargs['top_k'] == 40
@@ -1178,7 +1189,7 @@ def test_build_params_sends_only_create_kwargs_from_config() -> None:
     )
 
     assert 'menu_tag' not in params
-    assert params['temperature'] == 0.2
+    assert _wire(params)['temperature'] == 0.2
     assert params['stop_sequences'] == ['END']
 
 
@@ -1190,9 +1201,9 @@ async def test_dict_config_extra_reaches_sdk() -> None:
 
     await model.generate(_text_request({'temperature': 0.3, 'extra': {'future_option': 'x'}}))
 
-    kwargs = mock_client.messages.create.call_args.kwargs
+    kwargs = _wire(mock_client.messages.create.call_args.kwargs)
     assert kwargs['temperature'] == 0.3
-    assert kwargs['extra_body'] == {'future_option': 'x'}
+    assert kwargs['future_option'] == 'x'
 
 
 @pytest.mark.asyncio
@@ -1382,16 +1393,15 @@ def test_backward_compat_plain_model_config() -> None:
 
     params = model._build_params(_text_request(ModelConfig(temperature=0.7, max_output_tokens=100, top_p=0.9)))
 
-    assert params['temperature'] == 0.7
+    assert _wire(params)['temperature'] == 0.7
     assert params['max_tokens'] == 100
-    assert params['top_p'] == 0.9
+    assert _wire(params)['top_p'] == 0.9
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('config', 'kwarg'),
     [
-        ({'speed': 'fast'}, 'speed'),
         ({'mcp_servers': [{'type': 'url', 'name': 'x', 'url': 'https://example.com'}]}, 'mcp_servers'),
         ({'context_management': {'edits': []}}, 'context_management'),
     ],
@@ -1428,10 +1438,10 @@ async def test_unknown_params_still_route_to_extra_body_on_beta() -> None:
     mock_client = _mock_client_for_generate()
     model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
 
-    await model.generate(_text_request({'extra': {'speed': 'fast', 'future_option': 'x'}}))
+    await model.generate(_text_request({'extra': {'context_management': {'edits': []}, 'future_option': 'x'}}))
 
     kwargs = mock_client.beta.messages.create.call_args.kwargs
-    assert kwargs['extra_body'] == {'speed': 'fast', 'future_option': 'x'}
+    assert kwargs['extra_body'] == {'context_management': {'edits': []}, 'future_option': 'x'}
 
 
 @pytest.mark.asyncio

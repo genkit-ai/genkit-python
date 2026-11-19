@@ -20,9 +20,9 @@ import json
 from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 from genkit_anthropic import Anthropic, AnthropicConfig
+from genkit_anthropic._compat import httpx
 from genkit_anthropic._models import AnthropicModel
 from genkit_anthropic._utils import build_cache_usage
 from pydantic import ValidationError

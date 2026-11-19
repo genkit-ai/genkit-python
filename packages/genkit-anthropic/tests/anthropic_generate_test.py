@@ -24,9 +24,9 @@ import json
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
-import httpx
 import pytest
 from genkit_anthropic import Anthropic, AnthropicConfig
+from genkit_anthropic._compat import httpx
 
 from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 from genkit.middleware import Middleware
@@ -98,7 +98,12 @@ class FakeClaudeApi:
         return json.loads(self.requests[index].content)
 
     def api_key(self, index: int = -1) -> str | None:
-        return self.requests[index].headers.get('x-api-key')
+        # anthropic<2 sends the key as x-api-key; 2.x sends it as Authorization: Bearer.
+        headers = self.requests[index].headers
+        if 'x-api-key' in headers:
+            return headers['x-api-key']
+        scheme, _, key = headers.get('authorization', '').partition(' ')
+        return key if scheme == 'Bearer' else None
 
 
 def _genkit(
@@ -274,7 +279,7 @@ async def test_plugin_without_key_and_no_tenant_key_raises_naming_both() -> None
 @pytest.mark.parametrize('streaming', [False, True], ids=['generate', 'generate_stream'])
 @pytest.mark.asyncio
 async def test_anthropic_per_request_key_still_overrides_plugin_key(streaming: bool) -> None:
-    """`context={'secrets': {'api_key': k}}` sends `x-api-key: k` instead of the plugin's key."""
+    """`context={'secrets': {'api_key': k}}` sends key `k` instead of the plugin's key."""
     api = FakeClaudeApi()
     ai = _genkit(api)
     context: dict[str, object] = {'secrets': {'api_key': TENANT_KEY}}
@@ -838,7 +843,7 @@ async def test_anthropic_without_models_still_resolves_any_claude_model() -> Non
 
 @pytest.mark.asyncio
 async def test_anthropic_without_api_key_uses_anthropic_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anthropic() with ANTHROPIC_API_KEY=env-key sends x-api-key: env-key."""
+    """Anthropic() with ANTHROPIC_API_KEY=env-key sends env-key as its API key."""
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'env-key')
     api = FakeClaudeApi()
     ai = _genkit(api, api_key=None)
@@ -850,7 +855,7 @@ async def test_anthropic_without_api_key_uses_anthropic_api_key_env(monkeypatch:
 
 @pytest.mark.asyncio
 async def test_anthropic_api_key_is_sent_as_x_api_key() -> None:
-    """Anthropic(api_key='plugin-key') sends x-api-key: plugin-key on ai.generate."""
+    """Anthropic(api_key='plugin-key') sends plugin-key as its API key on ai.generate."""
     api = FakeClaudeApi()
     ai = _genkit(api, api_key=PLUGIN_KEY)
 

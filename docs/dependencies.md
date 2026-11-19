@@ -43,11 +43,17 @@ Don't bump floors just because a newer version is out. Only bump on purpose when
 - **Dev and lint groups (root `pyproject.toml`):** cap at the next major. They never ship; caps only bound `uv lock --upgrade`.
 - **Tests and samples:** declare every package you import. Don't rely on transitive pulls. Samples are workspace members, so keep their lists minimal.
 
-## Lockfile updates
+## Lockfile updates & CI
 
 Don't run `uv lock --upgrade` in feature PRs—it moves every uncapped dep at once and hides what broke.
 
 - **Weekly minor/patch PR:** one grouped Dependabot PR after a 7-day cooldown. Merge if green. If red, fix our code rather than adding a cap.
+- **Weekly major PRs:** one PR per dep so a broken major doesn't block the rest. Lockstep families (`opentelemetry-*`, `boto3` + `botocore`) stay grouped so they can resolve.
+  - **Floor-only dep:** users already resolve the new major. Green: merge same day. Red: users are already broken—fix immediately.
+  - **Capped dep:** widens the cap (`<3` -> `<4`). Check `packages/*/pyproject.toml`, skim the changelog for behavior mocked tests miss (exceptions, transport, defaults), merge, and release so users get the wider range.
+  - **Contract dep (`pydantic`, `dotpromptz`):** widening affects user code. Merge deliberately with a release note.
+  - **Red capped PR:** leave it open as the migration ticket; the cap protects users meanwhile.
+- **Daily canary (`python-deps-canary.yml`):** tests the newest versions our bounds allow—what `pip install` gets today. Not a PR gate since upstream releases trigger it. Opens/updates one `py-deps-canary` issue while red and closes it when green; fix the code or add `!=x.y.z`, and cut a patch release if users are hit.
 - **Security alerts:** Dependabot security PRs bypass cooldown and grouping. To clear a batch manually:
 
   ```bash

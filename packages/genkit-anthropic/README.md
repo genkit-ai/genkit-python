@@ -56,8 +56,10 @@ Anthropic(
 ## Claude on Google Cloud
 
 To bill Claude to a Google Cloud project instead of an Anthropic key, pass
-`backend=GoogleCloud(...)`. Requests authenticate with application default
-credentials. Refs, `AnthropicConfig` and `.prompt` files don't change.
+`backend=GoogleCloud(...)`. This is Claude from Vertex AI Model Garden: enable
+the model there, then call it with the same plugin. Requests authenticate with
+application default credentials. Refs, `AnthropicConfig` and `.prompt` files
+don't change.
 
 ```bash
 uv add 'genkit-anthropic[google-cloud]'

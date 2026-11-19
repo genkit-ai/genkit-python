@@ -28,7 +28,8 @@ DEFAULT_LOCATION = 'global'
 class GoogleCloud:
     """Serve Claude from Google Cloud, billed to a Google Cloud project.
 
-    Pass it as ``Anthropic(backend=GoogleCloud(...))``. Requests authenticate
+    This is Claude from Vertex AI Model Garden: enable the model there, then
+    pass ``Anthropic(backend=GoogleCloud(...))``. Requests authenticate
     with application default credentials, so there is no API key. Refs,
     ``AnthropicConfig`` and ``.prompt`` files are the same as on the
     Anthropic API.

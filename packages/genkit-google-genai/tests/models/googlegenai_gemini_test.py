@@ -2358,6 +2358,149 @@ def test_to_finish_reason_image_other_and_unexpected_tool() -> None:
     assert _to_finish_reason('UNEXPECTED_TOOL_CALL') == FinishReason.OTHER
 
 
+def _image_candidate(
+    parts: list[genai_types.Part],
+    finish_reason: genai_types.FinishReason | None = genai_types.FinishReason.STOP,
+    finish_message: str | None = None,
+) -> genai_types.GenerateContentResponse:
+    candidate = genai_types.Candidate(
+        content=genai_types.Content(parts=parts),
+        finish_reason=finish_reason,
+        finish_message=finish_message,
+    )
+    return genai_types.GenerateContentResponse(candidates=[candidate])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('finish_reason', 'expected'),
+    [
+        (genai_types.FinishReason.STOP, 'No image was returned'),
+        (genai_types.FinishReason.NO_IMAGE, 'No image was returned'),
+        (genai_types.FinishReason.IMAGE_SAFETY, 'Image blocked by safety filters (IMAGE_SAFETY).'),
+        (
+            genai_types.FinishReason.IMAGE_PROHIBITED_CONTENT,
+            'Image blocked by safety filters (IMAGE_PROHIBITED_CONTENT).',
+        ),
+        (genai_types.FinishReason.SAFETY, 'Image blocked by safety filters (SAFETY).'),
+        (genai_types.FinishReason.IMAGE_OTHER, 'Image generation stopped (IMAGE_OTHER)'),
+    ],
+)
+async def test_generate_image_model_without_media_explains_why(
+    mocker: MockerFixture, finish_reason: genai_types.FinishReason, expected: str
+) -> None:
+    """An image model reply with no media carries a finish message, not a silent success."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = _image_candidate(
+        [genai_types.Part(text='Sure!')], finish_reason=finish_reason
+    )
+    gemini = GeminiModel('gemini-2.5-flash-image', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext())
+
+    assert response.finish_message is not None
+    assert response.finish_message.startswith(expected)
+
+
+@pytest.mark.asyncio
+async def test_generate_image_model_truncated_has_no_prompt_hint(mocker: MockerFixture) -> None:
+    """A reply cut off by max tokens reports length, not advice about the prompt."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = _image_candidate(
+        [genai_types.Part(text='Here is')], finish_reason=genai_types.FinishReason.MAX_TOKENS
+    )
+    gemini = GeminiModel('gemini-2.5-flash-image', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext())
+
+    assert response.finish_reason == FinishReason.LENGTH
+    assert response.finish_message is None
+
+
+@pytest.mark.asyncio
+async def test_generate_image_model_with_media_has_no_finish_message(mocker: MockerFixture) -> None:
+    """A reply that carries an image needs no explanation."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = _image_candidate([
+        genai_types.Part(inline_data=genai_types.Blob(data=b'\x89PNG\r\n\x1a\n', mime_type='image/png'))
+    ])
+    gemini = GeminiModel('gemini-2.5-flash-image', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext())
+
+    assert response.finish_message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('version', ['gemini-2.5-flash', 'gemini-2.5-flash-image'])
+async def test_generate_passes_candidate_finish_message_through(mocker: MockerFixture, version: str) -> None:
+    """The service's own finish message wins over the synthesized one."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = _image_candidate(
+        [genai_types.Part(text='')],
+        finish_reason=genai_types.FinishReason.MALFORMED_FUNCTION_CALL,
+        finish_message='Malformed function call: foo',
+    )
+    gemini = GeminiModel(version, client)
+
+    response = await gemini.generate(_hi_request(), ModelContext())
+
+    assert response.finish_message == 'Malformed function call: foo'
+
+
+@pytest.mark.asyncio
+async def test_generate_text_model_without_media_has_no_finish_message(mocker: MockerFixture) -> None:
+    """Text models are expected to answer without media."""
+    client = mocker.AsyncMock()
+    client.aio.models.generate_content.return_value = _image_candidate([genai_types.Part(text='Yes.')])
+    gemini = GeminiModel('gemini-2.5-flash', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext())
+
+    assert response.finish_message is None
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_image_model_finish_message(mocker: MockerFixture) -> None:
+    """Streaming keeps the trailing finish message, and explains a stream with no image."""
+    client = mocker.AsyncMock()
+
+    async def mock_stream() -> Any:  # noqa: ANN401
+        yield _image_candidate([genai_types.Part(text='Here')], finish_reason=None)
+        yield _image_candidate([genai_types.Part(text=' you go')], finish_reason=genai_types.FinishReason.NO_IMAGE)
+
+    client.aio.models.generate_content_stream.return_value = mock_stream()
+    gemini = GeminiModel('gemini-2.5-flash-image', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext(streaming_callback=mocker.MagicMock()))
+
+    assert response.finish_reason == FinishReason.OTHER
+    assert response.finish_message is not None
+    assert response.finish_message.startswith('No image was returned')
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_passes_candidate_finish_message_through(mocker: MockerFixture) -> None:
+    """Streaming keeps the service's finish message from the trailing chunk."""
+    client = mocker.AsyncMock()
+
+    async def mock_stream() -> Any:  # noqa: ANN401
+        yield _image_candidate([genai_types.Part(text='Calling')], finish_reason=None)
+        yield _image_candidate(
+            [genai_types.Part(text='')],
+            finish_reason=genai_types.FinishReason.MALFORMED_FUNCTION_CALL,
+            finish_message='Malformed function call: foo',
+        )
+
+    client.aio.models.generate_content_stream.return_value = mock_stream()
+    gemini = GeminiModel('gemini-2.5-flash', client)
+
+    response = await gemini.generate(_hi_request(), ModelContext(streaming_callback=mocker.MagicMock()))
+
+    assert response.finish_reason == FinishReason.OTHER
+    assert response.finish_message == 'Malformed function call: foo'
+
+
 @pytest.fixture
 def tts_model_instance() -> GeminiModel:
     """Common initialization of a TTS GeminiModel."""

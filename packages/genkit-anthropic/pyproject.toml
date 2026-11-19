@@ -56,6 +56,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 version = "0.13.0"
 
+[project.optional-dependencies]
+# Anthropic(backend=GoogleCloud()): google-auth for application default credentials.
+google-cloud = ["anthropic[vertex]>=0.96.0,<1"]
+
 [project.urls]
 "Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"
 Changelog       = "https://github.com/genkit-ai/genkit-python/releases"

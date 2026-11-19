@@ -21,13 +21,13 @@ shape as the ones you would install from npm or PyPI, and `main.py` launches it
 as a child process.
 """
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # The name a client sees during initialization. It is not what Genkit names the
 # tools after, which is why it reads nothing like the prefix on them.
 # A server logs to stderr, which is the sample's own terminal; INFO would print
 # a line per request over the sample's output.
-mcp = FastMCP('Corner Bookshop', log_level='WARNING')
+mcp = MCPServer('Corner Bookshop', log_level='WARNING')
 
 CATALOGUE = [
     {'title': 'The Left Hand of Darkness', 'author': 'Ursula K. Le Guin', 'topic': 'science fiction'},

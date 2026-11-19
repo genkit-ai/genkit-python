@@ -16,7 +16,7 @@
 
 """Unit tests for MCP tool result translation."""
 
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 from genkit_mcp._errors import _ConnectionFailedError, _ToolResultError
@@ -40,11 +40,18 @@ from mcp.types import (
     TextResourceContents,
     Tool,
 )
-from pydantic import AnyUrl
+from pydantic import BaseModel
 from structlog.testing import capture_logs
 
 from genkit import MultipartToolResponse, Part
 from genkit.plugin_api import Action
+
+ModelT = TypeVar('ModelT', bound=BaseModel)
+
+
+def wire(model: type[ModelT], **fields: object) -> ModelT:
+    """Build an MCP type from its wire field names, which mcp 1.x and 2.x both parse."""
+    return model.model_validate(fields)
 
 
 def text(value: str) -> TextContent:
@@ -69,26 +76,28 @@ def server_tool_of(action: Action) -> object:
         (CallToolResult(content=[text('true')]), 'true', None, None),
         (CallToolResult(content=[text('null')]), 'null', None, None),
         (
-            CallToolResult(content=[text('ignored')], structuredContent={'answer': 'structured'}),
+            wire(CallToolResult, content=[text('ignored')], structuredContent={'answer': 'structured'}),
             {'answer': 'structured'},
             None,
             None,
         ),
         (
-            CallToolResult(
-                content=[text('bad'), ImageContent(type='image', mimeType='image/png', data='abc')],
+            wire(
+                CallToolResult,
+                content=[text('bad'), wire(ImageContent, type='image', mimeType='image/png', data='abc')],
                 isError=True,
-                _meta={'requestId': 'r1'},  # ty: ignore[unknown-argument]
+                _meta={'requestId': 'r1'},
             ),
             {'error': 'bad'},
             None,
             {'requestId': 'r1', 'isError': True},
         ),
         (
-            CallToolResult(
+            wire(
+                CallToolResult,
                 content=[text('bad')],
                 isError=True,
-                _meta={'isError': False},  # ty: ignore[unknown-argument]
+                _meta={'isError': False},
             ),
             {'error': 'bad'},
             None,
@@ -111,10 +120,11 @@ def test_call_result_to_multipart_text_and_errors(
 
 def test_call_result_to_multipart_error_flag_is_top_level_and_keeps_server_mcp_meta() -> None:
     """The error flag sits beside the server's _meta keys, so a server's own mcp key survives."""
-    result = CallToolResult(
+    result = wire(
+        CallToolResult,
         content=[text('bad')],
         isError=True,
-        _meta={'mcp': {'trace': 't1'}},  # ty: ignore[unknown-argument]
+        _meta={'mcp': {'trace': 't1'}},
     )
 
     response = call_result_to_multipart(result)
@@ -139,16 +149,17 @@ def test_call_result_to_multipart_maps_multipart_content_and_meta() -> None:
     result = CallToolResult(
         content=[
             text('before'),
-            ImageContent(type='image', mimeType='image/png', data='image-data'),
-            AudioContent(type='audio', mimeType='audio/mpeg', data='audio-data'),
+            wire(ImageContent, type='image', mimeType='image/png', data='image-data'),
+            wire(AudioContent, type='audio', mimeType='audio/mpeg', data='audio-data'),
             EmbeddedResource(
                 type='resource',
-                resource=TextResourceContents(uri=AnyUrl('file:///note.txt'), mimeType='text/plain', text='note'),
+                resource=wire(TextResourceContents, uri='file:///note.txt', mimeType='text/plain', text='note'),
             ),
             EmbeddedResource(
                 type='resource',
-                resource=BlobResourceContents(
-                    uri=AnyUrl('file:///data.pdf'),
+                resource=wire(
+                    BlobResourceContents,
+                    uri='file:///data.pdf',
                     mimeType='application/pdf',
                     blob='blob-data',
                 ),
@@ -156,7 +167,7 @@ def test_call_result_to_multipart_maps_multipart_content_and_meta() -> None:
             ResourceLink(
                 type='resource_link',
                 name='documentation',
-                uri=AnyUrl('https://example.test/docs'),
+                uri='https://example.test/docs',
             ),
         ],
         _meta={'trace': 'mcp-1'},  # ty: ignore[unknown-argument]
@@ -179,7 +190,7 @@ def test_call_result_to_multipart_skips_resource_link() -> None:
     link = ResourceLink(
         type='resource_link',
         name='docs',
-        uri=AnyUrl('https://example.test/docs'),
+        uri='https://example.test/docs',
     )
 
     standalone = call_result_to_multipart(CallToolResult(content=[link]))
@@ -191,7 +202,7 @@ def test_call_result_to_multipart_skips_resource_link() -> None:
 
 def test_call_result_to_multipart_labels_a_blob_without_a_mime_type_as_octet_stream() -> None:
     result = CallToolResult(
-        content=[EmbeddedResource(type='resource', resource=BlobResourceContents(uri=AnyUrl('file:///x'), blob='YQ=='))]
+        content=[EmbeddedResource(type='resource', resource=BlobResourceContents(uri='file:///x', blob='YQ=='))]
     )
 
     response = call_result_to_multipart(result)
@@ -208,11 +219,12 @@ async def test_mcp_tool_to_action_preserves_schema_metadata_and_context_meta() -
         '$ref': '#/$defs/Lookup',
         '$defs': {'Lookup': {'properties': {'q': {'type': 'string'}}}},
     }
-    tool = Tool(
+    tool = wire(
+        Tool,
         name='lookup',
         description='Find a record.',
         inputSchema=awkward_schema,
-        _meta={'audience': 'internal'},  # ty: ignore[unknown-argument]
+        _meta={'audience': 'internal'},
     )
     calls: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
 
@@ -235,7 +247,7 @@ async def test_mcp_tool_to_action_preserves_schema_metadata_and_context_meta() -
 @pytest.mark.asyncio
 async def test_mcp_tool_to_action_folds_a_tool_result_error_into_an_error_envelope() -> None:
     """A result which violates the tool's output schema is a tool error the model can retry."""
-    tool = Tool(name='lookup', inputSchema={'type': 'object'})
+    tool = wire(Tool, name='lookup', inputSchema={'type': 'object'})
 
     async def call(name: str, arguments: dict[str, Any], meta: dict[str, Any] | None) -> CallToolResult:  # noqa: ARG001
         raise _ToolResultError('MCP output did not match the declared schema')
@@ -251,7 +263,7 @@ async def test_mcp_tool_to_action_folds_a_tool_result_error_into_an_error_envelo
 @pytest.mark.asyncio
 async def test_mcp_tool_to_action_lets_a_runtime_error_through() -> None:
     """A bare RuntimeError is infrastructure failing, not a result the model should retry."""
-    tool = Tool(name='lookup', inputSchema={'type': 'object'})
+    tool = wire(Tool, name='lookup', inputSchema={'type': 'object'})
 
     async def call(name: str, arguments: dict[str, Any], meta: dict[str, Any] | None) -> CallToolResult:  # noqa: ARG001
         raise RuntimeError('Event loop is closed')
@@ -267,7 +279,7 @@ async def test_mcp_tool_to_action_lets_a_runtime_error_through() -> None:
 @pytest.mark.asyncio
 async def test_mcp_tool_to_action_lets_a_connection_failure_through() -> None:
     """A dead connection is not a tool error: the model must not retry against it."""
-    tool = Tool(name='lookup', inputSchema={'type': 'object'})
+    tool = wire(Tool, name='lookup', inputSchema={'type': 'object'})
 
     async def call(name: str, arguments: dict[str, Any], meta: dict[str, Any] | None) -> CallToolResult:  # noqa: ARG001
         raise _ConnectionFailedError("MCP connection to 'npx' failed")
@@ -348,7 +360,7 @@ async def test_mcp_tool_to_action_sanitises_the_name_and_keeps_the_server_name(t
         return CallToolResult(content=[text('ok')])
 
     with capture_logs() as logs:
-        action = mcp_tool_to_action(Tool(name=tool_name, inputSchema={'type': 'object'}), 'catalog', call)
+        action = mcp_tool_to_action(wire(Tool, name=tool_name, inputSchema={'type': 'object'}), 'catalog', call)
     await action.run({})
 
     assert action.name == 'catalog_' + tool_name.replace('.', '_').replace('/', '_')
@@ -365,7 +377,7 @@ def test_mcp_tool_to_action_warns_about_a_name_longer_than_a_model_accepts() -> 
     tool_name = 'a' * 64
 
     with capture_logs() as logs:
-        action = mcp_tool_to_action(Tool(name=tool_name, inputSchema={'type': 'object'}), 'catalog', no_content)
+        action = mcp_tool_to_action(wire(Tool, name=tool_name, inputSchema={'type': 'object'}), 'catalog', no_content)
 
     assert action.name == f'catalog_{tool_name}'
     assert [entry['log_level'] for entry in logs] == ['warning']
@@ -373,7 +385,10 @@ def test_mcp_tool_to_action_warns_about_a_name_longer_than_a_model_accepts() -> 
 
 
 def test_mcp_tools_to_actions_maps_a_listing_in_order() -> None:
-    tools = [Tool(name='lookup', inputSchema={'type': 'object'}), Tool(name='look.up', inputSchema={'type': 'object'})]
+    tools = [
+        wire(Tool, name='lookup', inputSchema={'type': 'object'}),
+        wire(Tool, name='look.up', inputSchema={'type': 'object'}),
+    ]
 
     actions = mcp_tools_to_actions(tools, 'catalog', no_content)
 
@@ -386,8 +401,8 @@ async def test_mcp_tools_to_handles_wraps_each_action_with_the_server_output_sch
     """A handle carries the Genkit name, the server's output schema, and runs the tool."""
     output_schema: dict[str, Any] = {'type': 'object', 'properties': {'hits': {'type': 'integer'}}}
     tools = [
-        Tool(name='lookup', inputSchema={'type': 'object'}, outputSchema=output_schema),
-        Tool(name='look.up', inputSchema={'type': 'object'}),
+        wire(Tool, name='lookup', inputSchema={'type': 'object'}, outputSchema=output_schema),
+        wire(Tool, name='look.up', inputSchema={'type': 'object'}),
     ]
 
     async def call(name: str, arguments: dict[str, Any], meta: dict[str, Any] | None) -> CallToolResult:
@@ -409,8 +424,8 @@ def test_mcp_tool_handle_exposes_output_schema_on_definition() -> None:
         'required': ['temperature_c'],
     }
     tools = [
-        Tool(name='sensor_reading', inputSchema={'type': 'object'}, outputSchema=output_schema),
-        Tool(name='ping', inputSchema={'type': 'object'}),
+        wire(Tool, name='sensor_reading', inputSchema={'type': 'object'}, outputSchema=output_schema),
+        wire(Tool, name='ping', inputSchema={'type': 'object'}),
     ]
 
     handles = mcp_tools_to_handles(tools, 'lab', no_content)
@@ -425,7 +440,7 @@ def test_mcp_tool_handle_exposes_output_schema_on_definition() -> None:
 )
 def test_mcp_tools_to_actions_skips_tools_which_share_a_genkit_name(colliding: list[str], genkit_name: str) -> None:
     """Server tools which would answer to one Genkit name are left out; the rest of the listing survives."""
-    tools = [Tool(name=name, inputSchema={'type': 'object'}) for name in [colliding[0], 'other', colliding[1]]]
+    tools = [wire(Tool, name=name, inputSchema={'type': 'object'}) for name in [colliding[0], 'other', colliding[1]]]
 
     with capture_logs() as logs:
         actions = mcp_tools_to_actions(tools, 'catalog', no_content)

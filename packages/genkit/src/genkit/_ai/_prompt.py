@@ -275,6 +275,21 @@ class GenerateCall(BaseModel):
         return self.model_copy(update=set_by_call)
 
 
+@dataclass(frozen=True, kw_only=True)
+class PromptDescription:
+    """What a registered prompt says about itself, from ``await prompt.describe()``.
+
+    Attributes:
+        name: Registered name, with the variant and folder: ``'greet.formal'``, ``'myns/a'``.
+        description: The prompt's description, or None if it has none.
+        input_schema: JSON schema of the prompt's input, or None if it declares none.
+    """
+
+    name: str
+    description: str | None
+    input_schema: dict[str, object] | None
+
+
 class Prompt(Generic[InputT, OutputT]):
     """A callable prompt with typed input/output that generates AI responses."""
 
@@ -355,9 +370,49 @@ class Prompt(Generic[InputT, OutputT]):
     def ref(self) -> dict[str, Any]:
         """Reference object with prompt name and metadata."""
         return {
-            'name': registry_definition_key(self._name, self._variant, self._ns) if self._name else None,
+            'name': self.name,
             'metadata': self._def.metadata,
         }
+
+    @property
+    def name(self) -> str | None:
+        """Registered name, with the variant and folder (``'greet.formal'``, ``'myns/a'``); None if unnamed."""
+        return registry_definition_key(self._name, self._variant, self._ns) if self._name else None
+
+    async def describe(self) -> PromptDescription:
+        """Return the registered prompt's name, description, and input JSON schema.
+
+        A ``.prompt`` file is loaded first if nothing has run it yet, so the
+        answer is the same on every handle for the same prompt.
+
+        Raises:
+            GenkitError: ``NOT_FOUND`` if no prompt is registered under this
+                name, as calling it would. ``FAILED_PRECONDITION`` for a prompt
+                defined without a name, since nothing is registered to describe.
+
+        Example:
+            ```python
+            ai.define_prompt(name='greet', description='Say hello.', input_schema=Guest, prompt='Hi {{name}}')
+
+            info = await ai.prompt('greet').describe()
+            # => PromptDescription(name='greet', description='Say hello.', input_schema={...})
+            ```
+        """
+        name = self.name
+        if name is None or self._name is None:
+            raise GenkitError(
+                status='FAILED_PRECONDITION',
+                message='This prompt was defined without a name, so it is not registered; pass name= to describe it.',
+            )
+        registered = await lookup_prompt(self._ai._registry, self._name, self._variant)
+        schema = registered._def.input_schema
+        if isinstance(schema, str):
+            input_schema = self._ai._registry.lookup_schema(schema)
+        elif schema is not None:
+            input_schema = cast(dict[str, object], to_json_schema(schema))
+        else:
+            input_schema = None
+        return PromptDescription(name=name, description=registered._description, input_schema=input_schema)
 
     async def _ensure_resolved(self) -> None:
         if self._prompt_action or not self._name:
@@ -1340,6 +1395,20 @@ def registry_definition_key(name: str, variant: str | None = None, ns: str | Non
     if variant:
         parts[-1] = f'{parts[-1]}.{variant}'
     return '/'.join(parts)
+
+
+def prompt_name_and_variant(key: str, metadata: Mapping[str, object]) -> tuple[str, str | None]:
+    """Recover ``(name, variant)`` for ``ai.prompt(...)`` from a prompt action's metadata."""
+    raw = metadata.get('prompt')
+    if not isinstance(raw, dict):
+        return key, None
+    block: dict[str, object] = cast(dict[str, object], raw)
+    name = block.get('name')
+    raw_variant = block.get('variant')
+    variant = raw_variant if isinstance(raw_variant, str) and raw_variant else None
+    if isinstance(name, str) and registry_definition_key(name, variant) == key:
+        return name, variant
+    return key, None
 
 
 def registry_lookup_key(name: str, variant: str | None = None, ns: str | None = None) -> str:

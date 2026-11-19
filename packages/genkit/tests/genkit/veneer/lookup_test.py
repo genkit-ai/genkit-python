@@ -3,18 +3,33 @@
 # Copyright 2026 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""What app code and middleware get back from lookup_model, lookup_tool, lookup_value, and define_value."""
+"""What app code and middleware get back from lookups, listings, lookup_value, and define_value."""
 
 import re
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
-from genkit import FinishReason, Genkit, Message, ModelResponse, Operation, Part, Role, Tool
+from genkit import (
+    FinishReason,
+    Genkit,
+    GenkitError,
+    Message,
+    ModelResponse,
+    Operation,
+    Part,
+    Prompt,
+    PromptDescription,
+    Role,
+    Tool,
+)
 from genkit._core._typing import MiddlewareRef
 from genkit.middleware import Middleware, MiddlewareContext, ModelHookParams
 from genkit.model import GenerateActionOptions, Model, ModelContext, ModelRequest
 from genkit.plugin_api import Action, ActionKind, Plugin
+from genkit.testing import define_echo_model
 
 NextModel = Callable[[ModelHookParams, MiddlewareContext], Awaitable[ModelResponse]]
 
@@ -162,6 +177,166 @@ async def test_lookup_tool_wraps_plain_tool_action_via_from_action() -> None:
     assert found.definition().output_schema == {'type': 'string'}
     assert await found('T4') == 'table T4: seated'
     assert Tool.from_action(found) is found
+
+
+class Guest(BaseModel):
+    name: str
+
+
+def _prompt_names(prompts: list[Prompt]) -> list[str | None]:
+    return [prompt.name for prompt in prompts]
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_returns_prompt_handles_sorted_by_name() -> None:
+    """`await ai.list_prompts()` gives one Prompt handle per registered prompt, sorted by registered name."""
+    ai = Genkit()
+    ai.define_prompt(name='welcome', prompt='Welcome {{name}}')
+    ai.define_prompt(name='greet', prompt='Hello {{name}}')
+
+    prompts = await ai.list_prompts()
+
+    assert _prompt_names(prompts) == ['greet', 'welcome']
+    assert all(isinstance(prompt, Prompt) for prompt in prompts)
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_on_an_app_without_prompts_is_empty() -> None:
+    """An app that defines no prompts lists none."""
+    assert await Genkit().list_prompts() == []
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_lists_each_variant_as_its_own_prompt() -> None:
+    """A variant is listed as its own entry named `name.variant`, next to the base prompt."""
+    ai = Genkit()
+    ai.define_prompt(name='greet', variant='formal', prompt='Good day {{name}}')
+    ai.define_prompt(name='greet', prompt='Hello {{name}}')
+
+    prompts = await ai.list_prompts()
+
+    assert _prompt_names(prompts) == ['greet', 'greet.formal']
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_lists_prompt_files_without_partials(tmp_path: Path) -> None:
+    """`.prompt` files are listed by file name, a subfolder file keeps its folder, and partials are not listed."""
+    (tmp_path / 'greet.prompt').write_text('{{> header}}Hello {{name}}\n')
+    (tmp_path / 'greet.formal.prompt').write_text('Good day {{name}}\n')
+    (tmp_path / '_header.prompt').write_text('Menu: ')
+    (tmp_path / 'myns').mkdir()
+    (tmp_path / 'myns' / 'a.prompt').write_text('From a folder\n')
+    ai = Genkit(prompt_dir=tmp_path)
+
+    prompts = await ai.list_prompts()
+
+    assert _prompt_names(prompts) == ['greet', 'greet.formal', 'myns/a']
+
+
+@pytest.mark.asyncio
+async def test_listed_prompt_generates_like_ai_prompt() -> None:
+    """Calling a listed prompt sends the same request and gets the same answer as `ai.prompt(name)`."""
+    ai = Genkit(model='echoModel')
+    define_echo_model(ai)
+    ai.define_prompt(name='greet', variant='formal', prompt='Good day {{name}}')
+
+    [listed] = await ai.list_prompts()
+    listed_response = await listed({'name': 'Ada'})
+    looked_up_response = await ai.prompt('greet', variant='formal')({'name': 'Ada'})
+
+    assert listed_response.text == '[ECHO] user: "Good day Ada"'
+    assert listed_response.text == looked_up_response.text
+
+
+@pytest.mark.asyncio
+async def test_listed_prompt_renders_without_calling_the_model() -> None:
+    """`await listed.render(input)` returns the messages the model would get, and the model never runs."""
+    ai = Genkit(model='echoModel')
+    echo, _ = define_echo_model(ai)
+    ai.define_prompt(name='greet', system='Be brief.', prompt='Hello {{name}}')
+
+    [listed] = await ai.list_prompts()
+    rendered = await listed.render({'name': 'Ada'})
+
+    assert [(message.role, message.text) for message in rendered.messages] == [
+        (Role.SYSTEM, 'Be brief.'),
+        (Role.USER, 'Hello Ada'),
+    ]
+    assert echo.last_request is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_name_includes_variant_and_namespace(tmp_path: Path) -> None:
+    """`prompt.name` is `greet.formal` for a variant, `myns/a` for a subfolder file, and None for an unnamed prompt."""
+    (tmp_path / 'myns').mkdir()
+    (tmp_path / 'myns' / 'a.prompt').write_text('From a folder\n')
+    ai = Genkit(prompt_dir=tmp_path)
+
+    defined = ai.define_prompt(name='greet', variant='formal', prompt='Good day {{name}}')
+    unnamed = ai.define_prompt(prompt='Hi')
+
+    assert defined.name == 'greet.formal'
+    assert ai.prompt('greet', variant='formal').name == 'greet.formal'
+    assert ai.prompt('myns/a').name == 'myns/a'
+    assert unnamed.name is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_describe_gives_description_and_input_schema() -> None:
+    """`await prompt.describe()` gives the name, description, and input JSON schema, or None for what's not set."""
+    ai = Genkit()
+    greet = ai.define_prompt(name='greet', description='Say hello.', input_schema=Guest, prompt='Hello {{name}}')
+    ai.define_prompt(name='plain', prompt='Hi')
+
+    assert await greet.describe() == PromptDescription(
+        name='greet', description='Say hello.', input_schema=Guest.model_json_schema()
+    )
+    assert [await prompt.describe() for prompt in await ai.list_prompts()] == [
+        PromptDescription(name='greet', description='Say hello.', input_schema=Guest.model_json_schema()),
+        PromptDescription(name='plain', description=None, input_schema=None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_describe_loads_a_prompt_file_never_run_before(tmp_path: Path) -> None:
+    """`describe()` on a `.prompt` file nothing has run gives its frontmatter description and input schema."""
+    (tmp_path / 'greet.prompt').write_text(
+        '---\ndescription: Greets a guest.\ninput:\n  schema:\n    name: string\n---\nHello {{name}}\n'
+    )
+    ai = Genkit(prompt_dir=tmp_path)
+
+    description = await ai.prompt('greet').describe()
+
+    assert description.name == 'greet'
+    assert description.description == 'Greets a guest.'
+    assert description.input_schema is not None
+    assert description.input_schema['properties'] == {'name': {'type': 'string'}}
+
+
+@pytest.mark.asyncio
+async def test_prompt_describe_works_on_an_ai_prompt_handle_never_run() -> None:
+    """`ai.prompt('greet').describe()` on a fresh handle gives what the prompt was defined with."""
+    ai = Genkit()
+    ai.define_prompt(name='greet', description='Say hello.', input_schema=Guest, prompt='Hello {{name}}')
+
+    assert await ai.prompt('greet').describe() == PromptDescription(
+        name='greet', description='Say hello.', input_schema=Guest.model_json_schema()
+    )
+
+
+@pytest.mark.asyncio
+async def test_prompt_describe_raises_not_found_for_an_unknown_prompt() -> None:
+    """`ai.prompt('nope').describe()` raises the same NOT_FOUND GenkitError that calling the prompt raises."""
+    ai = Genkit(model='echoModel')
+    define_echo_model(ai)
+
+    with pytest.raises(GenkitError) as described:
+        await ai.prompt('nope').describe()
+    with pytest.raises(GenkitError) as called:
+        await ai.prompt('nope')()
+
+    assert described.value.status == 'NOT_FOUND'
+    assert str(described.value) == str(called.value)
 
 
 def test_define_value_then_lookup_value_returns_it() -> None:

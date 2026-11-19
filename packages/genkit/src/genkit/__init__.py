@@ -41,6 +41,7 @@ from genkit._ai._aio import Genkit
 from genkit._ai._prompt import (
     ModelStreamResponse,
     Prompt,
+    PromptDescription,
 )
 from genkit._core._action import FlowContext, StreamResponse
 from genkit._core._error import ErrorReason, Failure, GenkitError, Interrupt, PublicError
@@ -87,6 +88,7 @@ __all__ = [
     'Flow',
     'FlowContext',
     'Prompt',
+    'PromptDescription',
     'GenkitError',
     'PublicError',
     'ErrorReason',

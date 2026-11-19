@@ -25,6 +25,7 @@ from genkit_openai._models._utils import (
     DictMessageAdapter,
     MessageAdapter,
     MessageConverter,
+    _base_id,
     check_extra_body,
     extract_response_metadata,
     reraise_openai_error,
@@ -72,13 +73,10 @@ def _uses_max_completion_tokens(model: str | None) -> bool:
     """Whether a model requires the reasoning-model token-limit parameter."""
     if not model:
         return False
-    model_id = model.rsplit('/', 1)[-1].lower()
-    # Fine-tuned OpenAI model ids are prefixed with ``ft:`` and custom
-    # deployment names may put the base model after an arbitrary prefix.
-    if model_id.startswith('ft:'):
-        parts = model_id.split(':')
-        if len(parts) > 1:
-            model_id = parts[1]
+    # Custom deployment names may put the base model after an arbitrary prefix.
+    model_id = _base_id(model.rsplit('/', 1)[-1].lower())
+    if model_id == 'chat-latest':
+        return True
     reasoning_prefixes = ('o1', 'o3', 'o4', 'gpt-5', 'gpt-6')
     return model_id.startswith(reasoning_prefixes) or any(f'-{prefix}' in model_id for prefix in reasoning_prefixes)
 
@@ -455,8 +453,8 @@ class OpenAIModel:
             A dictionary representing the response format, which may include:
             - 'type': 'json_schema' and a validated JSON Schema if a schema is provided.
             - 'type': 'json_object' if the model supports JSON mode, or the id
-              is not in the catalog (fine-tune, dated snapshot), and no schema
-              is provided.
+              is not in the catalog (such as a fine-tune), and no schema is
+              provided.
             - 'type': 'text' as the default fallback.
         """
         if request.output_format == 'json':

@@ -112,6 +112,11 @@ def reraise_openai_error(error: Exception) -> NoReturn:
     raise error
 
 
+def _base_id(name: str) -> str:
+    """The base model of a fine-tune id ``ft:<base>:<org>:<suffix>:<id>``, or the id unchanged."""
+    return name.split(':')[1] if name.startswith('ft:') else name
+
+
 def strip_markdown_fences(text: str) -> str:
     r"""Strip markdown code fences from a JSON response.
 

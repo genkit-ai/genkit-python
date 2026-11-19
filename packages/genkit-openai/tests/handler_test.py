@@ -24,7 +24,7 @@ from genkit_openai._models._model_info import SUPPORTED_OPENAI_MODELS
 
 def test_get_model_handler() -> None:
     """Test get_model_handler method returns a callable."""
-    model_name = 'gpt-4'
+    model_name = 'gpt-5.5'
     handler = OpenAIModelHandler.get_model_handler(model=model_name, client=MagicMock())
     assert callable(handler)
 
@@ -38,12 +38,12 @@ def test_get_model_handler_invalid() -> None:
 def test_validate_version(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test validate_version method validates supported versions."""
     model = MagicMock()
-    model.name = 'gpt-4'
+    model.name = 'gpt-4o'
     # setitem restores the real catalog entry; a plain assignment leaked into later tests.
-    monkeypatch.setitem(SUPPORTED_OPENAI_MODELS, 'gpt-4', MagicMock(versions=['gpt-4', 'gpt-3.5-turbo']))
+    monkeypatch.setitem(SUPPORTED_OPENAI_MODELS, 'gpt-4o', MagicMock(versions=['gpt-4o', 'gpt-4o-2024-08-06']))
     handler = OpenAIModelHandler(model)
 
-    handler._validate_version('gpt-4')  # Should not raise an error
+    handler._validate_version('gpt-4o-2024-08-06')  # Should not raise an error
 
     with pytest.raises(ValueError, match="Model version 'invalid-version' is not supported."):
         handler._validate_version('invalid-version')

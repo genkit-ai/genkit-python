@@ -55,6 +55,38 @@ OpenAI(
 )
 ```
 
+On Chat Completions, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-sol`, `gpt-6-luna` and
+`gpt-6.1-terra` accept function tools only with `reasoning_effort='none'`. The
+`gpt-5.4` models and `gpt-5.5` default to `none`. The others do not, so set
+`reasoning_effort='none'` in `config` when you pass them tools. `gpt-6-astra`
+and `gpt-6.1-sol` do not advertise tool support, because they take function
+tools only through the Responses API.
+`gpt-5-search-api` does not take function tools either.
+
+On every host, discovery hides realtime, live, moderation, Sora and legacy
+completion ids from the `/v1/models` listing, because no host serves them
+through this plugin's endpoints. On `api.openai.com` and its regional hosts
+(such as `eu.api.openai.com`), discovery also hides ids that OpenAI serves only
+on other APIs, such as Responses-only, `-audio`, DALL-E and gpt-image-1 models.
+Other hosts keep those ids and classify each one as chat, image, speech,
+transcription or embedding, so a host can list `gpt-oss-120b` as a chat model.
+The filter uses the client's effective base URL, including URLs configured
+through `client_options` or `OPENAI_BASE_URL`. A hidden id still resolves by name.
+A dated snapshot such as `gpt-5-2025-08-07` takes the capabilities and stage of
+its alias when the alias is in the built-in catalog, except constrained output:
+JSON output for a snapshot keeps the schema instructions in the prompt. A
+snapshot OpenAI has shut down, such as `gpt-4o-2024-05-13`, gets generic
+capabilities.
+
+The built-in catalog holds only the chat models that OpenAI serves today. Ids
+that OpenAI has shut down (for example `gpt-4-turbo`, `gpt-3.5-turbo`, `o1` and
+`o4-mini`) are no longer in it, so the plugin does not register them at
+startup. They still resolve by name, as in `OpenAI.gpt('o4-mini')`, with
+generic capabilities, like any id the plugin does not know, for hosts on an
+OpenAI-compatible `base_url` that still serve them. For example, schema-less
+JSON output on `gpt-4` sends `response_format={'type': 'json_object'}`.
+
 ## Config
 
 `config` takes the settings `OpenAIConfig` declares. Any other key raises
@@ -62,10 +94,10 @@ before the request is sent, so a typo fails by name:
 
 ```python
 res = await ai.generate(
-    model=OpenAI.gpt('gpt-4o'),
+    model=OpenAI.gpt('gpt-5.5'),
     prompt='Write a haiku about the sea.',
     config={
-        'temperature': 0.2,
+        'reasoning_effort': 'low',
         'max_output_tokens': 200,  # caps reply length
         'extra': {'user': 'diner-42'},  # a field OpenAIConfig doesn't declare
     },
@@ -92,7 +124,7 @@ the plugin serves:
 
 ```python
 res = await ai.generate(
-    model=OpenAI.gpt('gpt-4o'),
+    model=OpenAI.gpt('gpt-5.5'),
     prompt='hi',
     context={'secrets': {'api_key': tenant_key}},
 )

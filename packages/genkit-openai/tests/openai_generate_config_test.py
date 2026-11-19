@@ -762,3 +762,53 @@ async def test_openai_client_options_reach_the_client(server: _OpenAIServer) -> 
     await ai.generate(model='openai/gpt-4o', prompt='hi')
 
     assert server.requests[-1].headers['x-team'] == 'search'
+
+
+# Model override and structured output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'gpt-4',
+        'o4-mini',
+        'gpt-oss-120b',
+        'gpt-4o-2024-08-06',
+        'ft:gpt-4o-mini-2024-07-18:acme::abc123',
+        'my-chat-model',
+    ],
+)
+async def test_config_model_override_sends_retired_and_uncataloged_ids(
+    ai: Genkit, server: _OpenAIServer, model: str
+) -> None:
+    """config={'model': id} sends the request for an id outside the active catalog."""
+    response = await ai.generate(model=f'openai/{model}', prompt='hi', config={'model': model})
+
+    assert response.finish_reason == FinishReason.STOP
+    assert response.text == 'hi back'
+    assert server.bodies()[-1]['model'] == model
+
+
+_PERSON = {'title': 'Person', 'type': 'object', 'properties': {'name': {'type': 'string'}}, 'required': ['name']}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model', ['gpt-4o-2024-08-06', 'gpt-5-2025-08-07', 'o4-mini-2025-04-16'])
+async def test_dated_snapshot_keeps_json_format_instructions(ai: Genkit, server: _OpenAIServer, model: str) -> None:
+    """A dated snapshot sends the schema in the prompt and in response_format, so a weaker host still gets it."""
+    await ai.generate(model=f'openai/{model}', prompt='hi', output_schema=_PERSON)
+
+    body = server.bodies()[-1]
+    assert body['response_format']['type'] == 'json_schema'
+    assert 'Output should be in JSON format' in json.dumps(body['messages'])
+
+
+@pytest.mark.asyncio
+async def test_catalog_alias_relies_on_response_format_only(ai: Genkit, server: _OpenAIServer) -> None:
+    """A catalog alias with constrained=ALL leaves the JSON format instructions out of the prompt."""
+    await ai.generate(model='openai/gpt-5', prompt='hi', output_schema=_PERSON)
+
+    body = server.bodies()[-1]
+    assert body['response_format']['type'] == 'json_schema'
+    assert 'Output should be in JSON format' not in json.dumps(body['messages'])

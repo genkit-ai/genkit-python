@@ -39,10 +39,11 @@ from genkit.plugin_api import StrEnum
 
 
 class ReasoningEffort(StrEnum):
-    """Reasoning effort level for reasoning models (o1, o3, o4 series).
+    """Reasoning effort level for reasoning models (o-series, GPT-5 and GPT-6).
 
     Controls how much effort the model spends on reasoning before responding.
-    Higher values produce more thorough reasoning but use more tokens.
+    Higher values produce more thorough reasoning but use more tokens. Each
+    model accepts only some of these values.
 
     See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-reasoning_effort
     """
@@ -119,7 +120,7 @@ class OpenAIConfig(ModelConfig):
         - Python SDK Types: https://github.com/openai/openai-python/blob/main/src/openai/types/chat/completion_create_params.py
 
     Attributes:
-        model: Model ID override (e.g., 'gpt-4o', 'o3').
+        model: Model ID override (e.g., 'gpt-5.5', 'gpt-6-luna').
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-model
 
         temperature: Sampling temperature (0.0 to 2.0). Higher = more random.
@@ -163,7 +164,7 @@ class OpenAIConfig(ModelConfig):
         prompt_cache_retention: Cache retention policy ('in-memory' or '24h').
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-prompt_cache_retention
 
-        reasoning_effort: Reasoning effort for o-series models.
+        reasoning_effort: Reasoning effort for reasoning models (o-series, GPT-5, GPT-6).
             See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-reasoning_effort
 
         verbosity: Response verbosity level (low, medium, high).
@@ -270,7 +271,7 @@ class OpenAIConfig(ModelConfig):
     # https://platform.openai.com/docs/api-reference/chat/create#chat-create-prompt_cache_retention
     prompt_cache_retention: PromptCacheRetention | None = None
 
-    # Reasoning models (o1, o3, o4 series)
+    # Reasoning models (o-series, GPT-5, GPT-6)
     # https://platform.openai.com/docs/api-reference/chat/create#chat-create-reasoning_effort
     # https://platform.openai.com/docs/guides/reasoning
     reasoning_effort: ReasoningEffort | None = None

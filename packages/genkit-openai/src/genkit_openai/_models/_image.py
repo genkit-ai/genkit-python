@@ -17,11 +17,13 @@
 """OpenAI-compatible image generation model for Genkit.
 
 Provides image generation capabilities via the OpenAI Images API,
-supporting models like DALL-E 3 and GPT-Image-1.
+supporting the GPT Image models (gpt-image-1-mini, gpt-image-1.5,
+chatgpt-image-latest, gpt-image-2, gpt-image-2.5 and gpt-image-2.6).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from genkit_openai._models._utils import (
@@ -36,8 +38,8 @@ from openai import AsyncOpenAI
 from openai.types.images_response import ImagesResponse
 from pydantic import Field
 
-from genkit import FinishReason, Message, ModelResponse, Part, Role
-from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelSupports
+from genkit import FinishReason, GenkitError, Message, ModelResponse, Part, Role
+from genkit.model import ModelContext, ModelInfo, ModelRequest, ModelStage, ModelSupports
 from genkit.plugin_api import GenkitConfig
 
 _IMAGE_EXTRA_DESCRIPTION = (
@@ -68,9 +70,9 @@ class OpenAIGptImageConfig(GenkitConfig):
     style: Literal['vivid', 'natural'] | None = None
     user: str | None = None
     n: int | None = Field(default=None, ge=1, le=10)
-    quality: Literal['low', 'medium', 'high'] | None = Field(
+    quality: Literal['low', 'medium', 'high', 'xhigh', 'max', 'auto'] | None = Field(
         default=None,
-        json_schema_extra={'enum': ['low', 'medium', 'high']},
+        json_schema_extra={'enum': ['low', 'medium', 'high', 'xhigh', 'max', 'auto']},
     )
     background: Literal['transparent', 'opaque', 'auto'] | None = None
     moderation: Literal['low', 'auto'] | None = None
@@ -79,28 +81,52 @@ class OpenAIGptImageConfig(GenkitConfig):
     extra: dict[str, Any] | None = Field(default=None, description=_IMAGE_EXTRA_DESCRIPTION)
 
 
-# Supported image generation models with their metadata.
+_MAX_QUALITY_GPT_IMAGE_MODEL = re.compile(r'^gpt-image-2\.[56]-(sunburst|flare)(-\d{4}-\d{2}-\d{2})?$')
+_MAX_QUALITY_VALUES = ('xhigh', 'max')
+
+
+def _takes_max_quality(model_name: str) -> bool:
+    """Whether a GPT Image model accepts quality ``xhigh`` and ``max``."""
+    return _MAX_QUALITY_GPT_IMAGE_MODEL.match(model_name) is not None
+
+
+def _limit_quality_options(model_name: str, custom_options: dict[str, Any]) -> None:
+    """Drop ``xhigh`` and ``max`` from a published GPT Image config schema when the model rejects them."""
+    if _takes_max_quality(model_name):
+        return
+    quality = custom_options['properties']['quality']
+    for node in (quality, *quality.get('anyOf', ())):
+        if 'enum' in node:
+            node['enum'] = [value for value in node['enum'] if value not in _MAX_QUALITY_VALUES]
+
+
+_GPT_IMAGE_SUPPORTS = ModelSupports(
+    media=False,
+    output=['media'],
+    multiturn=False,
+    system_role=False,
+    tools=False,
+)
+
+# Supported image generation models with their metadata. Other gpt-image
+# ids still resolve by name.
 SUPPORTED_IMAGE_MODELS: dict[str, ModelInfo] = {
-    'dall-e-3': ModelInfo(
-        label='OpenAI - DALL-E 3',
-        supports=ModelSupports(
-            media=False,
-            output=['media'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
+    # Shutdown 2026-12-01.
+    'gpt-image-1-mini': ModelInfo(
+        label='OpenAI - GPT Image 1 Mini', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
     ),
-    'gpt-image-1': ModelInfo(
-        label='OpenAI - GPT Image 1',
-        supports=ModelSupports(
-            media=False,
-            output=['media'],
-            multiturn=False,
-            system_role=False,
-            tools=False,
-        ),
+    'gpt-image-1.5': ModelInfo(
+        label='OpenAI - GPT Image 1.5', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
     ),
+    'chatgpt-image-latest': ModelInfo(
+        label='OpenAI - ChatGPT Image Latest', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED
+    ),
+    # Shutdown 2027-02-10.
+    'gpt-image-2': ModelInfo(label='OpenAI - GPT Image 2', supports=_GPT_IMAGE_SUPPORTS, stage=ModelStage.DEPRECATED),
+    'gpt-image-2.5-sunburst': ModelInfo(label='OpenAI - GPT Image 2.5 Sunburst', supports=_GPT_IMAGE_SUPPORTS),
+    'gpt-image-2.5-flare': ModelInfo(label='OpenAI - GPT Image 2.5 Flare', supports=_GPT_IMAGE_SUPPORTS),
+    'gpt-image-2.6-sunburst': ModelInfo(label='OpenAI - GPT Image 2.6 Sunburst', supports=_GPT_IMAGE_SUPPORTS),
+    'gpt-image-2.6-flare': ModelInfo(label='OpenAI - GPT Image 2.6 Flare', supports=_GPT_IMAGE_SUPPORTS),
 }
 
 
@@ -118,7 +144,7 @@ def _to_image_generate_params(
     image generation API parameters.
 
     Args:
-        model_name: The OpenAI model name (e.g., 'dall-e-3').
+        model_name: The OpenAI model name (e.g., 'gpt-image-2.5-flare').
         request: The Genkit generate request.
 
     Returns:
@@ -128,6 +154,13 @@ def _to_image_generate_params(
     config = extract_config_dict(request)
     extra_body = pop_extra_body(config, managed=('prompt', 'model'), label='openai image')
     reject_version(config, label='openai image')
+    quality = config.get('quality')
+    if quality in _MAX_QUALITY_VALUES and not _takes_max_quality(model_name):
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f'openai image: quality {quality!r} is not supported by {model_name}; '
+            f"use low, medium, high or auto, or pass extra={{'quality': {quality!r}}} to send it anyway",
+        )
 
     # Start with required params.
     params: dict[str, Any] = {
@@ -135,8 +168,7 @@ def _to_image_generate_params(
         'prompt': prompt,
     }
 
-    # GPT Image 1 rejects the response_format parameter; its API always
-    # returns base64 image data. DALL-E models retain the existing default.
+    # GPT Image models reject response_format and always return base64 data.
     if 'gpt-image' not in model_name.lower():
         params['response_format'] = config.pop('response_format', 'b64_json')
     else:
@@ -188,7 +220,7 @@ class OpenAIImageModel:
     """Handles image generation via the OpenAI Images API.
 
     Args:
-        model_name: The image model to use (e.g., 'dall-e-3').
+        model_name: The image model to use (e.g., 'gpt-image-2.5-flare').
         client: An async OpenAI client instance.
     """
 
@@ -196,7 +228,7 @@ class OpenAIImageModel:
         """Initialize the image model.
 
         Args:
-            model_name: The image model to use (e.g., 'dall-e-3').
+            model_name: The image model to use (e.g., 'gpt-image-2.5-flare').
             client: An async OpenAI client instance.
         """
         self._model_name = model_name

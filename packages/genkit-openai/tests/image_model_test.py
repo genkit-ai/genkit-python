@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,8 +35,37 @@ from genkit_openai._models._image import (
 from genkit_openai._openai_plugin import _ModelType
 from pydantic import BaseModel, ValidationError
 
-from genkit import Genkit, GenkitError, Message, Part, Role
-from genkit.model import ModelRequest
+from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
+from genkit.model import ModelRequest, ModelStage
+from genkit.plugin_api import ActionKind
+
+_Quality = Literal['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_MAX_QUALITY = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_STANDARD_QUALITY = ['low', 'medium', 'high', 'auto']
+_MAX_QUALITY_MODELS = [
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-sunburst-2026-09-08',
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-flare-2026-09-08',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2.6-flare',
+]
+_STANDARD_QUALITY_MODELS = [
+    'gpt-image-2',
+    'gpt-image-2-2026-04-21',
+    'gpt-image-1.5',
+    'gpt-image-1-mini',
+    'gpt-image-1',
+    'chatgpt-image-latest',
+]
+
+
+def _genkit_with_image_client() -> tuple[Genkit, MagicMock]:
+    plugin = OpenAI(api_key='test-key')
+    client = MagicMock()
+    client.images.generate = AsyncMock(return_value=MagicMock(data=[]))
+    plugin._runtime_client = lambda: client
+    return Genkit(plugins=[plugin]), client
 
 
 class TestExtractPromptText:
@@ -97,7 +126,7 @@ class TestToImageGenerateParams:
 
         assert 'response_format' not in got
 
-    @pytest.mark.parametrize('model_name', ['GPT-IMAGE-1', 'gpt-image-1-mini', 'gpt-image-1.5'])
+    @pytest.mark.parametrize('model_name', ['GPT-IMAGE-1', 'gpt-image-1-mini', 'gpt-image-1.5', 'chatgpt-image-latest'])
     def test_gpt_image_variants_omit_response_format(self, model_name: str) -> None:
         """Verify GPT Image variants use the API's base64-only response shape."""
         request = ModelRequest(
@@ -219,13 +248,28 @@ class TestToModelResponse:
 class TestSupportedImageModels:
     """Tests that the model info registry is correct."""
 
-    def test_dall_e_3_in_registry(self) -> None:
-        """Verify DALL-E 3 is registered."""
-        assert 'dall-e-3' in SUPPORTED_IMAGE_MODELS
+    def test_registry_lists_current_gpt_image_models(self) -> None:
+        """The registry holds the served GPT Image models, not the retired dall-e-3 or gpt-image-1."""
+        assert set(SUPPORTED_IMAGE_MODELS) == {
+            'gpt-image-1-mini',
+            'gpt-image-1.5',
+            'chatgpt-image-latest',
+            'gpt-image-2',
+            'gpt-image-2.5-sunburst',
+            'gpt-image-2.5-flare',
+            'gpt-image-2.6-sunburst',
+            'gpt-image-2.6-flare',
+        }
 
-    def test_gpt_image_1_in_registry(self) -> None:
-        """Verify GPT-Image-1 is registered."""
-        assert 'gpt-image-1' in SUPPORTED_IMAGE_MODELS
+    @pytest.mark.parametrize('name', ['gpt-image-1-mini', 'gpt-image-1.5', 'chatgpt-image-latest', 'gpt-image-2'])
+    def test_models_with_announced_shutdown_are_deprecated(self, name: str) -> None:
+        """Ids with an announced shutdown date carry stage=deprecated."""
+        assert SUPPORTED_IMAGE_MODELS[name].stage == ModelStage.DEPRECATED
+
+    def test_current_gpt_image_models_have_no_stage(self) -> None:
+        """The 2.5 and 2.6 models have no announced shutdown."""
+        for name in ('gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'):
+            assert SUPPORTED_IMAGE_MODELS[name].stage is None
 
     def test_image_models_support_media_output(self) -> None:
         """Verify all image models declare 'media' output support."""
@@ -233,11 +277,11 @@ class TestSupportedImageModels:
             assert info.supports is not None, f'{name} has no supports metadata'
             assert 'media' in (info.supports.output or []), f"{name} should support 'media' output"
 
-    def test_gpt_image_1_exposes_config_schema(self) -> None:
-        """Verify GPT Image 1 advertises the constraints of its registered config class."""
+    def test_gpt_image_exposes_config_schema(self) -> None:
+        """A current GPT Image model advertises the constraints of its config class."""
         plugin = OpenAI(api_key='test-key')
         action = plugin._create_multimodal_action(
-            'gpt-image-1', OpenAIImageModel, SUPPORTED_IMAGE_MODELS, _ModelType.IMAGE
+            'gpt-image-2.5-flare', OpenAIImageModel, SUPPORTED_IMAGE_MODELS, _ModelType.IMAGE
         )
         model_meta = cast(dict[str, Any], action.metadata['model'])
         schema = model_meta['customOptions']
@@ -250,7 +294,7 @@ class TestSupportedImageModels:
             return properties[name]['anyOf'][0]
 
         assert _enum('size') == ['1024x1024', '1536x1024', '1024x1536', 'auto']
-        assert _enum('quality') == ['low', 'medium', 'high']
+        assert _enum('quality') == ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
         assert _enum('background') == ['transparent', 'opaque', 'auto']
         assert _enum('moderation') == ['low', 'auto']
         assert _int_bounds('n') == {'type': 'integer', 'minimum': 1, 'maximum': 10}
@@ -260,14 +304,14 @@ class TestSupportedImageModels:
         assert 'response_format' not in properties
 
     @pytest.mark.asyncio
-    async def test_gpt_image_1_response_format_raises_before_model_call(self) -> None:
-        """`response_format` on gpt-image-1 raises INVALID_ARGUMENT before the endpoint runs."""
+    async def test_gpt_image_response_format_raises_before_model_call(self) -> None:
+        """`response_format` on a GPT Image model raises INVALID_ARGUMENT before the endpoint runs."""
         ai = Genkit(plugins=[OpenAI(api_key='test-key')])
 
         with patch.object(OpenAIImageModel, 'generate', new_callable=AsyncMock) as generate:
             with pytest.raises(GenkitError) as err:
                 await ai.generate(
-                    model='openai/gpt-image-1',
+                    model='openai/gpt-image-2.5-flare',
                     prompt='a lighthouse at dusk',
                     config={'response_format': 'b64_json'},
                 )
@@ -275,6 +319,90 @@ class TestSupportedImageModels:
         assert err.value.status == 'INVALID_ARGUMENT'
         assert 'response_format' in str(err.value)
         generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('name', 'quality'),
+        [
+            *[(name, _MAX_QUALITY) for name in _MAX_QUALITY_MODELS],
+            *[(name, _STANDARD_QUALITY) for name in _STANDARD_QUALITY_MODELS],
+        ],
+    )
+    async def test_gpt_image_advertises_the_quality_values_its_model_takes(self, name: str, quality: list[str]) -> None:
+        """Only the 2.5 and 2.6 Sunburst and Flare models advertise xhigh and max quality."""
+        action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, name)
+
+        assert action is not None
+        schema = cast(dict[str, Any], action.metadata['model'])['customOptions']
+        assert schema['title'] == 'OpenAIGptImageConfig'
+        assert schema['properties']['quality']['enum'] == quality
+        assert schema['properties']['quality']['anyOf'][0]['enum'] == quality
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('name', _STANDARD_QUALITY_MODELS)
+    @pytest.mark.parametrize('quality', ['xhigh', 'max'])
+    @pytest.mark.parametrize('typed', [False, True], ids=['dict', 'typed'])
+    async def test_gpt_image_without_max_quality_fails_before_the_api_call(
+        self, name: str, quality: _Quality, typed: bool
+    ) -> None:
+        """xhigh and max fail with INVALID_ARGUMENT naming the field, the model and the extra override."""
+        ai, client = _genkit_with_image_client()
+        config = OpenAIGptImageConfig(quality=quality) if typed else {'quality': quality}
+
+        response = await ai.generate(model=f'openai/{name}', prompt='a lighthouse at dusk', config=config)
+
+        assert response.finish_reason == FinishReason.FAILED
+        assert response.error is not None
+        assert response.error.status == 'INVALID_ARGUMENT'
+        assert f"quality '{quality}'" in response.error.message
+        assert name in response.error.message
+        assert f"extra={{'quality': '{quality}'}}" in response.error.message
+        client.images.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('quality', ['xhigh', 'max'])
+    async def test_gpt_image_quality_in_extra_skips_the_local_check(self, quality: str) -> None:
+        """A quality in extra reaches the Images API on a model the local check refuses it for."""
+        ai, client = _genkit_with_image_client()
+
+        await ai.generate(
+            model='openai/gpt-image-2', prompt='a lighthouse at dusk', config={'extra': {'quality': quality}}
+        )
+
+        assert client.images.generate.call_args.kwargs['extra_body'] == {'quality': quality}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('name', 'quality'),
+        [
+            *[(name, quality) for name in _MAX_QUALITY_MODELS for quality in ('xhigh', 'max')],
+            ('gpt-image-2', 'auto'),
+            ('chatgpt-image-latest', 'high'),
+        ],
+    )
+    @pytest.mark.parametrize('typed', [False, True], ids=['dict', 'typed'])
+    async def test_gpt_image_quality_the_model_takes_reaches_the_endpoint(
+        self, name: str, quality: _Quality, typed: bool
+    ) -> None:
+        """A quality value the model takes reaches the Images API, as a dict or an OpenAIGptImageConfig."""
+        ai, client = _genkit_with_image_client()
+        config = OpenAIGptImageConfig(quality=quality) if typed else {'quality': quality}
+
+        await ai.generate(model=f'openai/{name}', prompt='a lighthouse at dusk', config=config)
+
+        assert client.images.generate.call_args.kwargs['quality'] == quality
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('name', _MAX_QUALITY_MODELS + _STANDARD_QUALITY_MODELS)
+    async def test_gpt_image_config_with_standard_quality_works_on_every_gpt_image_model(self, name: str) -> None:
+        """An OpenAIGptImageConfig instance is the config class of every GPT Image model."""
+        ai, client = _genkit_with_image_client()
+
+        await ai.generate(
+            model=f'openai/{name}', prompt='a lighthouse at dusk', config=OpenAIGptImageConfig(quality='high')
+        )
+
+        client.images.generate.assert_called_once()
 
 
 class TestOpenAIImageModel:

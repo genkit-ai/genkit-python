@@ -29,15 +29,25 @@ from genkit_openai._models._audio import SUPPORTED_STT_MODELS, SUPPORTED_TTS_MOD
 from genkit_openai._models._handler import OpenAIModelHandler
 from genkit_openai._models._image import SUPPORTED_IMAGE_MODELS
 from genkit_openai._models._model_info import SUPPORTED_OPENAI_MODELS, KnownGpt
-from genkit_openai._openai_plugin import OpenAI
+from genkit_openai._openai_plugin import (
+    OpenAI,
+    _chat_model_info,
+    _classify_model,
+    _is_known_unsupported,
+    _is_listed,
+    _ModelType,
+)
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 from openai.types import Model
 from openai.types.chat import ChatCompletion
 
 from genkit import Document, Genkit, GenkitError, Message, ModelResponse, Part, Role
 from genkit.embedder import EmbedContext, EmbedRequest, EmbedResponse
-from genkit.model import ConstrainedSupport, ModelSupports
+from genkit.model import ConstrainedSupport, ModelStage, ModelSupports
 from genkit.plugin_api import Action, ActionKind, loop_local_client
+
+_GPT_IMAGE_QUALITY = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+_GPT_IMAGE_2_QUALITY = ['low', 'medium', 'high', 'auto']
 
 
 @pytest.mark.asyncio
@@ -54,10 +64,10 @@ async def test_openai_plugin_init() -> None:
         "All actions should be namespaced with 'openai/'"
     )
 
-    gpt_image = next(a for a in result if a.name == 'openai/gpt-image-1')
+    gpt_image = next(a for a in result if a.name == 'openai/gpt-image-2.5-flare')
     assert gpt_image.metadata is not None
     gpt_image_model = cast(dict[str, Any], gpt_image.metadata['model'])
-    assert gpt_image_model['customOptions']['properties']['quality']['enum'] == ['low', 'medium', 'high']
+    assert gpt_image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_QUALITY
     assert 'configSchema' not in gpt_image_model
 
     # Verify we have both models and embedders
@@ -113,25 +123,228 @@ def test_gpt_6_astra_catalog_entry() -> None:
 
 
 @pytest.mark.parametrize(
-    ('model', 'constrained'),
+    ('model', 'media', 'tools', 'system_role'),
     [
-        ('gpt-4o', ConstrainedSupport.ALL),
-        ('gpt-4.1', ConstrainedSupport.ALL),
-        ('o3-mini', ConstrainedSupport.ALL),
-        ('gpt-5', ConstrainedSupport.ALL),
-        ('gpt-4-turbo', None),
-        ('gpt-4', None),
-        ('gpt-3.5-turbo', None),
-        ('gpt-5-chat-latest', None),
+        ('o3', True, True, False),
+        ('gpt-5-search-api', False, False, True),
     ],
 )
-def test_catalog_declares_native_json_only_where_json_schema_works(
-    model: KnownGpt, constrained: ConstrainedSupport | None
+def test_o3_and_search_catalog_entries_declare_their_limits(
+    model: KnownGpt, media: bool, tools: bool, system_role: bool
 ) -> None:
-    """Models with response_format json_schema skip the prompt's schema text; json_object-only models keep it."""
+    """o3 has no system role, and gpt-5-search-api takes neither media nor function tools."""
+    assert SUPPORTED_OPENAI_MODELS[model].supports == ModelSupports(
+        multiturn=True,
+        media=media,
+        tools=tools,
+        system_role=system_role,
+        output=['json', 'text'],
+        constrained=ConstrainedSupport.ALL,
+    )
+
+
+def test_catalog_models_all_accept_json_schema() -> None:
+    """Every catalog chat model takes response_format json_schema, so none keeps the prompt's schema text."""
+    for name, info in SUPPORTED_OPENAI_MODELS.items():
+        assert info.supports is not None, name
+        assert info.supports.constrained == ConstrainedSupport.ALL, name
+
+
+# Shut down, Responses-only, or never served by Chat Completions.
+_RETIRED_CHAT_IDS = (
+    'gpt-4o-2024-05-13',
+    'gpt-4.5-preview',
+    'gpt-4-turbo',
+    'gpt-4-turbo-2024-04-09',
+    'gpt-4-turbo-preview',
+    'gpt-4-0125-preview',
+    'gpt-4-1106-preview',
+    'gpt-4',
+    'gpt-4-0613',
+    'gpt-3.5-turbo',
+    'gpt-3.5-turbo-0125',
+    'gpt-3.5-turbo-1106',
+    'o1',
+    'o3-mini',
+    'o4-mini',
+    'gpt-5-chat-latest',
+    'gpt-5.2-chat',
+    'gpt-5.2-chat-latest',
+    'gpt-oss-120b',
+    'gpt-oss-20b',
+)
+
+
+def test_catalog_drops_retired_and_non_chat_ids() -> None:
+    """No catalog entry is an id OpenAI has shut down or serves only on Responses."""
+    assert not set(_RETIRED_CHAT_IDS) & set(SUPPORTED_OPENAI_MODELS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model', _RETIRED_CHAT_IDS)
+async def test_shut_down_chat_id_resolves_by_name_with_generic_info(model: str) -> None:
+    """A shut-down id is not registered at startup and resolves by name with generic info and no stage."""
+    plugin = OpenAI(api_key='test-key', base_url='https://compat.example/v1')
+
+    assert f'openai/{model}' not in {a.name for a in await plugin.init()}
+    action = await plugin.resolve(ActionKind.MODEL, model)
+
+    assert action is not None
+    assert action.metadata is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    assert model_meta['label'] == f'OpenAI - {model}'
+    assert model_meta['supports'] == {'multiturn': True}
+    assert 'stage' not in model_meta
+    assert plugin.get_model_info(model) == {'label': model_meta['label'], 'supports': model_meta['supports']}
+
+
+@pytest.mark.parametrize(
+    ('model', 'tools'),
+    [
+        # Tools only at reasoning_effort='none'; the flag is never stricter than the API.
+        ('gpt-5.4', True),
+        ('gpt-5.4-mini', True),
+        ('gpt-5.4-nano', True),
+        ('gpt-5.5', True),
+        ('gpt-5.6-sol', True),
+        ('gpt-5.6-terra', True),
+        ('gpt-5.6-luna', True),
+        ('gpt-6-sol', True),
+        ('gpt-6-luna', True),
+        ('gpt-6.1-terra', True),
+        # Chat Completions has no function tools for these; they need Responses.
+        ('gpt-6-astra', False),
+        ('gpt-6.1-sol', False),
+    ],
+)
+def test_new_chat_models_declare_chat_completions_tool_support(model: KnownGpt, tools: bool) -> None:
+    """New GPT-5.x and GPT-6 entries say whether Chat Completions takes function tools for them."""
     supports = SUPPORTED_OPENAI_MODELS[model].supports
     assert supports is not None
-    assert supports.constrained == constrained
+    assert supports.tools is tools
+    assert supports.media is True
+    assert supports.system_role is True
+
+
+def test_catalog_stages_match_announced_shutdowns() -> None:
+    """A catalog id carries stage=deprecated exactly when OpenAI has announced its shutdown."""
+    deprecated = ModelStage.DEPRECATED
+    assert {name: info.stage for name, info in SUPPORTED_OPENAI_MODELS.items()} == {
+        'gpt-4o': deprecated,
+        'gpt-4o-mini': deprecated,
+        'gpt-4o-mini-2024-07-18': deprecated,
+        'gpt-4.1': deprecated,
+        'gpt-4.1-mini': deprecated,
+        'o3': deprecated,
+        'gpt-5': deprecated,
+        'gpt-5-mini': deprecated,
+        'gpt-5-nano': deprecated,
+        'gpt-5.1': deprecated,
+        'gpt-5.2': None,
+        'gpt-5.4': None,
+        'gpt-5.4-mini': None,
+        'gpt-5.4-nano': deprecated,
+        'gpt-5.5': None,
+        'gpt-5.6-sol': None,
+        'gpt-5.6-terra': None,
+        'gpt-5.6-luna': None,
+        'gpt-5-search-api': None,
+        'chat-latest': None,
+        'gpt-6-astra': None,
+        'gpt-6-sol': None,
+        'gpt-6-luna': None,
+        'gpt-6.1-sol': None,
+        'gpt-6.1-terra': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_deprecated_stage_reaches_action_metadata() -> None:
+    """init() and resolve() both report stage=deprecated for a model OpenAI is shutting down."""
+    plugin = OpenAI(api_key='test-key')
+
+    init_action = next(a for a in await plugin.init() if a.name == 'openai/gpt-5')
+    resolved = await plugin.resolve(ActionKind.MODEL, 'gpt-5')
+    current = await plugin.resolve(ActionKind.MODEL, 'gpt-5.5')
+
+    assert resolved is not None
+    assert current is not None
+    for action in (init_action, resolved):
+        assert action.metadata is not None
+        assert cast(dict[str, Any], action.metadata['model'])['stage'] == 'deprecated'
+    assert current.metadata is not None
+    assert 'stage' not in cast(dict[str, Any], current.metadata['model'])
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected'),
+    [
+        (
+            'gpt-5',
+            {
+                'label': 'OpenAI - gpt-5',
+                'supports': {
+                    'multiturn': True,
+                    'media': True,
+                    'tools': True,
+                    'systemRole': True,
+                    'output': ['json', 'text'],
+                    'constrained': 'all',
+                },
+            },
+        ),
+        ('my-local-model', {'label': 'OpenAI - my-local-model', 'supports': {'multiturn': True}}),
+    ],
+)
+def test_get_model_info_returns_label_and_supports(model: str, expected: dict[str, Any]) -> None:
+    """get_model_info returns label and supports only, for catalog and unknown ids alike."""
+    assert OpenAI(api_key='test-key').get_model_info(model) == expected
+
+
+@pytest.mark.asyncio
+async def test_bare_gpt_5_6_alias_resolves_dynamically() -> None:
+    """The bare gpt-5.6 alias is not in the catalog but still resolves to a chat model."""
+    assert 'gpt-5.6' not in SUPPORTED_OPENAI_MODELS
+    plugin = OpenAI(api_key='test-key')
+    assert 'openai/gpt-5.6' not in {a.name for a in await plugin.init()}
+
+    action = await plugin.resolve(ActionKind.MODEL, 'gpt-5.6')
+
+    assert action is not None
+    assert action.name == 'openai/gpt-5.6'
+
+
+def test_stt_registry_includes_gpt_transcribe() -> None:
+    """gpt-transcribe is registered as a transcription model."""
+    info = SUPPORTED_STT_MODELS['gpt-transcribe']
+    assert info.stage is None
+    assert info.supports is not None
+    assert info.supports.media is True
+    assert info.supports.output == ['text']
+
+
+@pytest.mark.parametrize(
+    ('name', 'model_type'),
+    [
+        ('gpt-transcribe', _ModelType.STT),
+        ('gpt-image-2.5-sunburst', _ModelType.IMAGE),
+        ('gpt-image-2.5-flare', _ModelType.IMAGE),
+        ('gpt-image-2.6-sunburst', _ModelType.IMAGE),
+        ('gpt-image-2.6-flare', _ModelType.IMAGE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_new_media_models_register_with_catalog_info(name: str, model_type: _ModelType) -> None:
+    """init() registers the new image and transcription ids under their own endpoint, not chat."""
+    plugin = OpenAI(api_key='test-key')
+
+    action = next((a for a in await plugin.init() if a.name == f'openai/{name}'), None)
+
+    assert _classify_model(name) == model_type
+    assert action is not None
+    assert action.metadata is not None
+    catalog = SUPPORTED_STT_MODELS if model_type == _ModelType.STT else SUPPORTED_IMAGE_MODELS
+    assert cast(dict[str, Any], action.metadata['model'])['label'] == catalog[name].label
 
 
 @pytest.mark.parametrize(
@@ -179,6 +392,133 @@ async def test_unlisted_chat_model_resolves_with_default_supports() -> None:
     assert model_meta['supports'] == {'multiturn': True}
 
 
+@pytest.mark.parametrize('model', ['gpt-6-rosalind', 'gpt-rosalind-research', 'gpt-oss-120b', 'gpt-oss-20b'])
+def test_responses_only_ids_are_known_unsupported(model: str) -> None:
+    """Discovery hides the Responses-only Rosalind and gpt-oss ids, which Chat Completions does not serve."""
+    assert _is_known_unsupported(model, on_openai=True)
+    assert not _is_known_unsupported(model, on_openai=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('model', 'base'),
+    [
+        ('gpt-5-2025-08-07', 'gpt-5'),
+        ('gpt-5.4-mini-2026-03-17', 'gpt-5.4-mini'),
+        ('gpt-5-search-api-2025-10-14', 'gpt-5-search-api'),
+        ('o3-2025-04-16', 'o3'),
+    ],
+)
+async def test_dated_snapshots_take_their_alias_info(model: str, base: KnownGpt) -> None:
+    """Dated snapshots take their alias's supports, without constrained output, and stage."""
+    expected = SUPPORTED_OPENAI_MODELS[base]
+
+    action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, model)
+
+    assert action is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    assert model_meta['label'] == f'OpenAI - {model}'
+    assert expected.supports is not None
+    assert model_meta['supports'] == expected.supports.model_dump(
+        by_alias=True, exclude_none=True, exclude={'constrained'}
+    )
+    assert model_meta.get('stage') == (expected.stage.value if expected.stage else None)
+
+
+@pytest.mark.parametrize(
+    'model',
+    [
+        'o4-mini-2025-04-16',
+        'o1-2024-12-17',
+        'o3-mini-2025-01-31',
+        'gpt-4.5-preview-2025-02-27',
+        'gpt-5.2-chat-2025-12-11',
+        'gpt-4o-2024-05-13',
+    ],
+)
+def test_shut_down_dated_snapshot_gets_generic_info(model: str) -> None:
+    """A shut-down snapshot gets generic info, and gpt-4o-2024-05-13 does not take the live gpt-4o alias's info."""
+    info = _chat_model_info(model)
+
+    assert info.label == f'OpenAI - {model}'
+    assert info.supports == ModelSupports(multiturn=True)
+    assert info.stage is None
+
+
+@pytest.mark.parametrize(
+    'model',
+    [
+        'acme-model-2025-01-01',
+        'ft:acme-model:org::x1',
+        'ft:',
+        'ft:gpt-4o-mini-2024-07-18:acme::abc123',
+        'ft:gpt-5.5-2026-04-23:acme:support:x1',
+    ],
+)
+def test_unknown_snapshots_and_all_fine_tunes_get_generic_info(model: str) -> None:
+    """An unknown snapshot, and any fine-tune whatever its base model, gets generic info."""
+    info = _chat_model_info(model)
+    assert info.supports == ModelSupports(multiturn=True)
+    assert info.stage is None
+
+
+_LISTED_CHAT_FINE_TUNES = [
+    'ft:gpt-4o-mini-2024-07-18:acme:support-pro-v2:abc',
+    'ft:gpt-4o-mini-2024-07-18:acme:pro:abc',
+    'ft:gpt-4.1:acme:realtime-x:abc',
+    'ft:gpt-4.1:acme:codex-helper:abc',
+    'ft:gpt-4.1:acme:moderation-bot:abc',
+    'ft:gpt-4.1:acme:image-captioner:abc',
+    'ft:gpt-4.1:acme:tts-helper:abc',
+    'ft:gpt-4.1:acme:embed-ranker:abc',
+    'ft:gpt-4.1:acme:transcribe-fix:abc',
+    'ft:gpt-4.1:acme:plain:abc',
+]
+
+
+@pytest.mark.parametrize(
+    ('model', 'listed'),
+    [
+        ('ft:babbage-002:org:sfx:id', False),
+        ('ft:davinci-002:org::abc', False),
+        *[(model, True) for model in _LISTED_CHAT_FINE_TUNES],
+    ],
+)
+def test_fine_tune_is_judged_by_its_base_id_not_its_suffix(model: str, listed: bool) -> None:
+    """A user suffix such as 'tts-helper' or 'support-pro-v2' does not change a fine-tune's type or listing."""
+    model_type = _classify_model(model)
+
+    assert model_type == _ModelType.CHAT
+    assert _is_listed(model, model_type, on_openai=True) is listed
+    assert _is_listed(model, model_type, on_openai=False) is listed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model', _LISTED_CHAT_FINE_TUNES)
+async def test_fine_tune_with_non_chat_suffix_resolves_as_chat(model: str) -> None:
+    """resolve() and OpenAI.gpt() serve a fine-tune as a chat model, whatever its suffix says."""
+    plugin = OpenAI(api_key='test-key')
+
+    action = await plugin.resolve(ActionKind.MODEL, model)
+
+    assert action is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    assert 'frequencyPenalty' in model_meta['customOptions']['properties']
+    assert await plugin.resolve(ActionKind.EMBEDDER, model) is None
+    assert OpenAI.gpt(model).name == f'openai/{model}'
+
+
+@pytest.mark.asyncio
+async def test_dated_image_snapshot_takes_its_alias_info() -> None:
+    """gpt-image-2-2026-04-21 takes gpt-image-2's supports and deprecated stage."""
+    action = await OpenAI(api_key='test-key').resolve(ActionKind.MODEL, 'gpt-image-2-2026-04-21')
+
+    assert action is not None
+    model_meta = cast(dict[str, Any], action.metadata['model'])
+    assert model_meta['label'] == 'OpenAI - gpt-image-2-2026-04-21'
+    assert model_meta['stage'] == 'deprecated'
+
+
 @pytest.mark.asyncio
 async def test_openai_plugin_list_actions() -> None:
     """Test OpenAI plugin list_actions method."""
@@ -186,7 +526,7 @@ async def test_openai_plugin_list_actions() -> None:
         Model(id='gpt-4-0613', created=1686588896, object='model', owned_by='openai'),
         Model(id='gpt-4', created=1687882411, object='model', owned_by='openai'),
         Model(id='gpt-3.5-turbo', created=1677610602, object='model', owned_by='openai'),
-        Model(id='gpt-image-1', created=1744060800, object='model', owned_by='openai'),
+        Model(id='gpt-image-2', created=1744060800, object='model', owned_by='openai'),
         Model(id='o4-mini-deep-research-2025-06-26', created=1750866121, object='model', owned_by='system'),
         Model(id='codex-mini-latest', created=1746673257, object='model', owned_by='system'),
         Model(id='babbage-002', created=1692634615, object='model', owned_by='system'),
@@ -196,6 +536,7 @@ async def test_openai_plugin_list_actions() -> None:
     ]
     plugin = OpenAI(api_key='test-key')
     mock_client = MagicMock()
+    mock_client.base_url = httpx.URL('https://api.openai.com/v1')
 
     mock_result_ = MagicMock()
     mock_result_.data = entries
@@ -215,7 +556,8 @@ async def test_openai_plugin_list_actions() -> None:
     assert 'openai/babbage-002' not in listed
     assert 'openai/davinci-002' not in listed
     assert 'openai/o3-pro' not in listed
-    assert len(actions) == len(entries) - 4
+    assert 'openai/o4-mini-deep-research-2025-06-26' not in listed
+    assert len(actions) == len(entries) - 5
     assert actions[0].name == 'openai/gpt-4-0613'
     assert actions[-1].name == 'openai/text-embedding-ada-002'
 
@@ -227,10 +569,10 @@ async def test_openai_plugin_list_actions() -> None:
     assert 'maxOutputTokens' in chat_props
     assert 'maxTokens' not in chat_props
 
-    image = next(a for a in actions if a.name == 'openai/gpt-image-1')
+    image = next(a for a in actions if a.name == 'openai/gpt-image-2')
     assert image.metadata is not None
     image_model = cast(dict[str, Any], image.metadata['model'])
-    assert image_model['customOptions']['properties']['quality']['enum'] == ['low', 'medium', 'high']
+    assert image_model['customOptions']['properties']['quality']['enum'] == _GPT_IMAGE_2_QUALITY
     assert 'configSchema' not in image_model
 
     embed = next(a for a in actions if a.name == 'openai/text-embedding-ada-002')
@@ -525,8 +867,9 @@ def _json_completion(content: str = '{"a": 1}') -> ChatCompletion:
 
 
 @pytest.mark.asyncio
-async def test_openai_unlisted_model_json_request_sends_json_object() -> None:
-    """ai.generate(model='openai/ft:gpt-4o:acme', output_format='json') still sends json_object."""
+@pytest.mark.parametrize('model', ['ft:gpt-4o:acme', 'my-chat-model', *_RETIRED_CHAT_IDS])
+async def test_generic_info_model_json_request_sends_json_object(model: str) -> None:
+    """A fine-tune, unknown or shut-down id has generic info and sends json_object for schema-less JSON output."""
     captured: dict[str, Any] = {}
     client = MagicMock()
 
@@ -537,8 +880,10 @@ async def test_openai_unlisted_model_json_request_sends_json_object() -> None:
     client.chat.completions.create = AsyncMock(side_effect=create)
     ai = Genkit(plugins=[_plugin_with(client)])
 
-    await ai.generate(model='openai/ft:gpt-4o:acme', prompt='give me json', output_format='json')
+    response = await ai.generate(model=f'openai/{model}', prompt='give me json', output_format='json')
 
+    assert response.error is None
+    assert response.output == {'a': 1}
     assert captured['response_format'] == {'type': 'json_object'}
 
 

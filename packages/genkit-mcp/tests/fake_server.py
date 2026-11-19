@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import threading
+from typing import Any, cast
 
 # mcp.server imports jsonschema, which loads rfc3987_syntax when it is installed
 # (dotpromptz pulls it in). That module compiles a Lark grammar at import, which
@@ -22,45 +23,61 @@ import threading
 sys.modules['rfc3987_syntax'] = None  # type: ignore[assignment]
 
 import anyio
+from genkit_mcp._compat import McpError, field
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
     CallToolRequest,
     CallToolResult,
-    EmptyResult,
     ErrorData,
+    ListResourcesResult,
     ListToolsRequest,
     ListToolsResult,
-    Resource,
     ServerResult,
     TextContent,
     Tool,
 )
 
-app = Server('fake-server')
+MCP_V2 = not hasattr(Server, 'list_tools')
+"""mcp 2 replaced the lowlevel server's handler decorators with ``on_*`` constructor arguments."""
+
+
+def mcp_error(code: int, message: str) -> Exception:
+    """Build the SDK's JSON-RPC error. mcp 2 takes the code and message, mcp 1.x an ``ErrorData``."""
+    data = ErrorData(code=code, message=message)
+    from_error_data = getattr(McpError, 'from_error_data', None)
+    return from_error_data(data) if from_error_data is not None else McpError(data)
+
+
+def tool(name: str, description: str, **fields: object) -> Tool:
+    """Build a tool from wire-shaped fields, which mcp 1.x and 2.x both parse."""
+    return Tool.model_validate({'name': name, 'description': description, 'inputSchema': {'type': 'object'}, **fields})
+
+
+def text_result(text: str) -> CallToolResult:
+    return CallToolResult(content=[TextContent(type='text', text=text)])
+
 
 TOOLS = [
-    Tool(name='echo', description='Echo input.', inputSchema={'type': 'object'}),
-    Tool(name='second', description='Another tool.', inputSchema={'type': 'object'}),
-    Tool(name='wait', description='Wait before replying.', inputSchema={'type': 'object'}),
-    Tool(name='list_requests', description='Count tools/list requests.', inputSchema={'type': 'object'}),
-    Tool(name='who_called', description='Report the client that connected.', inputSchema={'type': 'object'}),
-    Tool(name='stall', description='Never reply.', inputSchema={'type': 'object'}),
-    Tool(name='rendezvous', description='Reply once two calls are in flight together.', inputSchema={'type': 'object'}),
-    Tool(name='await_stall', description='Reply once a stall call is in flight.', inputSchema={'type': 'object'}),
-    Tool(
-        name='bad_output',
-        description='Violate its own output schema.',
-        inputSchema={'type': 'object'},
+    tool('echo', 'Echo input.'),
+    tool('second', 'Another tool.'),
+    tool('wait', 'Wait before replying.'),
+    tool('list_requests', 'Count tools/list requests.'),
+    tool('who_called', 'Report the client that connected.'),
+    tool('stall', 'Never reply.'),
+    tool('rendezvous', 'Reply once two calls are in flight together.'),
+    tool('await_stall', 'Reply once a stall call is in flight.'),
+    tool(
+        'bad_output',
+        'Violate its own output schema.',
         outputSchema={'type': 'object', 'properties': {'value': {'type': 'integer'}}, 'required': ['value']},
     ),
 ]
 
 COLLIDING_TOOLS = [
-    Tool(name='look.up', description='Collides once rewritten.', inputSchema={'type': 'object'}),
-    Tool(name='look/up', description='Collides once rewritten.', inputSchema={'type': 'object'}),
+    tool('look.up', 'Collides once rewritten.'),
+    tool('look/up', 'Collides once rewritten.'),
 ]
 
 PAGE_SIZE = int(os.environ.get('MCP_FAKE_PAGE_SIZE', '2'))
@@ -84,14 +101,22 @@ def write_marker(path: str, text: str) -> None:
     os.replace(staging, path)
 
 
-@app.list_tools()
-async def list_tools(req: ListToolsRequest) -> ListToolsResult:
-    # The SDK passes None when it refreshes its own tool cache, and that refresh
-    # must see every tool or call_tool skips input validation.
+def page(tools: list[Tool], next_cursor: str | None) -> ListToolsResult:
+    return ListToolsResult.model_validate({'tools': tools, 'nextCursor': next_cursor})
+
+
+async def list_tools(cursor: str | None, *, cache_refresh: bool = False) -> ListToolsResult:
+    """Answer one tools/list page.
+
+    Args:
+        cursor: The cursor the client sent, if any.
+        cache_refresh: Whether mcp 1.x's server is refreshing its own tool cache,
+            which must see every tool or call_tool skips input validation.
+    """
     if os.environ.get('MCP_FAKE_COLLIDING_TOOLS'):
         return ListToolsResult(tools=COLLIDING_TOOLS)
 
-    if req is None:
+    if cache_refresh:
         return ListToolsResult(tools=TOOLS)
 
     global list_requests
@@ -101,7 +126,7 @@ async def list_tools(req: ListToolsRequest) -> ListToolsResult:
         # -32000 is the JSON-RPC implementation-defined server error range, which
         # a healthy server may use and the SDK also synthesises on transport death.
         code = int(os.environ.get('MCP_FAKE_APP_ERROR_CODE', CONNECTION_CLOSED))
-        raise McpError(ErrorData(code=code, message='application-level failure'))
+        raise mcp_error(code, 'application-level failure')
 
     stall_list_marker = os.environ.get('MCP_FAKE_STALL_LIST')
     if stall_list_marker:
@@ -109,24 +134,33 @@ async def list_tools(req: ListToolsRequest) -> ListToolsResult:
         await asyncio.Event().wait()
 
     if os.environ.get('MCP_FAKE_STUCK_CURSOR'):
-        return ListToolsResult(tools=TOOLS[:1], nextCursor='stuck')
+        return page(TOOLS[:1], 'stuck')
 
     if os.environ.get('MCP_FAKE_EMPTY_CURSOR'):
-        return ListToolsResult(tools=TOOLS, nextCursor='')
+        return page(TOOLS, '')
 
     if os.environ.get('MCP_FAKE_ENDLESS_CURSOR'):
-        return ListToolsResult(tools=TOOLS[:1], nextCursor=str(list_requests))
+        return page(TOOLS[:1], str(list_requests))
 
-    start = int(req.params.cursor) if req.params is not None and req.params.cursor is not None else 0
+    start = int(cursor) if cursor is not None else 0
     end = start + PAGE_SIZE
-    return ListToolsResult(tools=TOOLS[start:end], nextCursor=str(end) if end < len(TOOLS) else None)
+    return page(TOOLS[start:end], str(end) if end < len(TOOLS) else None)
 
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict[str, object]) -> list[TextContent] | CallToolResult:
+async def call_tool(name: str, arguments: dict[str, object], client: object) -> CallToolResult:
+    """Answer one tools/call.
+
+    Args:
+        name: The tool the client called.
+        arguments: The tool input.
+        client: The ``Implementation`` the client named at initialize.
+    """
     call_marker = os.environ.get('MCP_FAKE_CALL_MARKER')
     if call_marker:
         write_marker(call_marker, name)
+    if os.environ.get('MCP_FAKE_APP_ERROR_CALL'):
+        # A JSON-RPC error on the wire, not an isError result.
+        raise mcp_error(CONNECTION_CLOSED, 'application-level failure')
     if name == 'wait':
         # Must stay under the SDK's PROCESS_TERMINATION_TIMEOUT of 2.0 seconds.
         await asyncio.sleep(0.25)
@@ -135,53 +169,121 @@ async def call_tool(name: str, arguments: dict[str, object]) -> list[TextContent
         await asyncio.Event().wait()
     if name == 'await_stall':
         await stall_started.wait()
-        return [TextContent(type='text', text='stalled')]
+        return text_result('stalled')
     if name == 'rendezvous':
         global rendezvous_arrivals
         rendezvous_arrivals += 1
         if rendezvous_arrivals == 2:
             rendezvous_met.set()
         await rendezvous_met.wait()
-        return [TextContent(type='text', text=str(rendezvous_arrivals))]
+        return text_result(str(rendezvous_arrivals))
     if name == 'bad_output':
-        # A ready-made CallToolResult bypasses the decorator's own output validation.
-        return CallToolResult(
-            content=[TextContent(type='text', text='not an integer')],
-            structuredContent={'value': 'not an integer'},
-        )
+        # Neither SDK's server validates a ready-made CallToolResult against the output schema.
+        return CallToolResult.model_validate({
+            'content': [TextContent(type='text', text='not an integer')],
+            'structuredContent': {'value': 'not an integer'},
+        })
     if name == 'list_requests':
-        return [TextContent(type='text', text=str(list_requests))]
+        return text_result(str(list_requests))
     if name == 'who_called':
-        client = app.request_context.session.client_params
         assert client is not None
-        return [TextContent(type='text', text=f'{client.clientInfo.name} {client.clientInfo.version}')]
-    return [TextContent(type='text', text=str(arguments.get('message', name)))]
+        return text_result(f'{getattr(client, "name")} {getattr(client, "version")}')  # noqa: B009
+    return text_result(str(arguments.get('message', name)))
 
 
-if os.environ.get('MCP_FAKE_APP_ERROR_CALL'):
-    # The call_tool decorator turns handler exceptions into isError results, so
-    # putting a JSON-RPC error code on the wire needs the raw handler.
-    async def failing_call(req: CallToolRequest) -> ServerResult:
-        raise McpError(ErrorData(code=CONNECTION_CLOSED, message='application-level failure'))
+def build_v2_server() -> Server[Any]:
+    """Register the handlers through mcp 2's ``on_*`` constructor arguments."""
+    if os.environ.get('MCP_FAKE_NO_TOOLS'):
+        # Without tool handlers the server neither advertises tools nor answers tools/list.
+        async def list_resources(ctx: Any, params: Any) -> ListResourcesResult:  # noqa: ANN401
+            return ListResourcesResult(resources=[])
 
-    app.request_handlers[CallToolRequest] = failing_call
+        return Server('fake-server', on_list_resources=list_resources)
 
-if os.environ.get('MCP_FAKE_MALFORMED_REPLY'):
-    # An empty result is valid JSON-RPC but lacks the fields tools/list and tools/call require.
-    async def empty_reply(req: ListToolsRequest | CallToolRequest) -> ServerResult:
-        return ServerResult(EmptyResult())
+    async def on_list_tools(ctx: Any, params: Any) -> ListToolsResult:  # noqa: ANN401
+        return await list_tools(params.cursor if params is not None else None)
 
-    app.request_handlers[ListToolsRequest] = empty_reply
-    app.request_handlers[CallToolRequest] = empty_reply
+    async def on_call_tool(ctx: Any, params: Any) -> CallToolResult:  # noqa: ANN401
+        client_params = ctx.session.client_params
+        client = field(client_params, 'client_info') if client_params is not None else None
+        return await call_tool(params.name, params.arguments or {}, client)
 
-if os.environ.get('MCP_FAKE_NO_TOOLS'):
-    # Without these handlers the server neither advertises tools nor answers tools/list.
-    del app.request_handlers[ListToolsRequest]
-    del app.request_handlers[CallToolRequest]
+    return Server('fake-server', on_list_tools=on_list_tools, on_call_tool=on_call_tool)
 
-    @app.list_resources()
-    async def list_resources() -> list[Resource]:
-        return []
+
+def build_v1_server() -> Any:  # noqa: ANN401 - mcp 1.x's Server, whose decorators mcp 2 removed.
+    """Register the handlers through mcp 1.x's decorators and request handler table."""
+    app = cast(Any, Server('fake-server'))
+
+    @app.list_tools()
+    # The annotation must be exactly ListToolsRequest: mcp 1.x reads it to decide whether to pass the request.
+    async def on_list_tools(req: ListToolsRequest) -> ListToolsResult:
+        # mcp 1.x passes None when its server refreshes its own tool cache.
+        if req is None:  # pyright: ignore[reportUnnecessaryComparison]
+            return await list_tools(None, cache_refresh=True)
+        return await list_tools(req.params.cursor if req.params is not None else None)
+
+    @app.call_tool()
+    async def on_call_tool(name: str, arguments: dict[str, object]) -> CallToolResult:
+        client_params = app.request_context.session.client_params
+        return await call_tool(name, arguments, client_params.clientInfo if client_params is not None else None)
+
+    if os.environ.get('MCP_FAKE_APP_ERROR_CALL'):
+        # The call_tool decorator turns handler exceptions into isError results, so
+        # putting a JSON-RPC error code on the wire needs the raw handler.
+        async def failing_call(req: CallToolRequest) -> ServerResult:
+            raise mcp_error(CONNECTION_CLOSED, 'application-level failure')
+
+        app.request_handlers[CallToolRequest] = failing_call
+
+    if os.environ.get('MCP_FAKE_NO_TOOLS'):
+        # Without these handlers the server neither advertises tools nor answers tools/list.
+        del app.request_handlers[ListToolsRequest]
+        del app.request_handlers[CallToolRequest]
+
+        @app.list_resources()
+        async def list_resources() -> list[object]:
+            return []
+
+    return app
+
+
+app: Any = build_v2_server() if MCP_V2 else build_v1_server()
+
+
+def initialize_reply(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': {
+            'protocolVersion': message['params']['protocolVersion'],
+            'capabilities': {'tools': {}},
+            'serverInfo': {'name': 'fake-server', 'version': '0'},
+        },
+    }
+
+
+def reply_with_empty_results() -> None:
+    """Answer every request after initialize with an empty result.
+
+    An empty result is valid JSON-RPC but lacks the fields tools/list and
+    tools/call require. Written by hand because mcp 2's server validates what a
+    handler returns before it reaches the wire.
+    """
+    for line in sys.stdin.buffer:
+        message = json.loads(line)
+        if 'id' not in message or 'method' not in message:
+            continue
+        reply = (
+            initialize_reply(message)
+            if message['method'] == 'initialize'
+            else {
+                'jsonrpc': '2.0',
+                'id': message['id'],
+                'result': {},
+            }
+        )
+        os.write(1, (json.dumps(reply) + '\n').encode())
 
 
 def close_stdin_after_handshake(marker: str) -> None:
@@ -189,16 +291,7 @@ def close_stdin_after_handshake(marker: str) -> None:
     while True:
         message = json.loads(sys.stdin.buffer.readline())
         if message.get('method') == 'initialize':
-            reply = {
-                'jsonrpc': '2.0',
-                'id': message['id'],
-                'result': {
-                    'protocolVersion': message['params']['protocolVersion'],
-                    'capabilities': {'tools': {}},
-                    'serverInfo': {'name': 'fake-server', 'version': '0'},
-                },
-            }
-            os.write(1, (json.dumps(reply) + '\n').encode())
+            os.write(1, (json.dumps(initialize_reply(message)) + '\n').encode())
         elif message.get('method') == 'notifications/initialized':
             break
     os.close(0)
@@ -214,6 +307,9 @@ async def main() -> None:
     pid_file = os.environ.get('MCP_FAKE_PID_FILE')
     if pid_file:
         write_marker(pid_file, str(os.getpid()))
+    if os.environ.get('MCP_FAKE_MALFORMED_REPLY'):
+        reply_with_empty_results()
+        return
     close_stdin_marker = os.environ.get('MCP_FAKE_CLOSE_STDIN')
     if close_stdin_marker:
         close_stdin_after_handshake(close_stdin_marker)

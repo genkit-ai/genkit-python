@@ -30,7 +30,6 @@ from typing import Any, Generic, TypeVar, cast
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
     INTERNAL_ERROR,
@@ -39,6 +38,7 @@ from mcp.types import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     CallToolResult,
+    ErrorData,
     Implementation,
     PaginatedRequestParams,
     Tool as McpTool,
@@ -46,6 +46,7 @@ from mcp.types import (
 
 from genkit import get_logger
 from genkit.plugin_api import StatusName
+from genkit_mcp._compat import REQUEST_TIMEOUT, McpError, error_data, field, read_timeout, server_capabilities
 from genkit_mcp._config import McpStdioServerConfig
 from genkit_mcp._errors import (
     _ClientError,
@@ -81,9 +82,6 @@ _MAX_TOOL_PAGES = 1000
 DEFAULT_REQUEST_TIMEOUT_MILLIS = 60_000
 """How long one MCP request may take before the SDK fails it."""
 
-_REQUEST_TIMEOUT = 408
-"""The code on the ``McpError`` the SDK raises when a request outlives its read timeout."""
-
 _SERVER_ERROR_STATUS: dict[int, StatusName] = {
     INVALID_PARAMS: 'INVALID_ARGUMENT',
     METHOD_NOT_FOUND: 'UNIMPLEMENTED',
@@ -105,7 +103,8 @@ _CLOSE_GRACE_SECONDS = 6.0
 """How long ``close`` lets the SDK's stdio shutdown run before it kills the server outright.
 
 The SDK waits two seconds for the server to exit on stdin EOF, then two more
-after SIGTERM to the process group before it sends SIGKILL.
+after SIGTERM to the process group before it sends SIGKILL. mcp 2 shields that
+shutdown and bounds every wait in it, so there this deadline cannot cut it short.
 """
 
 
@@ -157,12 +156,14 @@ async def _transport_is_dead(session: ClientSession, error: Exception) -> bool:
     """
     if isinstance(error, _TRANSPORT_ERRORS):
         return True
-    if not isinstance(error, McpError) or error.error.code != CONNECTION_CLOSED:
+    reply = error_data(error)
+    if reply is None or reply.code != CONNECTION_CLOSED:
         return False
     try:
         await asyncio.wait_for(session.send_ping(), timeout=_LIVENESS_PROBE_SECONDS)
     except McpError as probe:
-        return probe.error.code == CONNECTION_CLOSED
+        probe_reply = error_data(probe)
+        return probe_reply is not None and probe_reply.code == CONNECTION_CLOSED
     except asyncio.TimeoutError:
         return False
     except Exception:
@@ -172,7 +173,8 @@ async def _transport_is_dead(session: ClientSession, error: Exception) -> bool:
 
 def _timed_out(error: Exception) -> bool:
     """Report whether the SDK gave up waiting for the server to answer a request."""
-    return isinstance(error, McpError) and error.error.code == _REQUEST_TIMEOUT
+    reply = error_data(error)
+    return reply is not None and reply.code == REQUEST_TIMEOUT
 
 
 def _transport_cause(error: Exception) -> Exception:
@@ -237,7 +239,7 @@ async def _call_tool(
         _ToolResultError: If the result violates the tool's declared output schema.
     """
     try:
-        return await session.call_tool(name, arguments, meta=meta)
+        return await session.call_tool(name, arguments, meta=cast(Any, meta))
     except RuntimeError as error:
         message = str(error)
         if any(marker in message for marker in _OUTPUT_SCHEMA_VIOLATIONS):
@@ -334,7 +336,7 @@ class McpConnection:
         """
 
         async def list_all(session: ClientSession) -> list[McpTool]:
-            capabilities = session.get_server_capabilities()
+            capabilities = server_capabilities(session)
             if capabilities is None or capabilities.tools is None:
                 return []
             tools: list[McpTool] = []
@@ -345,7 +347,7 @@ class McpConnection:
                     params=PaginatedRequestParams(cursor=cursor) if cursor is not None else None
                 )
                 tools.extend(result.tools)
-                cursor = result.nextCursor
+                cursor = field(result, 'next_cursor')
                 if not cursor:
                     return tools
                 if cursor in seen:
@@ -470,7 +472,7 @@ class McpConnection:
                 ``_CLOSE_GRACE_SECONDS``.
             stop: Cancelled by ``close`` to end the session's work.
         """
-        handshake_failure: McpError | None = None
+        handshake_failure: Exception | None = None
         try:
             parameters = StdioServerParameters(
                 command=self._config.command,
@@ -486,10 +488,10 @@ class McpConnection:
                     async with ClientSession(
                         read_stream,
                         write_stream,
-                        read_timeout_seconds=self._request_timeout,
+                        read_timeout_seconds=read_timeout(self._request_timeout),
                         client_info=_CLIENT_INFO,
                     ) as session:
-                        # The SDK's stdio shutdown is not shielded, so no scope around it may be cancelled.
+                        # mcp 1.x does not shield its stdio shutdown, so no scope around it may be cancelled.
                         with stop:
                             try:
                                 await session.initialize()
@@ -508,21 +510,33 @@ class McpConnection:
                 self._settle(None)
                 raise
             cause = handshake_failure if handshake_failure is not None else _transport_cause(error)
-            # A rendered traceback would print frame locals, and those hold the server's env.
-            named = {'client': self._name} if self._host is None else {'server': self._name, 'host': self._host}
-            logger.warning(
-                'MCP connection ended',
-                **named,
-                command=self._config.command,
-                error=type(error).__name__,
-                cause=repr(cause),
-            )
+            self._log_ended(error, cause)
             self._settle(cause)
+        else:
+            # mcp 2 reports a dead transport to the request that hit it rather than
+            # raising it out of the transport, so ``_execute`` settles and stops the
+            # serve loop, and the owner unwinds without an exception of its own.
+            if self._failure is not None:
+                self._log_ended(self._failure, self._failure)
         finally:
             # anyio cancel scopes inside the SDK can absorb whatever ended the
             # serve loop, so this is the only settlement guaranteed to run.
             self._settle(None)
             self._ready.set()
+
+    def _log_ended(self, error: Exception, cause: Exception) -> None:
+        """Log why the session ended, by type and repr only.
+
+        A rendered traceback would print frame locals, and those hold the server's env.
+        """
+        named = {'client': self._name} if self._host is None else {'server': self._name, 'host': self._host}
+        logger.warning(
+            'MCP connection ended',
+            **named,
+            command=self._config.command,
+            error=type(error).__name__,
+            cause=repr(cause),
+        )
 
     async def _serve(self, session: ClientSession) -> None:
         """Start each queued operation as a child task until the transport dies."""
@@ -627,8 +641,9 @@ class McpConnection:
         """Build the error reported for one operation that failed while the server stayed reachable."""
         if _timed_out(error):
             return self._timed_out_error(error)
-        if isinstance(error, McpError):
-            return self._server_error(error)
+        reply = error_data(error)
+        if reply is not None:
+            return self._server_error(error, reply)
         if isinstance(error, _ClientError):
             return error
         return self._protocol_error(error)
@@ -639,15 +654,15 @@ class McpConnection:
         error.__cause__ = failure
         return error
 
-    def _server_error(self, reply: McpError) -> _ServerError:
+    def _server_error(self, failure: Exception, reply: ErrorData) -> _ServerError:
         """Build the error reported when the server answered one request with a JSON-RPC error."""
-        code = reply.error.code
+        code = reply.code
         error = _ServerError(
-            f'MCP request to {self._target} failed with error {code}: {reply.error.message}',
+            f'MCP request to {self._target} failed with error {code}: {reply.message}',
             status=_SERVER_ERROR_STATUS.get(code, 'UNKNOWN'),
-            cause=reply,
+            cause=failure,
         )
-        error.__cause__ = reply
+        error.__cause__ = failure
         return error
 
     def _timed_out_error(self, timeout: Exception) -> _RequestTimeoutError:

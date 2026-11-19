@@ -33,6 +33,7 @@ from mcp.types import (
 )
 
 from genkit import MultipartToolResponse, Part, Tool, ToolContext, get_logger
+from genkit_mcp._compat import field
 from genkit_mcp._errors import _ToolResultError
 
 McpToolCall = Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[CallToolResult]]
@@ -133,7 +134,7 @@ def call_result_to_multipart(result: CallToolResult) -> MultipartToolResponse:
         The envelope ``generate`` expects from a ``tool`` action.
     """
     metadata = dict(result.meta) if result.meta is not None else None
-    if result.isError:
+    if field(result, 'is_error'):
         error_text = ''.join(block.text for block in result.content if isinstance(block, TextContent))
         return MultipartToolResponse(
             output={'error': error_text},
@@ -146,7 +147,7 @@ def call_result_to_multipart(result: CallToolResult) -> MultipartToolResponse:
         if isinstance(block, TextContent):
             text_output += block.text
         elif isinstance(block, (ImageContent, AudioContent)):
-            content.append(_media_part(block.mimeType, block.data))
+            content.append(_media_part(field(block, 'mime_type'), block.data))
         elif isinstance(block, EmbeddedResource):
             resource = block.resource
             if isinstance(resource, TextResourceContents):
@@ -154,9 +155,9 @@ def call_result_to_multipart(result: CallToolResult) -> MultipartToolResponse:
                     text_output += '\n\n'
                 text_output += f'Resource ({resource.uri}):\n{resource.text}'
             elif isinstance(resource, BlobResourceContents):
-                content.append(_media_part(resource.mimeType or 'application/octet-stream', resource.blob))
+                content.append(_media_part(field(resource, 'mime_type') or 'application/octet-stream', resource.blob))
 
-    output: object | None = result.structuredContent
+    output: object | None = field(result, 'structured_content')
     if output is None and text_output:
         output = _text_output(text_output)
     return MultipartToolResponse(
@@ -228,17 +229,18 @@ def mcp_tool_to_action(
         try:
             result = await call(tool.name, input, meta)
         except _ToolResultError as error:
-            result = CallToolResult(
-                content=[TextContent(type='text', text=error.message)],
-                isError=True,
-            )
+            # Validated from wire-shaped data: mcp 1.x would keep an ``is_error`` keyword as an unknown extra.
+            result = CallToolResult.model_validate({
+                'content': [TextContent(type='text', text=error.message)],
+                'isError': True,
+            })
         return call_result_to_multipart(result)
 
     action: Tool = Tool(
         handler,
         name=tool_name,
         description=tool.description or '',
-        input_schema=tool.inputSchema,
+        input_schema=field(tool, 'input_schema'),
     )
     action.metadata['name'] = action.name
     action.metadata['mcp'] = {'prefix': prefix, 'tool': tool.name, '_meta': mcp_meta}
@@ -301,6 +303,6 @@ def mcp_tools_to_handles(
     by_name = {mcp_tool_name(prefix, tool.name): tool for tool in tools}
     handles = mcp_tools_to_actions(tools, prefix, call)
     for handle in handles:
-        output_schema = by_name[handle.name].outputSchema
+        output_schema = field(by_name[handle.name], 'output_schema')
         handle.model_output_schema = dict(output_schema) if output_schema is not None else None
     return handles

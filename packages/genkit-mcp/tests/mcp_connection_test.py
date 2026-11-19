@@ -26,6 +26,7 @@ import anyio
 import pytest
 import structlog
 from genkit_mcp import _connection
+from genkit_mcp._compat import REQUEST_TIMEOUT, McpError, error_data, read_timeout
 from genkit_mcp._config import McpStdioServerConfig
 from genkit_mcp._connection import McpConnection, _call_tool, _ConnectionState, _Request
 from genkit_mcp._errors import (
@@ -38,7 +39,6 @@ from genkit_mcp._errors import (
     _ToolResultError,
 )
 from mcp import ClientSession
-from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
     INTERNAL_ERROR,
@@ -77,6 +77,32 @@ LIMIT = 15
 
 # Module level, so no test frame's locals can put it into a rendered traceback.
 SECRET = 'genkit-mcp-redaction-canary-7f3a'
+
+
+MCP_V2 = int(metadata.version('mcp').split('.')[0]) >= 2
+
+REQUESTS_ARE_CANCELLED_ON_A_BROKEN_STDIN = pytest.mark.skipif(
+    MCP_V2, reason='mcp 2 fails the request with CONNECTION_CLOSED instead of cancelling it before the transport error'
+)
+
+
+def is_broken_stdin(error: BaseException | None) -> bool:
+    """Report whether ``error`` is how the SDK reports a write to a closed stdin.
+
+    mcp 1.x raises the write's ``BrokenResourceError``. mcp 2 closes the read side
+    instead, so the request fails with ``CONNECTION_CLOSED``.
+    """
+    if not MCP_V2:
+        return isinstance(error, anyio.BrokenResourceError)
+    reply = error_data(error) if error is not None else None
+    return reply is not None and reply.code == CONNECTION_CLOSED
+
+
+def mcp_error(code: int, message: str) -> Exception:
+    """Build the SDK's JSON-RPC error. mcp 2 takes the code and message, mcp 1.x an ``ErrorData``."""
+    data = ErrorData(code=code, message=message)
+    from_error_data = getattr(McpError, 'from_error_data', None)
+    return from_error_data(data) if from_error_data is not None else McpError(data)
 
 
 def config(tmp_path: Path, pid_file: Path | None = None, **env: str) -> McpStdioServerConfig:
@@ -370,7 +396,8 @@ async def test_close_kills_a_server_whose_shutdown_overruns_the_grace(
     started = time.monotonic()
     await asyncio.wait_for(connection.close(), timeout=LIMIT)
     # The SDK alone waits two seconds for a server that never reads its stdin.
-    assert time.monotonic() - started < 1.5
+    # mcp 2 shields that wait, so there close takes the SDK's own two seconds.
+    assert time.monotonic() - started < (3.5 if MCP_V2 else 1.5)
     assert not is_running(pid)
     with pytest.raises(_ConnectionClosedError, match='closed'):
         await asyncio.wait_for(waiter, timeout=LIMIT)
@@ -529,7 +556,7 @@ async def test_a_caller_cut_off_by_a_broken_stdin_carries_the_transport_error(tm
 
         with pytest.raises(_ConnectionFailedError, match='failed') as failure:
             await asyncio.wait_for(connection.call_tool('echo', {}), timeout=LIMIT)
-        assert isinstance(failure.value.__cause__, anyio.BrokenResourceError)
+        assert is_broken_stdin(failure.value.__cause__)
 
         await settle(owner)
         with pytest.raises(_ConnectionFailedError, match='failed') as later:
@@ -539,6 +566,7 @@ async def test_a_caller_cut_off_by_a_broken_stdin_carries_the_transport_error(tm
         await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
 
+@REQUESTS_ARE_CANCELLED_ON_A_BROKEN_STDIN
 @pytest.mark.asyncio
 async def test_a_caller_arriving_while_the_owner_unwinds_waits_for_the_transport_error(tmp_path: Path) -> None:
     marker = tmp_path / 'stdin.closed'
@@ -572,6 +600,7 @@ async def test_a_caller_arriving_while_the_owner_unwinds_waits_for_the_transport
         await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
 
+@REQUESTS_ARE_CANCELLED_ON_A_BROKEN_STDIN
 @pytest.mark.asyncio
 async def test_close_while_the_owner_unwinds_releases_a_cut_off_caller_as_closed(tmp_path: Path) -> None:
     marker = tmp_path / 'stdin.closed'
@@ -622,9 +651,9 @@ async def test_a_transport_failure_is_logged_without_the_server_env(tmp_path: Pa
     logged = output.getvalue()
     assert 'MCP connection ended' in logged
     assert 'client=fake' in logged
-    assert 'BrokenResourceError' in logged
+    assert type(failure.value.__cause__).__name__ in logged
     assert SECRET not in logged
-    assert isinstance(failure.value.__cause__, anyio.BrokenResourceError)
+    assert is_broken_stdin(failure.value.__cause__)
     assert SECRET not in rendered_for_logs(failure.value)
 
 
@@ -729,7 +758,7 @@ async def test_a_server_error_code_does_not_poison_a_live_connection(tmp_path: P
     ],
 )
 async def test_a_server_error_reply_reports_the_status_for_its_code(tmp_path: Path, code: int, status: str) -> None:
-    reply = McpError(ErrorData(code=code, message='refused'))
+    reply = mcp_error(code, 'refused')
 
     error = McpConnection('fake', config(tmp_path))._answered_error(reply)
 
@@ -862,8 +891,8 @@ def leaf_causes(error: BaseException | None) -> list[BaseException]:
     return [leaf for child in nested for leaf in leaf_causes(child)]
 
 
-def closed_mcp_error(message: str = 'connection closed') -> McpError:
-    return McpError(ErrorData(code=CONNECTION_CLOSED, message=message))
+def closed_mcp_error(message: str = 'connection closed') -> Exception:
+    return mcp_error(CONNECTION_CLOSED, message)
 
 
 @pytest.mark.asyncio
@@ -874,8 +903,8 @@ def closed_mcp_error(message: str = 'connection closed') -> McpError:
         (anyio.ClosedResourceError(), True),
         (anyio.EndOfStream(), True),
         (RuntimeError('unrelated'), False),
-        (McpError(ErrorData(code=-32601, message='method not found')), False),
-        (McpError(ErrorData(code=408, message='Timed out while waiting for response')), False),
+        (mcp_error(-32601, 'method not found'), False),
+        (mcp_error(REQUEST_TIMEOUT, 'Timed out while waiting for response'), False),
     ],
 )
 async def test_transport_death_is_decided_without_a_probe(error: Exception, dead: bool) -> None:
@@ -889,7 +918,7 @@ async def test_transport_death_is_decided_without_a_probe(error: Exception, dead
     ('outcome', 'dead'),
     [
         (None, False),
-        (McpError(ErrorData(code=-32601, message='method not found')), False),
+        (mcp_error(-32601, 'method not found'), False),
         (closed_mcp_error(), True),
         (anyio.ClosedResourceError(), True),
     ],
@@ -1119,17 +1148,18 @@ async def test_a_request_timeout_fails_that_call_alone(tmp_path: Path) -> None:
 
     # The session-wide timeout also bounds the handshake, which takes seconds on a
     # loaded machine, so the stalled call carries its own. The SDK enforces both
-    # with the same deadline and raises the same 408.
+    # with the same deadline and raises the same REQUEST_TIMEOUT.
     async def stall(session: ClientSession) -> CallToolResult:
-        return await session.call_tool('stall', {}, read_timeout_seconds=timedelta(milliseconds=100))
+        return await session.call_tool('stall', {}, read_timeout_seconds=read_timeout(timedelta(milliseconds=100)))
 
     try:
         await asyncio.wait_for(connection.list_tools(), timeout=LIMIT)
         with pytest.raises(_RequestTimeoutError, match="MCP request to 'fake' .* timed out") as timed_out:
             await asyncio.wait_for(connection._request(stall), timeout=LIMIT)
         assert timed_out.value.status == 'DEADLINE_EXCEEDED'
-        assert isinstance(timed_out.value.__cause__, McpError)
-        assert timed_out.value.__cause__.error.code == 408
+        reply = error_data(timed_out.value.__cause__)
+        assert reply is not None
+        assert reply.code == REQUEST_TIMEOUT
         assert attached_cause(timed_out.value) is timed_out.value.__cause__
         assert str(timed_out.value.__cause__) in str(timed_out.value)
 
@@ -1150,7 +1180,7 @@ async def test_a_handshake_which_never_answers_gives_up(tmp_path: Path) -> None:
         await asyncio.wait_for(connection.list_tools(), timeout=LIMIT)
 
     causes = leaf_causes(failure.value.__cause__)
-    assert [error.error.code for error in causes if isinstance(error, McpError)] == [408]
+    assert [reply.code for reply in map(error_data, causes) if reply is not None] == [REQUEST_TIMEOUT]
     await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
 
@@ -1165,8 +1195,9 @@ async def test_a_handshake_answered_after_the_timeout_still_reports_the_timeout(
     with pytest.raises(_ConnectionFailedError, match='failed') as failure:
         await asyncio.wait_for(connection.list_tools(), timeout=LIMIT)
 
-    assert isinstance(failure.value.__cause__, McpError)
-    assert failure.value.__cause__.error.code == 408
+    reply = error_data(failure.value.__cause__)
+    assert reply is not None
+    assert reply.code == REQUEST_TIMEOUT
     await asyncio.wait_for(connection.close(), timeout=LIMIT)
 
 

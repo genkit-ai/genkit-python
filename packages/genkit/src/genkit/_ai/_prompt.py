@@ -1400,6 +1400,20 @@ def registry_definition_key(name: str, variant: str | None = None, ns: str | Non
     return '/'.join(parts)
 
 
+def prompt_name_and_variant(key: str, metadata: Mapping[str, object]) -> tuple[str, str | None]:
+    """Recover ``(name, variant)`` for ``ai.prompt(...)`` from a prompt action's metadata."""
+    raw = metadata.get('prompt')
+    if not isinstance(raw, dict):
+        return key, None
+    block: dict[str, object] = cast(dict[str, object], raw)
+    name = block.get('name')
+    raw_variant = block.get('variant')
+    variant = raw_variant if isinstance(raw_variant, str) and raw_variant else None
+    if isinstance(name, str) and registry_definition_key(name, variant) == key:
+        return name, variant
+    return key, None
+
+
 def registry_lookup_key(name: str, variant: str | None = None, ns: str | None = None) -> str:
     """Generate a registry lookup key for a prompt.
 

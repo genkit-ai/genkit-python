@@ -79,8 +79,8 @@ from genkit._ai._prompt import (
     define_schema,
     load_prompt_folder,
     parts_from_prompt,
+    prompt_name_and_variant,
     register_prompt_actions,
-    registry_definition_key,
     to_generate_options,
 )
 from genkit._ai._tools import define_interrupt
@@ -769,15 +769,8 @@ class Genkit:
         actions = await self._registry.resolve_actions_by_kind(ActionKind.PROMPT)
         prompts: list[Prompt[Any, Any]] = []
         for key in sorted(actions):
-            block = actions[key].metadata.get('prompt')
-            block = cast(dict[str, object], block) if isinstance(block, dict) else {}
-            name = block.get('name')
-            variant = block.get('variant')
-            variant = variant if isinstance(variant, str) and variant else None
-            if isinstance(name, str) and registry_definition_key(name, variant) == key:
-                prompts.append(self.prompt(name, variant=variant))
-            else:
-                prompts.append(self.prompt(key))
+            name, variant = prompt_name_and_variant(key, actions[key].metadata)
+            prompts.append(self.prompt(name, variant=variant))
         return prompts
 
     def lookup_value(self, *, kind: str, name: str) -> object | None:

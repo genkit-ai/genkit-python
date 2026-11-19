@@ -28,9 +28,8 @@ There is one path. `create_release` refuses to run unless every step below was f
 1. `bin/bump_version X.Y.Z` on a branch from main. It bumps every `pyproject.toml` and `uv.lock`.
 2. Open a PR to main titled `chore: release vX.Y.Z` or `chore(py): release Python SDK vX.Y.Z`. Its description is the release notes, published word for word.
 3. Get it approved and merged.
-4. `bin/create_release X.Y.Z <PR_NUMBER> --dry-run`, then without `--dry-run`.
-5. Approve the publish at <https://github.com/genkit-ai/genkit-python/actions/workflows/publish_python.yml>. The tag push already started it; don't run it by hand.
-6. `pip index versions genkit` shows X.Y.Z.
+4. `bin/create_release X.Y.Z <PR_NUMBER> --dry-run`, then without `--dry-run`. The tag push starts the [publish workflow](https://github.com/genkit-ai/genkit-python/actions/workflows/publish_python.yml), which uploads to PyPI with no approval step. Don't run it by hand.
+5. `pip index versions genkit` shows X.Y.Z.
 
 `create_release` runs every check before it changes anything and prints a fix for each failure:
 

@@ -181,5 +181,5 @@ fi
 echo "  ✓ Published https://github.com/$REPO/releases/tag/$TAG"
 
 echo ""
-echo "Next: approve the PyPI publish at https://github.com/$REPO/actions/workflows/publish_python.yml"
-echo "Then verify with: pip index versions genkit"
+echo "The tag push started the PyPI publish: https://github.com/$REPO/actions/workflows/publish_python.yml"
+echo "Verify with: pip index versions genkit"

@@ -118,5 +118,18 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
-          pip install --retries 10 "genkit==${VERSION}"
+          # PyPI's simple index lags the upload by up to a few minutes, and
+          # pip's --retries only covers network errors, not "no matching
+          # distribution". Poll until the new version resolves.
+          for attempt in $(seq 1 20); do
+            if pip install --no-cache-dir "genkit==${VERSION}"; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "genkit==${VERSION} still not installable after 10 minutes" >&2
+              exit 1
+            fi
+            echo "genkit==${VERSION} not on the index yet, retrying in 30s ($attempt/20)"
+            sleep 30
+          done
           python -c "from genkit import Genkit; Genkit(); print('ok')"

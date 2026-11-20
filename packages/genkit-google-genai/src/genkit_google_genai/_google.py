@@ -1151,7 +1151,8 @@ class VertexAI(GoogleFamilyRefs, Plugin):
             location: Location of the Google Cloud project. Accepts regions
                 (e.g. 'us-central1'), multi-regions ('us', 'eu'), or 'global'.
                 Falls back to the GOOGLE_CLOUD_LOCATION or GCLOUD_LOCATION
-                environment variable, then 'us-central1'.
+                environment variable, then to 'us-central1', or to 'global' in
+                Express Mode (an api_key without a project).
             api_key: The API key for authenticating with the Google AI service.
                 If not provided, it defaults to reading from the 'GEMINI_API_KEY'
                 environment variable.
@@ -1214,11 +1215,15 @@ class VertexAI(GoogleFamilyRefs, Plugin):
         # Store project and location on the plugin for evaluator registration
         # and multi-region routing. This avoids reaching into client internals.
         self._project = project or os.getenv(const.GCLOUD_PROJECT) or os.getenv(const.GOOGLE_CLOUD_PROJECT)
-        self._location = (
-            location
-            or os.getenv(const.GOOGLE_CLOUD_LOCATION)
-            or os.getenv(const.GCLOUD_LOCATION)
-            or const.DEFAULT_REGION
+        explicit_location = location or os.getenv(const.GOOGLE_CLOUD_LOCATION) or os.getenv(const.GCLOUD_LOCATION)
+        # The SDK falls back to GOOGLE_API_KEY (then GEMINI_API_KEY) when no api_key is passed, so Express
+        # Mode has to be detected from that same fallback, in the same order.
+        effective_api_key = api_key or os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        # Express Mode (an API key without a project) is served from the global endpoint: the regional
+        # default does not host every current model, so the documented setup without a location answers
+        # NOT_FOUND there. The Go and JS plugins use the global endpoint for Express Mode as well.
+        self._location = explicit_location or (
+            const.GLOBAL_LOCATION if effective_api_key and not self._project else const.DEFAULT_REGION
         )
 
         opts = _plugin_http_options(

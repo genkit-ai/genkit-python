@@ -31,6 +31,10 @@ from genkit._core._action import (
     Action,
     ActionContext,
     ActionKind,
+    CtxDefaultInputFn,
+    DefaultedAction,
+    DefaultInputCtxFn,
+    DefaultInputFn,
     get_func_description,
     resolve_type_hints,
 )
@@ -49,7 +53,8 @@ from genkit._core._schema import to_json_schema
 from genkit._core._telemetry._instrumentation import set_custom_metadata_attributes
 from genkit._core._typing import MultipartToolResponse as MultipartToolResponseData, ToolDefinition
 
-InputT = TypeVar('InputT', default=Any)
+# Contravariant, like Action's InputT.
+InputT = TypeVar('InputT', default=Any, contravariant=True)
 OutputT = TypeVar('OutputT', default=Any)
 ChunkT = TypeVar('ChunkT', default=Any)
 
@@ -268,10 +273,33 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         input_schema: type[BaseModel] | dict[str, object] | None = None,
     ) -> None: ...
 
+    # The defaulted-input shapes are self-typed to DefaultedTool, so they
+    # apply when define_tool builds one. Tool(fn) itself stays a Tool and
+    # skips them. `(x = ..., ctx = None)` also fits (input, ctx); catch it first.
+    @overload
+    def __init__(
+        self: DefaultedTool[_I, _O, _C],
+        func: DefaultInputCtxFn[ToolContext[_C], _I, _O],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
     @overload
     def __init__(
         self: Tool[_I, _O, _C],
         func: Callable[[_I, ToolContext[_C]], Awaitable[_O]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: DefaultedTool[_I, _O, _C],
+        func: CtxDefaultInputFn[ToolContext[_C], _I, _O],
         *,
         name: str | None = None,
         description: str | None = None,
@@ -300,8 +328,18 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
 
     @overload
     def __init__(
-        self: Tool[Any, _O, _C],
+        self: Tool[None, _O, _C],
         func: Callable[[ToolContext[_C]], Awaitable[_O]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        input_schema: type[BaseModel] | dict[str, object] | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: DefaultedTool[_I, _O, Any],
+        func: DefaultInputFn[_I, _O],
         *,
         name: str | None = None,
         description: str | None = None,
@@ -410,7 +448,7 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         Shares the action's function and metadata; there is no ``tool.v2`` companion.
         """
         if isinstance(action, Tool):
-            return action
+            return cast(Tool[InputT, OutputT, ChunkT], action)  # pyrefly: ignore[redundant-cast] - ty needs it
         return _ActionTool(action)
 
     @property
@@ -461,6 +499,16 @@ class Tool(Action[InputT, OutputT, ChunkT, None]):
         output = await super()._invoke(input, ctx)
         as_multipart_tool_response(output, tool_name=self.name)
         return output
+
+
+class DefaultedTool(DefaultedAction[InputT, OutputT, ChunkT, None], Tool[InputT, OutputT, ChunkT]):
+    """A ``Tool`` whose function gives the input a default.
+
+    ``@ai.tool`` and ``define_tool`` return one for ``async def
+    check_allergens(dish: str = 'pad thai')``. ``await check_allergens()``
+    runs with the default; ``await check_allergens(None)`` is a type error.
+    It's still a ``Tool``, so a ``Tool[str, str]`` annotation accepts it.
+    """
 
 
 class _ActionTool(Tool[InputT, OutputT, ChunkT]):

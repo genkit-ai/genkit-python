@@ -5,13 +5,16 @@
 
 """define_model accepts ModelRequest / ModelRequest[Cfg] and rejects the rest."""
 
+import functools
 import sys
 import typing
-from typing import Annotated, Any, Optional, cast
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, Optional, TypeVar, cast
 
 import pytest
 import typing_extensions
 from pydantic import BaseModel
+from typing_extensions import ParamSpec
 
 from genkit import Genkit, Part
 from genkit._core._error import GenkitError
@@ -198,3 +201,81 @@ def test_arbitrary_class_rejected(ai: Genkit) -> None:
 
     with pytest.raises(GenkitError, match='must be annotated as ModelRequest'):
         ai.define_model(name='arbitrary', fn=fn)
+
+
+# --- context first ------------------------------------------------------------
+
+
+def test_ctx_first_union_with_none_rejected(ai: Genkit) -> None:
+    """The request check finds the request after the context: ``(ctx, req: ModelRequest[Cfg] | None)`` is rejected."""
+
+    async def fn(ctx: ModelContext, request: ModelRequest[Cfg] | None) -> ModelResponse:
+        return OK
+
+    with pytest.raises(GenkitError, match=r"Model 'ctx_union': the request parameter must be annotated") as exc:
+        ai.define_model(name='ctx_union', fn=fn)
+    assert 'ModelContext' not in str(exc.value)
+
+
+def test_ctx_first_dict_annotation_rejected(ai: Genkit) -> None:
+    """``(ctx, req: dict)`` is rejected the same as ``(req: dict, ctx)``."""
+
+    async def fn(ctx: ModelContext, request: dict) -> ModelResponse:
+        return OK
+
+    with pytest.raises(GenkitError, match='must be annotated as ModelRequest'):
+        ai.define_model(name='ctx_rawdict', fn=fn)
+
+
+# --- decorated model fns ------------------------------------------------------
+
+P = ParamSpec('P')
+R = TypeVar('R')
+
+
+def _timed_without_wraps(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        return await fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _timed(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    @functools.wraps(fn)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        return await fn(*args, **kwargs)
+
+    return wrapper
+
+
+def test_wrapper_without_functools_wraps_rejected(ai: Genkit) -> None:
+    """A decorator that drops the signature raises at definition instead of failing every generate()."""
+
+    @_timed_without_wraps
+    async def chef(request: ModelRequest[Cfg], ctx: ModelContext) -> ModelResponse:
+        return OK
+
+    with pytest.raises(TypeError, match=r"model 'timed' takes \*args, but Genkit passes only the input and context"):
+        ai.define_model(name='timed', fn=chef)
+
+
+@pytest.mark.asyncio
+async def test_wrapper_with_functools_wraps_runs(ai: Genkit) -> None:
+    """With functools.wraps the wrapper keeps the signature, so it defines and answers generate."""
+
+    @_timed
+    async def chef(request: ModelRequest[Cfg], ctx: ModelContext) -> ModelResponse:
+        return OK
+
+    ai.define_model(name='timed', fn=chef)
+
+    assert (await ai.generate(model='timed', prompt='hi')).text == 'ok'
+
+
+def test_no_parameters_still_allowed(ai: Genkit) -> None:
+    """A model fn with no parameters ignores the request; it still registers."""
+
+    async def fn() -> ModelResponse:
+        return OK
+
+    ai.define_model(name='no_params', fn=cast(Any, fn))

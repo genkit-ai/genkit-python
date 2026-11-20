@@ -6,6 +6,7 @@
 """Unit tests for ModelRef."""
 
 from dataclasses import FrozenInstanceError
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -45,11 +46,11 @@ def test_model_ref_with_custom_pydantic_schema() -> None:
     assert ref.config.top_p == 0.9
 
 
-def test_typed_ref_assignable_to_model_ref_base_model() -> None:
-    """A ref built with a plugin config class is still usable as ModelRef[BaseModel]."""
+def test_typed_ref_assignable_to_model_ref_any() -> None:
+    """A ref built with a plugin config class is still usable as ModelRef[Any]."""
     ref = ModelRef(name='echo', config_schema=CustomConfig)
-    as_base: ModelRef[BaseModel] = ref
-    assert as_base is ref
+    as_any: ModelRef[Any] = ref
+    assert as_any is ref
 
 
 def test_model_ref_with_bare_base_model_schema() -> None:

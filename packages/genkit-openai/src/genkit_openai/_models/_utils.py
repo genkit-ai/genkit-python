@@ -21,7 +21,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import httpx
 from openai import (
@@ -411,6 +411,149 @@ def _extract_media(request: ModelRequest) -> tuple[str, str]:
     return url, content_type
 
 
+# Where a reasoning part keeps the signature Mistral puts on a thinking chunk,
+# under the same key the Anthropic and Google plugins use for theirs.
+THOUGHT_SIGNATURE = 'thoughtSignature'
+
+# Marks a reasoning part read from a Mistral thinking chunk, so only those go
+# back to Mistral: a history can hold reasoning from other models, whose text
+# and signatures Mistral can't use. Part metadata, unlike the response that
+# carried it, stays with the part through a JSON round trip of the history.
+REASONING_SOURCE = 'reasoningSource'
+MISTRAL_SOURCE = 'mistral'
+
+
+def _mistral_reasoning(text: str, signature: str | None) -> Part:
+    metadata: dict[str, Any] = {REASONING_SOURCE: MISTRAL_SOURCE}
+    if signature is not None:
+        metadata[THOUGHT_SIGNATURE] = signature
+    return Part.from_reasoning(text, metadata=metadata)
+
+
+def _is_mistral_reasoning(part: Part) -> bool:
+    return part.reasoning is not None and (part.metadata or {}).get(REASONING_SOURCE) == MISTRAL_SOURCE
+
+
+def _signature(part: Part) -> str | None:
+    value = (part.metadata or {}).get(THOUGHT_SIGNATURE)
+    return value if isinstance(value, str) and value else None
+
+
+def reply_content(content: object) -> list[Part | str]:
+    """The reasoning and the text in a reply's ``content``, in the order they came.
+
+    OpenAI sends ``content`` as a string. Mistral sends a list of chunks
+    instead when it reasons (``reasoning_effort`` set), in full replies and in
+    streamed deltas alike: ``{'type': 'text', 'text': ...}`` for the answer and
+    ``{'type': 'thinking', 'thinking': [{'type': 'text', 'text': ...}],
+    'signature': ...}`` for reasoning. Other chunk types carry no text and are
+    skipped.
+
+    Args:
+        content: A message's or delta's ``content`` as the SDK parsed it.
+
+    Returns:
+        In chunk order: one reasoning part per thinking chunk with text or a
+        signature, each marked ``metadata['reasoningSource'] = 'mistral'`` and
+        holding its own chunk's signature in ``metadata['thoughtSignature']``;
+        and the text, one string per run of adjacent text chunks. Empty text is
+        left out, so a plain empty string gives an empty list.
+    """
+    if isinstance(content, str):
+        return [content] if content else []
+    if not isinstance(content, list):
+        return []
+    out: list[Part | str] = []
+    for chunk in cast(list[object], content):
+        if not isinstance(chunk, Mapping):
+            continue
+        chunk = cast(Mapping[str, object], chunk)
+        if chunk.get('type') == 'text' and isinstance(chunk.get('text'), str):
+            text = cast(str, chunk['text'])
+            if not text:
+                continue
+            if out and isinstance(out[-1], str):
+                out[-1] += text
+            else:
+                out.append(text)
+        elif chunk.get('type') == 'thinking' and isinstance(chunk.get('thinking'), list):
+            signature = chunk.get('signature')
+            signature = signature if isinstance(signature, str) and signature else None
+            thought: list[str] = []
+            for item in cast(list[object], chunk['thinking']):
+                if isinstance(item, Mapping):
+                    item = cast(Mapping[str, object], item)
+                    if item.get('type') == 'text' and isinstance(item.get('text'), str):
+                        thought.append(cast(str, item['text']))
+            if thought or signature is not None:
+                out.append(_mistral_reasoning(''.join(thought), signature))
+    return out
+
+
+def merge_streamed_reasoning(parts: list[Part]) -> list[Part]:
+    """Join a stream's Mistral reasoning fragments back into one part per thinking chunk.
+
+    A streamed thinking chunk arrives in many deltas, each read as its own
+    reasoning part, and its signature, if any, rides on its last fragment.
+    Replayed one part per fragment, the signature would be paired with a
+    piece of the text it signs. Runs of adjacent Mistral reasoning parts are
+    joined into one, and a fragment carrying a signature closes its part: the
+    next fragment starts a new one, so two signed thinking chunks stay two
+    parts, each with its own signature, as in a non-streamed reply. Other
+    parts are kept as they are.
+    """
+    merged: list[Part] = []
+    run: list[Part] = []
+
+    def flush(signature: str | None = None) -> None:
+        if run:
+            merged.append(_mistral_reasoning(''.join(p.reasoning or '' for p in run), signature))
+            run.clear()
+
+    for part in parts:
+        if _is_mistral_reasoning(part):
+            run.append(part)
+            if (signature := _signature(part)) is not None:
+                flush(signature)
+            continue
+        flush()
+        merged.append(part)
+    flush()
+    return merged
+
+
+def thinking_chunks(parts: list[Part]) -> list[dict[str, Any]]:
+    """Mistral ``thinking`` chunks replaying a model message's reasoning parts.
+
+    Mistral asks for the whole assistant message, reasoning included, on later
+    turns; stripping it degrades the answer. Each reasoning part goes back as
+    its own chunk, in order, with its own signature, so a signature is never
+    paired with text it didn't sign. Only parts read from Mistral's thinking
+    chunks (marked ``reasoningSource: 'mistral'``) go back; reasoning another
+    model left in the history is dropped, as it is for OpenAI. A part with
+    neither text nor a signature has nothing to send and is skipped.
+
+    Args:
+        parts: The message's parts.
+
+    Returns:
+        The chunks, empty when the message has no Mistral reasoning.
+    """
+    chunks: list[dict[str, Any]] = []
+    for part in parts:
+        if not _is_mistral_reasoning(part):
+            continue
+        text = part.reasoning or ''
+        signature = _signature(part)
+        if not text and signature is None:
+            continue
+        chunk: dict[str, Any] = {'type': 'thinking', 'thinking': [{'type': 'text', 'text': text}]}
+        if signature is not None:
+            chunk['signature'] = signature
+        chunks.append(chunk)
+    return chunks
+
+
 class DictMessageAdapter:
     """Adapter for dictionary-based chat message objects with OpenAI-compatible fields."""
 
@@ -549,7 +692,7 @@ class MessageConverter:
         return str(role)
 
     @classmethod
-    def to_openai(cls, message: Message) -> list[dict]:
+    def to_openai(cls, message: Message, *, replay_thinking: bool = False) -> list[dict]:
         """Converts an internal `Message` object to OpenAI-compatible chat messages.
 
         Handles text, media (images), tool requests, and tool responses.
@@ -561,6 +704,10 @@ class MessageConverter:
 
         Args:
             message: The internal `Message` instance.
+            replay_thinking: Send a model message's Mistral reasoning back as
+                leading ``thinking`` chunks in its content, one per reasoning
+                part. Off, reasoning is dropped, which is what OpenAI and
+                DeepSeek need.
 
         Returns:
             A list of OpenAI-compatible message dictionaries.
@@ -571,9 +718,8 @@ class MessageConverter:
         has_media = False
 
         for part in message.content:
-            # Reasoning must not be sent back in multi-turn context.
-            # DeepSeek's API rejects it, and assistant messages only
-            # replay text to the model.
+            # Reasoning is not replayed as text. DeepSeek's API rejects it;
+            # Mistral gets it back as a thinking chunk (replay_thinking).
             if part.reasoning is not None:
                 continue
 
@@ -628,14 +774,36 @@ class MessageConverter:
             })
 
         result.extend(tool_messages)
+        if replay_thinking and message.role == Role.MODEL:
+            cls._prepend_thinking(result, message)
         return result
+
+    @classmethod
+    def _prepend_thinking(cls, result: list[dict[str, Any]], message: Message) -> None:
+        """Put the message's reasoning, as thinking chunks, at the front of its first assistant message."""
+        chunks = thinking_chunks(message.content)
+        if not chunks:
+            return
+        role = cls._get_openai_role(message.role)
+        target = next((m for m in result if m.get('role') == role), None)
+        if target is None:
+            result.insert(0, {'role': role, 'content': chunks})
+            return
+        content = target.get('content')
+        if isinstance(content, str):
+            target['content'] = [*chunks, {'type': 'text', 'text': content}]
+        elif isinstance(content, list):
+            target['content'] = [*chunks, *content]
+        else:
+            target['content'] = chunks
 
     @classmethod
     def to_genkit(cls, message: ChatCompletionMessageAdapter) -> Message:
         """Converts an OpenAI-style message into a Genkit `Message` object.
 
-        Emits a reasoning part, a text part, and one tool request part per
-        tool call, in that order, for whichever of them the message carries.
+        Emits a reasoning part, the content's reasoning and text parts in the
+        order they came, and one tool request part per tool call, in that
+        order, for whichever of them the message carries.
 
         Args:
             message: A ChatCompletionMessageAdapter instance.
@@ -650,8 +818,8 @@ class MessageConverter:
         if reasoning:
             content.append(Part.from_reasoning(reasoning))
 
-        if message.content:
-            content.append(cls.text_part_to_genkit(message.content))
+        for item in reply_content(message.content):
+            content.append(cls.text_part_to_genkit(item) if isinstance(item, str) else item)
 
         for tool_call in message.tool_calls or []:
             content.append(cls.tool_call_to_genkit(tool_call, args_parser=json.loads))

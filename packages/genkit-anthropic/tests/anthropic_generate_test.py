@@ -28,7 +28,7 @@ import httpx
 import pytest
 from genkit_anthropic import Anthropic, AnthropicConfig
 
-from genkit import FinishReason, Genkit, GenkitError
+from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 from genkit.middleware import Middleware
 from genkit.plugin_api import ActionKind
 
@@ -110,6 +110,50 @@ def _genkit(
             Anthropic(api_key=api_key, base_url=base_url, client_options={'http_client': http_client, **client_options})
         ]
     )
+
+
+# --- system messages ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_sends_every_system_message_as_system() -> None:
+    """Every non-empty system message lands in `system`; none leak into `messages`."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    await ai.generate(
+        model=MODEL,
+        messages=[
+            Message(role=Role.SYSTEM, content=[Part.from_text('You are a sommelier.')]),
+            Message(role=Role.SYSTEM, content=[Part.from_text('')]),
+            Message(role=Role.USER, content=[Part.from_text('Pair a wine with salmon.')]),
+            Message(role=Role.MODEL, content=[Part.from_text('Try a Sancerre.')]),
+            Message(role=Role.SYSTEM, content=[Part.from_text('Answer in French.')]),
+        ],
+        prompt='And with steak?',
+    )
+
+    body = api.body()
+    assert body['system'] == 'You are a sommelier.\n\nAnswer in French.'
+    assert [m['role'] for m in body['messages']] == ['user', 'assistant', 'user']
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_omits_system_when_system_messages_are_empty() -> None:
+    """System messages with only empty text don't send a whitespace `system` field."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    await ai.generate(
+        model=MODEL,
+        messages=[
+            Message(role=Role.SYSTEM, content=[Part.from_text('')]),
+            Message(role=Role.SYSTEM, content=[Part.from_text('')]),
+        ],
+        prompt='hi',
+    )
+
+    assert 'system' not in api.body()
 
 
 # --- config keys --------------------------------------------------------------

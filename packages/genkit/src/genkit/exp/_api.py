@@ -102,6 +102,26 @@ class Genkit(StableGenkit):
             metadata=metadata,
         )
 
+    # No config: any ref, including one picked between providers.
+    @overload
+    def define_agent(
+        self,
+        name: str,
+        *,
+        model: ModelRef[Any] | Action | str | None = None,
+        system: str | list[Part] | None = None,
+        tools: Sequence[str | Tool] | None = None,
+        use: Sequence[Middleware] | None = None,
+        config: None = None,
+        max_turns: int | None = None,
+        description: str | None = None,
+        metadata: dict[str, object] | None = None,
+        store: SessionStore[StateT] | None = None,
+        state_transform: StateTransform | None = None,
+        chunk_transform: ChunkTransform | None = None,
+        state_schema: type[StateT] | None = None,
+    ) -> Agent[StateT]: ...
+
     @overload
     def define_agent(
         self,
@@ -130,7 +150,7 @@ class Genkit(StableGenkit):
         system: str | list[Part] | None = None,
         tools: Sequence[str | Tool] | None = None,
         use: Sequence[Middleware] | None = None,
-        config: ModelRefConfigT | Mapping[str, Any] | None = None,
+        config: ModelRefConfigT | Mapping[str, Any] | None,
         max_turns: int | None = None,
         description: str | None = None,
         metadata: dict[str, object] | None = None,

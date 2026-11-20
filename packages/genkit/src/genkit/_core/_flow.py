@@ -28,10 +28,15 @@ from genkit._core._action import (
     Action,
     ActionKind,
     ChunkT,
+    CtxDefaultInputFn,
+    DefaultedAction,
+    DefaultInputCtxFn,
+    DefaultInputFn,
     FlowContext,
     InputT,
     OutputT,
     get_func_description,
+    input_has_default,
 )
 from genkit._core._registry import Registry
 
@@ -58,10 +63,31 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         description: str | None = None,
     ) -> None: ...
 
+    # The defaulted-input shapes are self-typed to DefaultedFlow, so they
+    # apply when define_flow builds one. Flow(fn) itself stays a Flow and
+    # skips them. `(x = ..., ctx = None)` also fits (input, ctx); catch it first.
+    @overload
+    def __init__(
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT],
+        func: DefaultInputCtxFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
     @overload
     def __init__(
         self,
         func: Callable[[InputT, FlowContext[ChunkT]], Awaitable[OutputT]],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT],
+        func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
         *,
         name: str | None = None,
         description: str | None = None,
@@ -87,6 +113,15 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
 
     @overload
     def __init__(
+        self: DefaultedFlow[_FlowInputT, _FlowOutputT, Any],
+        func: DefaultInputFn[_FlowInputT, _FlowOutputT],
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
         self,
         func: Callable[[InputT], Awaitable[OutputT]],
         *,
@@ -98,15 +133,6 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
     def __init__(
         self,
         func: Callable[[], Awaitable[OutputT]],
-        *,
-        name: str | None = None,
-        description: str | None = None,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        func: Callable[..., Awaitable[OutputT]],
         *,
         name: str | None = None,
         description: str | None = None,
@@ -141,6 +167,16 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
         )
 
 
+class DefaultedFlow(DefaultedAction[InputT, OutputT, ChunkT, None], Flow[InputT, OutputT, ChunkT]):
+    """A ``Flow`` whose function gives the input a default.
+
+    ``@ai.flow`` and ``define_flow`` return one for ``async def
+    todays_special(cuisine: str = 'italian')``. ``await todays_special()``
+    runs with the default; ``await todays_special(None)`` is a type error.
+    It's still a ``Flow``, so a ``Flow[str, str]`` annotation accepts it.
+    """
+
+
 # Same order as _FlowDecorator.__call__; the `object` shapes catch
 # `(x: Any)` / `(x: object)` before the ctx-only shape can.
 @overload
@@ -155,10 +191,28 @@ def define_flow(
 @overload
 def define_flow(
     registry: Registry,
+    func: DefaultInputCtxFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
     func: Callable[[_FlowInputT, FlowContext[_FlowChunkT]], Awaitable[_FlowOutputT]],
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[_FlowInputT, _FlowOutputT, _FlowChunkT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
+    func: CtxDefaultInputFn[FlowContext[_FlowChunkT], _FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT, _FlowChunkT]: ...
 
 
 @overload
@@ -191,6 +245,15 @@ def define_flow(
 @overload
 def define_flow(
     registry: Registry,
+    func: DefaultInputFn[_FlowInputT, _FlowOutputT],
+    name: str | None = None,
+    description: str | None = None,
+) -> DefaultedFlow[_FlowInputT, _FlowOutputT]: ...
+
+
+@overload
+def define_flow(
+    registry: Registry,
     func: Callable[[_FlowInputT], Awaitable[_FlowOutputT]],
     name: str | None = None,
     description: str | None = None,
@@ -212,7 +275,11 @@ def define_flow(
     name: str | None = None,
     description: str | None = None,
 ) -> Flow[Any, Any, Any]:
-    """Register an async function as a flow action."""
-    flow = Flow(func, name=name, description=description)
+    """Register an async function as a flow action.
+
+    A function whose input has a default becomes a ``DefaultedFlow``.
+    """
+    cls = DefaultedFlow if input_has_default(func, ActionKind.FLOW) else Flow
+    flow = cls(func, name=name, description=description)
     registry.register_action_from_instance(flow)
     return flow

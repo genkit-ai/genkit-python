@@ -18,7 +18,7 @@
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Generic, cast
+from typing import Any, ClassVar, Generic, cast, overload
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -51,8 +51,11 @@ class EmbedderInfo(BaseModel):
     dimensions: int | None = None
 
 
-# Covariant so EmbedderRef[CrmEmbedConfig] is assignable to EmbedderRef[BaseModel].
-EmbedderRefConfigT = TypeVar('EmbedderRefConfigT', bound=BaseModel, covariant=True, default=BaseModel)
+# Invariant so embed(embedder=EmbedderRef[T], config=T) pins T to the ref's
+# config class. Defaults to Any (not BaseModel) because invariant generics
+# forbid subtyping on the type parameter, so bare EmbedderRef must mean
+# EmbedderRef[Any] to accept any typed ref.
+EmbedderRefConfigT = TypeVar('EmbedderRefConfigT', bound=BaseModel, default=Any)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -83,10 +86,14 @@ class EmbedderRef(Generic[EmbedderRefConfigT]):
         object.__setattr__(self, 'info', check_ref_info(name=self.name, info=self.info, info_type=EmbedderInfo))
 
 
+# The request and an optional EmbedContext, like a model fn.
 EmbedderFn = (
-    Callable[[EmbedRequest[Any]], Awaitable[EmbedResponse]]
-    | Callable[[EmbedRequest[Any], EmbedContext], Awaitable[EmbedResponse]]
+    Callable[[EmbedRequest[Any], EmbedContext], Awaitable[EmbedResponse]]
+    | Callable[[EmbedRequest[Any]], Awaitable[EmbedResponse]]
 )
+# Context first, taken through a second overload. See CtxFirstModelFn for why
+# it isn't a third arm on EmbedderFn.
+CtxFirstEmbedderFn = Callable[[EmbedContext, EmbedRequest[Any]], Awaitable[EmbedResponse]]
 
 
 class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
@@ -101,10 +108,34 @@ class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
     when that is a Pydantic class.
     """
 
+    @overload
     def __init__(
         self,
         name: str,
         fn: EmbedderFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: EmbedderInfo | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        name: str,
+        fn: CtxFirstEmbedderFn,
+        *,
+        config_schema: type[BaseModel] | dict[str, object] | None = None,
+        metadata: dict[str, object] | None = None,
+        info: EmbedderInfo | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        name: str,
+        fn: EmbedderFn | CtxFirstEmbedderFn,
         *,
         config_schema: type[BaseModel] | dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
@@ -167,10 +198,36 @@ class Embedder(Action[EmbedRequest, EmbedResponse, Never]):
             embedder_info['customOptions'] = custom_options_schema(self.config_schema)
 
 
+@overload
 def define_embedder(
     registry: Registry,
     name: str,
     fn: EmbedderFn,
+    info: EmbedderInfo | None = None,
+    metadata: dict[str, object] | None = None,
+    description: str | None = None,
+    *,
+    config_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> Embedder: ...
+
+
+@overload
+def define_embedder(
+    registry: Registry,
+    name: str,
+    fn: CtxFirstEmbedderFn,
+    info: EmbedderInfo | None = None,
+    metadata: dict[str, object] | None = None,
+    description: str | None = None,
+    *,
+    config_schema: type[BaseModel] | dict[str, object] | None = None,
+) -> Embedder: ...
+
+
+def define_embedder(
+    registry: Registry,
+    name: str,
+    fn: EmbedderFn | CtxFirstEmbedderFn,
     info: EmbedderInfo | None = None,
     metadata: dict[str, object] | None = None,
     description: str | None = None,

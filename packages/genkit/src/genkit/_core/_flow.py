@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any, overload
 
@@ -38,6 +37,7 @@ from genkit._core._action import (
     get_func_description,
     input_has_default,
 )
+from genkit._core._async_call import is_async_callable
 from genkit._core._registry import Registry
 
 _FlowInputT = TypeVar('_FlowInputT')
@@ -153,10 +153,10 @@ class Flow(Action[InputT, OutputT, ChunkT, None]):
             name: Optional flow name. Defaults to ``func.__name__``.
             description: Optional description. Defaults to ``func.__doc__``.
         """
-        if not inspect.iscoroutinefunction(func):
+        if not is_async_callable(func):
             raise TypeError(f'Flow must be async: {getattr(func, "__name__", repr(func))}')
 
-        flow_name = name or getattr(func, '__name__', None) or 'unnamed_flow'
+        flow_name = name or getattr(func, '__name__', None) or type(func).__name__
         super().__init__(
             kind=ActionKind.FLOW,
             name=flow_name,

@@ -1,0 +1,157 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tests what a fresh `pip install genkit` resolves today: every dep at the
+# newest version our bounds allow, not what uv.lock pins. Catches minor-version
+# breaks (pydantic 2.14, google-genai 2.34) and uncapped majors before users
+# report them. Floors are checked on every PR by the `tests-minimum-deps` job in
+# python.yml. Scheduled and manual only, never a PR gate: failures come from
+# upstream releases, not from the PR. See docs/dependencies.md.
+#
+# Scheduled runs on the default branch keep one open `dependency-canary-failure` issue:
+# opened on the first failure, commented on while it stays red, closed on green.
+name: Python Newest Dependencies Canary (Weekly)
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Weekly, Monday 14:00 UTC.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    name: Tests (newest PyPI versions in bounds, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install uv and setup Python
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: false
+          python-version: ${{ matrix.python-version }}
+
+      - name: Re-resolve to the newest allowed versions
+        run: |
+          uv lock --upgrade
+          # List every package whose version moved past uv.lock.
+          git diff -U1 uv.lock | grep -E '^[ +-](name|version) = ' || echo 'uv.lock already at newest'
+
+      - name: Install dependencies
+        env:
+          PY_VER: ${{ matrix.python-version }}
+        run: uv sync --frozen --python "$PY_VER"
+
+      - name: Generate schema typing
+        run: ./bin/generate_schema_typing --ci
+
+      - name: Run tests
+        env:
+          PY_VER: ${{ matrix.python-version }}
+        run: uv run --no-sync --python "$PY_VER" pytest
+
+      - name: Print self-triage guide on failure
+        if: failure()
+        run: |
+          cat <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          ### `python-newest-deps-canary` failed — how to fix
+
+          Tests failed against the newest PyPI releases allowed by `packages/*/pyproject.toml` (what `pip install genkit-*` resolves today).
+
+          1. **Reproduce locally** (without committing a blanket lock bump):
+             ```bash
+             uv lock --upgrade && uv sync --frozen && uv run pytest
+             git checkout -- uv.lock
+             ```
+          2. **Identify the culprit** from the `Re-resolve to the newest allowed versions` step above and the pytest traceback.
+          3. **Fix:**
+             - Update our code if the upstream change is intentional and backwards-compatible, **or**
+             - Exclude a buggy upstream release in `packages/<pkg>/pyproject.toml` with `!=x.y.z` (do **not** add `<N` caps to internal deps; `scripts/check_consistency.py` enforces `REQUIRED_CAPS` / `SCOPED_CAPS` — see `docs/dependencies.md`).
+          4. Verify with `python3 scripts/check_consistency.py` and cut a patch release if published users hit this.
+          EOF
+          echo "::error title=python-newest-deps-canary failed::Newest PyPI versions within our bounds broke tests. Check the 'Re-resolve' step for bumped versions and see step summary / docs/dependencies.md for the fix recipe."
+
+  # Runs once per workflow run, after the whole matrix, so two failing Python
+  # versions still produce one issue update.
+  report:
+    name: Update tracking issue
+    needs: canary
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open, comment on, or close the dependency-canary-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.canary.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          label=dependency-canary-failure
+          issue=$(gh issue list --label "$label" --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [[ "$RESULT" == "success" ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment "Green again on the newest allowed deps: $RUN_URL"
+            fi
+            exit 0
+          fi
+          if [[ "$RESULT" != "failure" ]]; then
+            exit 0
+          fi
+
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --body "Still failing: $RUN_URL"
+            exit 0
+          fi
+
+          gh label create "$label" --force --color D93F0B \
+            --description "Python tests fail on the newest deps our bounds allow"
+          gh issue create --label "$label" \
+            --title "Python dependency canary: tests fail on newest allowed deps" \
+            --body-file - <<EOF
+          Tests fail when every Python dep resolves to the newest version our bounds allow (what a fresh \`pip install genkit-*\` gets today).
+
+          Run: $RUN_URL
+
+          ### Self-triage steps
+          1. **Reproduce locally** (check the \`Re-resolve\` step in $RUN_URL to see which packages moved past \`uv.lock\`):
+             \`\`\`bash
+             uv lock --upgrade && uv sync --frozen && uv run pytest
+             git checkout -- uv.lock
+             \`\`\`
+          2. **Fix:** update our code for the upstream change, or exclude a broken upstream release in \`packages/<pkg>/pyproject.toml\` with \`!=x.y.z\`. Do **not** add \`<N\` caps to internal deps (\`scripts/check_consistency.py\` enforces \`docs/dependencies.md\`).
+          3. **Verify & ship:** run \`python3 scripts/check_consistency.py\`, merge the fix, and cut a patch release if published users are affected.
+
+          This issue gets a comment on each failing weekly run and closes itself on the next green run.
+          EOF

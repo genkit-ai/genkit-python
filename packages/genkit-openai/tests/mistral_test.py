@@ -643,6 +643,30 @@ async def test_mistral_output_schema_goes_out_as_json_schema(mistral: Genkit, se
 
 
 @pytest.mark.asyncio
+async def test_mistral_unknown_id_json_without_schema_is_json_object(mistral: Genkit, server: _Server) -> None:
+    """An id outside the catalog keeps `json_object` for schema-less JSON, not `text`."""
+    await mistral.generate(model='mistral/devstral-medium-latest', prompt='Reply in JSON.', output_format='json')
+
+    [body] = server.bodies()
+    assert body['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.asyncio
+async def test_mistral_listed_unknown_id_json_without_schema_is_json_object(server: _Server) -> None:
+    """An id found only through /models keeps `json_object` for schema-less JSON."""
+    server.models = [_entry('devstral-medium-latest', completion_chat=True, function_calling=True)]
+    plugin = _plugin(server, Mistral)
+    [action] = [a for a in await plugin.list_actions() if a.kind == ActionKind.MODEL]
+    assert _supports(action)['output'] == ['json', 'text']
+    ai = Genkit(plugins=[plugin])
+
+    await ai.generate(model='mistral/devstral-medium-latest', prompt='Reply in JSON.', output_format='json')
+
+    [body] = [json.loads(r.content) for r in server.requests if r.method == 'POST']
+    assert body['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.asyncio
 async def test_mistral_image_input_goes_out_as_image_url(mistral: Genkit, server: _Server) -> None:
     """An image part reaches Mistral as an `image_url` content block."""
     await mistral.generate(
@@ -1479,7 +1503,7 @@ async def test_mistral_lists_models_by_capabilities(server: _Server) -> None:
     assert _supports(by_name['mistral/codestral-2508'])['media'] is False
     assert _supports(by_name['mistral/pixtral-next'])['tools'] is False
     assert _supports(by_name['mistral/pixtral-next'])['media'] is True
-    assert _supports(by_name['mistral/pixtral-next'])['output'] == ['text']
+    assert _supports(by_name['mistral/pixtral-next'])['output'] == ['json', 'text']
     # A catalog model keeps its catalog info.
     assert _supports(by_name['mistral/mistral-small-latest'])['output'] == ['json', 'text']
     # A listed model resolves with the info it was listed with.

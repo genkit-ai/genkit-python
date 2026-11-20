@@ -124,14 +124,16 @@ _MISTRAL_TEXT_SUPPORTS = ModelSupports(
 )
 
 # A model outside the catalog with no /models capabilities to go by: text in,
-# text out, as JS's and Dart's unknown-model info.
+# text out, as JS's and Dart's unknown-model info. ``output`` lists ``json`` so
+# a schema-less JSON request still goes out as ``json_object``, as it did before
+# the Mistral target (``OpenAIModel`` keeps it for unlisted ids, for fine-tunes).
 MISTRAL_UNKNOWN_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=False,
     tools=False,
     tool_choice=False,
     system_role=True,
-    output=['text'],
+    output=['json', 'text'],
 )
 
 # The chat models a Mistral target registers at init, the set JS's
@@ -162,8 +164,8 @@ def mistral_model_supports(name: str, capabilities: Mapping[str, object] | None 
 
     The catalog's entry when ``name`` is in it; else read from the ``/models``
     entry's ``capabilities`` (``function_calling`` for tools, ``vision`` for
-    media), with text-only output since capabilities don't say whether the
-    model takes a JSON schema; else :data:`MISTRAL_UNKNOWN_MODEL_SUPPORTS`.
+    media), with ``json`` and ``text`` output (capabilities don't say whether the
+    model takes a JSON schema, so ``constrained`` stays unset); else :data:`MISTRAL_UNKNOWN_MODEL_SUPPORTS`.
     """
     if (known := SUPPORTED_MISTRAL_MODELS.get(name)) is not None and known.supports is not None:
         return known.supports

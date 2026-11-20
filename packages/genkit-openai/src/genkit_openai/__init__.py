@@ -20,6 +20,8 @@
 Registers OpenAI chat, image, text-to-speech, transcription, and embedding
 models under ``openai/``, using the official OpenAI Python SDK. ``base_url=``
 points it at any OpenAI-compatible server, such as Azure OpenAI or Together AI.
+``Mistral()`` (or ``OpenAI(provider='mistral')``) registers Mistral's chat
+models and embedders under ``mistral/``.
 
 Example:
     ```python
@@ -48,7 +50,8 @@ Example:
     ```
 
 Credentials:
-    The plugin key comes from ``api_key=`` or ``OPENAI_API_KEY``. A
+    The plugin key comes from ``api_key=`` or ``OPENAI_API_KEY``
+    (``MISTRAL_API_KEY`` when the target is Mistral). A
     ``generate()`` or ``embed()`` call can bring its own key as
     ``context={'secrets': {'api_key': ...}}``; a plugin with no key of its
     own serves only those calls.
@@ -57,7 +60,7 @@ See Also:
     - OpenAI documentation: https://platform.openai.com/docs/
 """
 
-from ._openai_plugin import OpenAI
+from ._openai_plugin import Mistral, OpenAI
 from ._typing import OpenAIConfig
 
-__all__ = ['OpenAI', 'OpenAIConfig']
+__all__ = ['Mistral', 'OpenAI', 'OpenAIConfig']

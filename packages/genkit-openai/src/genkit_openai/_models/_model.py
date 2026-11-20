@@ -20,6 +20,7 @@ import json
 from collections.abc import Callable
 from typing import Any, cast
 
+from genkit_openai._models._mistral import is_mistral, mistral_chat_body, refuse_non_image_media
 from genkit_openai._models._utils import (
     OPENAI_CALL_ERRORS,
     DictMessageAdapter,
@@ -27,10 +28,12 @@ from genkit_openai._models._utils import (
     MessageConverter,
     check_extra_body,
     extract_response_metadata,
+    merge_streamed_reasoning,
+    reply_content,
     reraise_openai_error,
     strip_markdown_fences,
 )
-from genkit_openai._typing import OpenAIConfig
+from genkit_openai._typing import OpenAIConfig, ReasoningEffort
 from openai import AsyncOpenAI
 from openai.lib._pydantic import _ensure_strict_json_schema
 from openai.types import CompletionUsage
@@ -93,7 +96,8 @@ def _openai_create_kwargs(*, config: OpenAIConfig, model: str | None = None) -> 
     the JSON body, so a colliding key wins. ``max_output_tokens`` goes out as
     ``max_completion_tokens`` for reasoning models (or when
     ``reasoning_effort`` is set), since the OpenAI API rejects the deprecated
-    ``max_tokens`` there, and as ``max_tokens`` otherwise.
+    ``max_tokens`` there, and as ``max_tokens`` otherwise. ``_mistral.py``
+    renames the fields Mistral spells differently after this runs.
     """
     body: dict[str, Any] = {}
     for name in type(config).model_fields:
@@ -210,6 +214,8 @@ _FINISH_REASONS: dict[str, FinishReason] = {
     'insufficient_system_resource': FinishReason.OTHER,
     'length': FinishReason.LENGTH,
     'model_context_window_exceeded': FinishReason.LENGTH,
+    # Mistral: the model's own length limit, as opposed to max_tokens.
+    'model_length': FinishReason.LENGTH,
     'network_error': FinishReason.OTHER,
     'sensitive': FinishReason.BLOCKED,
     'stop': FinishReason.STOP,
@@ -350,7 +356,14 @@ def _unwrap_tool_inputs(message: Message, wrapped: frozenset[str]) -> Message:
 class OpenAIModel:
     """Handles OpenAI API interactions for the Genkit plugin."""
 
-    def __init__(self, model: str, client: AsyncOpenAI, *, supports: ModelSupports | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        client: AsyncOpenAI,
+        *,
+        supports: ModelSupports | None = None,
+        mistral: bool | None = None,
+    ) -> None:
         """Initializes the OpenAIModel instance with the specified model and OpenAI client parameters.
 
         Args:
@@ -360,10 +373,13 @@ class OpenAIModel:
                 ``supports.output`` means the endpoint accepts schema-less JSON
                 mode. ``None`` (or an entry that omits ``output``) still sends
                 ``json_object`` so a fine-tune keeps working.
+            mistral: Send Mistral's field names (see ``_mistral.py``).
+                ``None`` decides from the client's host.
         """
         self._model = model
         self._openai_client = client
         self._supports = supports
+        self._mistral = is_mistral(client) if mistral is None else mistral
 
     @property
     def name(self) -> str:
@@ -383,9 +399,11 @@ class OpenAIModel:
         Raises:
             ValueError: If no messages are provided in the request.
         """
+        if self._mistral:
+            refuse_non_image_media(messages)
         openai_messages = []
         for message in messages:
-            openai_messages.extend(MessageConverter.to_openai(message=message))
+            openai_messages.extend(MessageConverter.to_openai(message=message, replay_thinking=self._mistral))
         return openai_messages
 
     async def _get_tools_definition(self, tools: list[ToolDefinition]) -> list[dict]:
@@ -577,14 +595,26 @@ class OpenAIModel:
             if response_format:
                 # pyrefly: ignore[bad-typed-dict-key] - response_format dict is valid for OpenAI API
                 openai_config['response_format'] = response_format
+        top_k: int | None = None
         if request.config:
             config = (
                 request.config if isinstance(request.config, OpenAIConfig) else self._normalize_config(request.config)
             )
+            top_k = config.top_k
+            if config.reasoning_effort == ReasoningEffort.MAX and not self._mistral:
+                raise GenkitError(
+                    status='INVALID_ARGUMENT',
+                    message=(
+                        "reasoning_effort='max' is Mistral's; OpenAI's API stops at 'xhigh'. For another host "
+                        "that takes it, pass extra={'reasoning_effort': 'max'}."
+                    ),
+                )
             if config.version:
                 openai_config['model'] = config.version
             effective_model = config.model or config.version or self._model
             openai_config.update(_openai_create_kwargs(config=config, model=effective_model))
+        if self._mistral:
+            openai_config = mistral_chat_body(openai_config, top_k=top_k)
         return openai_config
 
     async def _generate(self, request: ModelRequest) -> ModelResponse:
@@ -634,7 +664,10 @@ class OpenAIModel:
             finish_message=finish_message,
             usage=_usage_from_completion(response.usage),
             custom=metadata or None,
-            raw=response.to_dict(),
+            # raw is the provider's reply as sent. A list content (Mistral's
+            # thinking chunks) doesn't fit the SDK's str field, which is not
+            # worth a serializer warning on every call.
+            raw=response.to_dict(warnings=False),
         )
         return self._clean_json_response(result, request)
 
@@ -652,17 +685,23 @@ class OpenAIModel:
         """
         openai_config = await self._get_openai_request_config(request=request)
         openai_config['stream'] = True
-        openai_config['stream_options'] = {
-            **(openai_config.get('stream_options') or {}),
-            'include_usage': True,
-        }
+        # Mistral has no stream_options and sends usage unasked.
+        if not self._mistral:
+            openai_config['stream_options'] = {
+                **(openai_config.get('stream_options') or {}),
+                'include_usage': True,
+            }
 
         stream = await self._openai_client.chat.completions.create(**openai_config)
 
         tool_calls: dict[int, Any] = {}
         wrapped = _wrapped_tool_names(request.tools)
-        reasoning_parts: list[Part] = []
-        text_parts: list[Part] = []
+        # As a full reply is read (MessageConverter.to_genkit): reasoning from
+        # its own field (DeepSeek's reasoning_content) first, then the
+        # content's reasoning and text in the order they arrived (Mistral's
+        # thinking chunks can come between text chunks), then tool calls.
+        field_reasoning: list[Part] = []
+        content_parts: list[Part] = []
         metadata: dict[str, Any] = {}
         usage: CompletionUsage | None = None
         saw_choice = False
@@ -695,14 +734,14 @@ class OpenAIModel:
             # Reasoning content (DeepSeek R1 / reasoner models).
             if reasoning_text := MessageAdapter(delta).reasoning_content:
                 reasoning_part = Part.from_reasoning(reasoning_text)
-                reasoning_parts.append(reasoning_part)
+                field_reasoning.append(reasoning_part)
                 parts.append(reasoning_part)
 
-            # Text content
-            if delta.content:
-                text_part = MessageConverter.text_part_to_genkit(delta.content)
-                text_parts.append(text_part)
-                parts.append(text_part)
+            # Text content; Mistral's reasoning models stream reasoning in it too.
+            for item in reply_content(delta.content):
+                part = MessageConverter.text_part_to_genkit(item) if isinstance(item, str) else item
+                content_parts.append(part)
+                parts.append(part)
 
             # Tool calls (partial function calls)
             if delta.tool_calls:
@@ -747,7 +786,7 @@ class OpenAIModel:
                 )
             )
 
-        accumulated_content: list[Part] = [*reasoning_parts, *text_parts]
+        accumulated_content: list[Part] = [*field_reasoning, *merge_streamed_reasoning(content_parts)]
         if tool_calls:
             message = _unwrap_tool_inputs(
                 MessageConverter.to_genkit(DictMessageAdapter({'tool_calls': tool_calls.values(), 'role': Role.MODEL})),
@@ -802,8 +841,6 @@ class OpenAIModel:
 
         if isinstance(config, dict):
             config_dict = cast(dict[str, Any], config)
-            if config_dict.get('top_k'):
-                del config_dict['top_k']
             return OpenAIConfig(**config_dict)
 
         raise ValueError(f'Expected request.config to be a dict or OpenAIConfig, got {type(config).__name__}.')

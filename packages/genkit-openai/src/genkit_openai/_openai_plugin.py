@@ -65,6 +65,18 @@ from genkit_openai._models._image import (
     OpenAIGptImageConfig,
     OpenAIImageModel,
 )
+from genkit_openai._models._mistral import (
+    MISTRAL_API_KEY_ENV,
+    MISTRAL_BASE_URL,
+    MISTRAL_NAMESPACE,
+    SUPPORTED_MISTRAL_EMBEDDERS,
+    SUPPORTED_MISTRAL_MODELS,
+    is_mistral,
+    is_mistral_url,
+    listed_capabilities,
+    mistral_model_supports,
+    mistral_serves_chat,
+)
 from genkit_openai._models._model import OpenAIModel
 from genkit_openai._models._model_info import (
     SUPPORTED_EMBEDDING_MODELS,
@@ -108,11 +120,18 @@ def _client_kwargs(
     return options
 
 
-def _missing_key_error() -> GenkitError:
+def _missing_key_error(env: str) -> GenkitError:
+    # A Mistral target used to fall back to OPENAI_API_KEY; say why a key
+    # that is set there no longer counts.
+    ignored = (
+        f"{env} is not set; OPENAI_API_KEY is set but isn't used for Mistral. "
+        if env == MISTRAL_API_KEY_ENV and os.environ.get('OPENAI_API_KEY')
+        else ''
+    )
     return GenkitError(
         status='FAILED_PRECONDITION',
         message=(
-            'OpenAI needs an API key: set OPENAI_API_KEY or pass OpenAI(api_key=...), '
+            f'{ignored}OpenAI needs an API key: set {env} or pass OpenAI(api_key=...), '
             "or send a per-request key as context={'secrets': {'api_key': ...}}."
         ),
     )
@@ -277,6 +296,8 @@ class OpenAI(Plugin):
     interaction with supported OpenAI models.
     """
 
+    # The class default; an instance that targets Mistral is named 'mistral'
+    # (see __init__), so OpenAI and Mistral can be registered side by side.
     name = 'openai'
 
     @classmethod
@@ -317,34 +338,91 @@ class OpenAI(Plugin):
         api_key: str | None = None,
         base_url: str | None = None,
         client_options: Mapping[str, Any] | None = None,
+        provider: Literal['mistral'] | None = None,
     ) -> None:
         """Initializes the OpenAI plugin.
 
         Args:
-            api_key: OpenAI API key. Defaults to ``OPENAI_API_KEY``.
+            api_key: OpenAI API key. Defaults to ``OPENAI_API_KEY``, or
+                ``MISTRAL_API_KEY`` when the target is Mistral.
             base_url: OpenAI API base URL up to and including ``/v1``, e.g.
                 ``https://openrouter.ai/api/v1``; the SDK appends
                 ``/chat/completions``. Defaults to ``OPENAI_BASE_URL``, then the
-                public API.
+                public API; with ``provider='mistral'``, ``https://api.mistral.ai/v1``
+                (``OPENAI_BASE_URL`` is not read then).
             client_options: Other ``AsyncOpenAI`` settings, such as
                 ``organization``, ``project``, ``timeout``, ``max_retries``,
                 ``default_headers``, or ``http_client``.
+            provider: ``'mistral'`` sends Mistral's field names whatever the
+                host, for a gateway in front of Mistral. Without it they go
+                out only when ``base_url`` is one of Mistral's own hosts.
+                Either way, a Mistral target is named ``mistral``: its
+                actions are ``mistral/<id>``, it registers Mistral's catalog
+                instead of OpenAI's, and it can sit beside an ``OpenAI()``.
+                ``Mistral()`` is the same plugin.
 
         Raises:
             TypeError: If ``client_options`` has a key ``AsyncOpenAI`` doesn't
                 take, or repeats ``api_key`` or ``base_url``.
+            ValueError: If ``provider`` is not ``'mistral'`` or None.
         """
+        if provider not in (None, 'mistral'):
+            raise ValueError(f"OpenAI got provider={provider!r}; the only provider it knows is 'mistral'")
+        self._provider = provider
         options = _client_kwargs(api_key=api_key, base_url=base_url, client_options=client_options)
+        if provider == 'mistral' and options.get('base_url') is None:
+            # Else the SDK's default, api.openai.com, would get the Mistral key
+            # and Mistral's field names.
+            options['base_url'] = MISTRAL_BASE_URL
         self._options = options
+        # Mistral's models live under mistral/<id>, as in JS and Dart, so an
+        # OpenAI plugin and a Mistral one don't clash.
+        self.name = MISTRAL_NAMESPACE if self._targets_mistral() else 'openai'
         self._plugin_api_key: str | None = options.get('api_key')
         plugin_headers: dict[str, str] = dict(options.get('default_headers') or {})
         self._tenant_headers = {k: v for k, v in plugin_headers.items() if k.lower() not in _PLUGIN_ACCOUNT_HEADERS}
         self._pins_authorization = any(k.lower() == 'authorization' for k in plugin_headers)
         self._list_actions_cache: list[Action] | None = None
+        # Supports read from Mistral's /models capabilities, so a listed model
+        # resolves with the info it was listed with.
+        self._listed_supports: dict[str, ModelSupports] = {}
+
+    def _action_name(self, name: str) -> str:
+        """``name`` in this plugin's namespace: ``openai/<id>`` or ``mistral/<id>``."""
+        return f'{self.name}/{name}'
+
+    def _mistral_supports(self, name: str) -> ModelSupports:
+        """Catalog supports for a Mistral model, else what /models listed, else the text-only default."""
+        if name in SUPPORTED_MISTRAL_MODELS or name not in self._listed_supports:
+            return mistral_model_supports(name)
+        return self._listed_supports[name]
+
+    def _targets_mistral(self) -> bool:
+        """Whether calls go to Mistral's API: ``provider='mistral'`` or a Mistral base URL."""
+        if self._provider == 'mistral':
+            return True
+        # The SDK's own fallback when base_url isn't given.
+        base_url = self._options.get('base_url') or os.environ.get('OPENAI_BASE_URL')
+        return bool(base_url) and is_mistral_url(base_url)
+
+    def _key_env(self) -> str:
+        """The variable the plugin key falls back to. Mistral's, so an OpenAI key never goes to Mistral."""
+        return MISTRAL_API_KEY_ENV if self._targets_mistral() else 'OPENAI_API_KEY'
+
+    def _uses_mistral_names(self, client: AsyncOpenAI) -> bool:
+        return self._provider == 'mistral' or is_mistral(client)
 
     @loop_local_client
     def _runtime_client(self) -> AsyncOpenAI:
-        return AsyncOpenAI(**self._options)
+        options: dict[str, Any] = self._options
+        if self._plugin_api_key is None and self._targets_mistral():
+            # Otherwise the SDK reads OPENAI_API_KEY and sends it to Mistral,
+            # so an unset MISTRAL_API_KEY must not reach it as api_key=None.
+            key = os.environ.get(MISTRAL_API_KEY_ENV)
+            if not key:
+                raise _missing_key_error(MISTRAL_API_KEY_ENV)
+            options = {**options, 'api_key': key}
+        return AsyncOpenAI(**options)
 
     @loop_local_client
     def _tenant_only_client(self) -> AsyncOpenAI:
@@ -354,15 +432,21 @@ class OpenAI(Plugin):
         return AsyncOpenAI(**params)
 
     def _has_plugin_key(self) -> bool:
-        return bool(self._plugin_api_key or os.environ.get('OPENAI_API_KEY'))
+        return bool(self._plugin_api_key or os.environ.get(self._key_env()))
 
     async def init(self) -> list[Action]:
         """Initialize plugin.
 
         Returns:
-            Actions for built-in OpenAI models, embedders, image, TTS, and STT.
+            Actions for built-in OpenAI models, embedders, image, TTS, and STT;
+            for a Mistral target, Mistral's chat models and embedders instead.
         """
         actions = []
+
+        if self._targets_mistral():
+            actions.extend(self._create_model_action(name) for name in SUPPORTED_MISTRAL_MODELS)
+            actions.extend(self._create_embedder_action(name) for name in SUPPORTED_MISTRAL_EMBEDDERS)
+            return actions
 
         # Add known chat models.
         for name in SUPPORTED_OPENAI_MODELS:
@@ -398,6 +482,12 @@ class OpenAI(Plugin):
             is provided). The 'supports' key contains a dictionary representing
             the model's capabilities (e.g., tools, streaming).
         """
+        if self._targets_mistral():
+            known = SUPPORTED_MISTRAL_MODELS.get(name)
+            return {
+                'label': known.label if known is not None else f'Mistral - {name}',
+                'supports': self._mistral_supports(name).model_dump(by_alias=True, exclude_none=True),
+            }
         if model_supported := SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name)):
             supports = (
                 model_supported.supports.model_dump(by_alias=True, exclude_none=True)
@@ -421,14 +511,23 @@ class OpenAI(Plugin):
 
         Uses name-based pattern matching (mirroring JS implementation) to
         route to the correct model type: image, TTS, STT, embedder, or chat.
+        A Mistral target serves only chat models and embedders, so an id is
+        never routed to OpenAI's image or audio endpoints there.
 
         Args:
             action_type: The kind of action to resolve.
-            name: The id without the ``openai/`` prefix.
+            name: The id without the plugin's ``openai/`` or ``mistral/`` prefix.
 
         Returns:
             Action object if found, None otherwise.
         """
+        if self._targets_mistral():
+            if action_type == ActionKind.EMBEDDER:
+                return self._create_embedder_action(name)
+            if action_type == ActionKind.MODEL:
+                return self._create_model_action(name)
+            return None
+
         if action_type == ActionKind.EMBEDDER:
             if _classify_model(name) != _ModelType.EMBEDDER:
                 return None
@@ -461,7 +560,7 @@ class OpenAI(Plugin):
             client = self._runtime_client()
             return self._with_tenant_key(client, key) if key else client
         if key is None:
-            raise _missing_key_error()
+            raise _missing_key_error(self._key_env())
         return self._with_tenant_key(self._tenant_only_client(), key)
 
     def _with_tenant_key(self, client: AsyncOpenAI, key: str) -> AsyncOpenAI:
@@ -506,13 +605,19 @@ class OpenAI(Plugin):
         model_info = self.get_model_info(name) or {}
 
         async def _generate(request: ModelRequest[OpenAIConfig], ctx: ModelContext) -> ModelResponse:
-            catalog = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name))
-            supports = catalog.supports if catalog is not None else get_default_openai_model_info(name).supports
-            openai_model = OpenAIModelHandler(OpenAIModel(name, self._client_for_call(request, ctx), supports=supports))
+            if self._targets_mistral():
+                supports = self._mistral_supports(name)
+            else:
+                catalog = SUPPORTED_OPENAI_MODELS.get(cast(KnownGpt, name))
+                supports = catalog.supports if catalog is not None else get_default_openai_model_info(name).supports
+            client = self._client_for_call(request, ctx)
+            openai_model = OpenAIModelHandler(
+                OpenAIModel(name, client, supports=supports, mistral=self._uses_mistral_names(client))
+            )
             return await openai_model.generate(request, ctx)
 
         return Model(
-            open_ai_name(name),
+            self._action_name(name),
             _generate,
             config_schema=OpenAIConfig,
             metadata={'model': model_info},
@@ -543,7 +648,7 @@ class OpenAI(Plugin):
             return await model_instance.generate(request, ctx)
 
         return Model(
-            open_ai_name(name),
+            self._action_name(name),
             _generate,
             config_schema=config_schema,
             info=info,
@@ -558,14 +663,20 @@ class OpenAI(Plugin):
         Returns:
             Action object for the embedder.
         """
-        embedder_info = SUPPORTED_EMBEDDING_MODELS.get(
-            name,
-            {
-                'label': f'OpenAI Embedding - {name}',
-                'dimensions': 1536,
-                'supports': {'input': ['text']},
-            },
-        )
+        if self._targets_mistral():
+            # No dimensions for an embedder outside the catalog: Mistral's differ.
+            embedder_info = SUPPORTED_MISTRAL_EMBEDDERS.get(
+                name, {'label': f'Mistral Embedding - {name}', 'supports': {'input': ['text']}}
+            )
+        else:
+            embedder_info = SUPPORTED_EMBEDDING_MODELS.get(
+                name,
+                {
+                    'label': f'OpenAI Embedding - {name}',
+                    'dimensions': 1536,
+                    'supports': {'input': ['text']},
+                },
+            )
 
         async def embed_fn(request: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
             """Embedder function that calls OpenAI embeddings API."""
@@ -594,33 +705,21 @@ class OpenAI(Plugin):
             if request.options.get('encodingFormat') == 'float':
                 encoding_format = 'float'
 
-            # Call with only non-None optional params to satisfy strict typings
+            # Only set options go out; the SDK's sentinel for an unset one
+            # differs across the openai versions this package supports.
             client = self._embed_client(ctx.context)
-            try:
-                if dimensions is not None and encoding_format is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        dimensions=dimensions,
-                        encoding_format=encoding_format,
-                    )
-                elif dimensions is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        dimensions=dimensions,
-                    )
-                elif encoding_format is not None:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                        encoding_format=encoding_format,
-                    )
+            create_kwargs: dict[str, Any] = {}
+            if dimensions is not None:
+                if self._uses_mistral_names(client):
+                    # Mistral names it output_dimension and rejects dimensions.
+                    # The SDK has no output_dimension kwarg, so it rides in extra_body.
+                    create_kwargs['extra_body'] = {'output_dimension': dimensions}
                 else:
-                    response = await client.embeddings.create(
-                        model=name,
-                        input=texts,
-                    )
+                    create_kwargs['dimensions'] = dimensions
+            if encoding_format is not None:
+                create_kwargs['encoding_format'] = encoding_format
+            try:
+                response = await client.embeddings.create(model=name, input=texts, **create_kwargs)
             except APIError as e:
                 reraise_openai_error(e)
 
@@ -629,7 +728,7 @@ class OpenAI(Plugin):
             return EmbedResponse(embeddings=embeddings)
 
         return Embedder(
-            open_ai_name(name),
+            self._action_name(name),
             embed_fn,
             info=EmbedderInfo(
                 label=embedder_info['label'],
@@ -643,6 +742,11 @@ class OpenAI(Plugin):
 
         Uses pattern matching on model names (mirroring the JS implementation)
         to categorize models as embedders, image generators, TTS, STT, or chat.
+        A Mistral target reads each entry's ``capabilities`` instead, as the JS
+        and Dart plugins do: ids with ``embed`` are embedders, entries with
+        ``completion_chat`` are chat models with tools and media from
+        ``function_calling`` and ``vision``, and the rest (OCR, moderation,
+        transcription, speech) are skipped.
 
         Returns:
             list[Action]: A list of Action objects. Empty for a
@@ -660,6 +764,10 @@ class OpenAI(Plugin):
         except APIError as e:
             reraise_openai_error(e)
         models: list[OpenAIModelEntry] = models_.data
+        if self._targets_mistral():
+            actions = self._list_mistral_actions(models)
+            self._list_actions_cache = actions
+            return actions
         for model in models:
             name = model.id
             if _is_known_unsupported(name):
@@ -675,5 +783,74 @@ class OpenAI(Plugin):
         self._list_actions_cache = actions
         return actions
 
+    def _list_mistral_actions(self, models: list[OpenAIModelEntry]) -> list[Action]:
+        """Actions for the entries of Mistral's ``/models``, by their ``capabilities``."""
+        actions: list[Action] = []
+        for model in models:
+            name = model.id
+            if 'embed' in name:
+                actions.append(self._create_embedder_action(name))
+                continue
+            capabilities = listed_capabilities(model)
+            if not mistral_serves_chat(name, capabilities):
+                continue
+            if capabilities is not None and name not in SUPPORTED_MISTRAL_MODELS:
+                self._listed_supports[name] = mistral_model_supports(name, capabilities)
+            actions.append(self._create_model_action(name))
+        return actions
 
-__all__ = ['OpenAI']
+
+class Mistral(OpenAI):
+    """Mistral's models through its OpenAI-compatible API, under ``mistral/``.
+
+    The same as ``OpenAI(provider='mistral')``: ``mistral/<id>`` names, as in
+    the JS and Dart plugins, Mistral's catalog, the key from ``api_key=`` or
+    ``MISTRAL_API_KEY``, and ``https://api.mistral.ai/v1`` unless ``base_url``
+    names another host, such as a gateway in front of Mistral.
+
+    Example:
+        ```python
+        ai = Genkit(plugins=[OpenAI(), Mistral()])
+        res = await ai.generate(model=Mistral.model('mistral-small-latest'), prompt='Name a bakery.')
+        ```
+    """
+
+    name = MISTRAL_NAMESPACE
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client_options: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Initializes the Mistral plugin.
+
+        Args:
+            api_key: Mistral API key. Defaults to ``MISTRAL_API_KEY``.
+            base_url: API base URL up to and including ``/v1``. Defaults to
+                ``https://api.mistral.ai/v1``.
+            client_options: Other ``AsyncOpenAI`` settings, as for ``OpenAI``.
+        """
+        super().__init__(api_key=api_key, base_url=base_url, client_options=client_options, provider='mistral')
+
+    @classmethod
+    def model(cls, name: str, *, config: OpenAIConfig | None = None) -> ModelRef[OpenAIConfig]:
+        """Typed ref for a Mistral chat model, e.g. ``Mistral.model('mistral-small-latest')``."""
+        if not isinstance(name, str):
+            raise GenkitError(status='INVALID_ARGUMENT', message='Mistral.model: model name must be a string.')
+        local = name.removeprefix(f'{MISTRAL_NAMESPACE}/')
+        if not local:
+            raise GenkitError(status='INVALID_ARGUMENT', message='Mistral.model: model name is required.')
+        return ModelRef(name=f'{MISTRAL_NAMESPACE}/{local}', config_schema=OpenAIConfig, config=config)
+
+    @classmethod
+    def gpt(cls, name: KnownGpt | str, *, config: OpenAIConfig | None = None) -> ModelRef[OpenAIConfig]:
+        """Not for Mistral: refs from it name OpenAI's models. Use :meth:`model`."""
+        raise GenkitError(
+            status='INVALID_ARGUMENT',
+            message=f"Mistral.gpt names OpenAI's models; use Mistral.model({name!r}) for mistral/{name}.",
+        )
+
+
+__all__ = ['Mistral', 'OpenAI']

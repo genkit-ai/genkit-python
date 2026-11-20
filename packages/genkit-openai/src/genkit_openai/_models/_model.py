@@ -353,6 +353,26 @@ def _unwrap_tool_inputs(message: Message, wrapped: frozenset[str]) -> Message:
     return _map_tool_requests(message, wrapped, wrap=False)
 
 
+def _effective_tool_choice(request: ModelRequest) -> str | None:
+    """The request's tool_choice, with 'required' relaxed to 'auto' once tools have answered.
+
+    'required' forces the first tool call of a user turn. Keeping it after the
+    tool results forbids a text answer, so the run loops until max_turns. If any
+    message after the most recent model turn carries a tool response, later
+    turns may answer.
+    """
+    choice = request.tool_choice
+    if choice != 'required':
+        return choice
+    saw_tool_response = False
+    for msg in reversed(request.messages):
+        if msg.role == Role.MODEL:
+            return 'auto' if saw_tool_response else choice
+        if msg.role == Role.TOOL or any(p.tool_response is not None for p in msg.content):
+            saw_tool_response = True
+    return choice
+
+
 class OpenAIModel:
     """Handles OpenAI API interactions for the Genkit plugin."""
 
@@ -588,8 +608,9 @@ class OpenAIModel:
             # Genkit's auto/required/none are OpenAI's values. OpenAI rejects
             # tool_choice without tools, so it rides only with them. Core's
             # max_turns bounds a 'required' run that never answers.
-            if request.tool_choice:
-                openai_config['tool_choice'] = request.tool_choice
+            tool_choice = _effective_tool_choice(request)
+            if tool_choice:
+                openai_config['tool_choice'] = tool_choice
         if request.output_format:
             response_format = self._get_response_format(request)
             if response_format:

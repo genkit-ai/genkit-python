@@ -128,8 +128,8 @@ async def test_tool_choice_kept_after_a_tool_turn(tool_choice: Any) -> None:  # 
 
 
 @pytest.mark.asyncio
-async def test_required_tool_choice_persists_on_followup_turn() -> None:
-    """Under 'required', the follow-up request after a tool result still sends tool_choice='required'."""
+async def test_required_tool_choice_relaxes_to_auto_on_followup_turn() -> None:
+    """'required' forces the first tool call; after a tool result the follow-up request sends 'auto'."""
     server = _ScriptedServer([
         _tool_call('call_1', 'lookup_menu', 'pho'),
         _tool_call('call_2', 'check_allergens', 'pho'),
@@ -147,7 +147,7 @@ async def test_required_tool_choice_persists_on_followup_turn() -> None:
     assert len(server.bodies) == 2
     assert server.bodies[0]['tool_choice'] == 'required'
     assert any(m['role'] == 'tool' for m in server.bodies[1]['messages'])
-    assert server.bodies[1]['tool_choice'] == 'required'
+    assert server.bodies[1]['tool_choice'] == 'auto'
 
 
 @pytest.mark.asyncio

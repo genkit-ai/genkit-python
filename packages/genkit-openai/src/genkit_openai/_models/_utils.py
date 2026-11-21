@@ -38,9 +38,10 @@ from genkit import GenkitError, Message, Part, Role
 from genkit.model import ModelRequest, ToolRequest
 from genkit.plugin_api import StatusName, provider_error
 
-# The SDK wraps httpx failures in APITimeoutError / APIConnectionError only
-# while sending. A connection that drops while the SSE stream is being read
-# comes out of ``async for`` as a raw httpx error, so catch these too.
+# Before openai 3.0 the SDK wraps httpx failures in APITimeoutError /
+# APIConnectionError only while sending. A connection that drops while the
+# SSE stream is being read comes out of ``async for`` as a raw httpx error,
+# so catch these too. openai 3.x wraps stream-read failures itself.
 STREAM_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.TimeoutException,
     httpx.NetworkError,

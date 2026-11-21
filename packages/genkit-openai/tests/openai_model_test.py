@@ -1823,7 +1823,7 @@ class _DroppingStream(httpx.AsyncByteStream):
 async def test_generate_classifies_a_stream_cut_mid_read(
     sample_request: ModelRequest, drop: Exception, status: str
 ) -> None:
-    """The SDK wraps httpx errors only while sending; a stream cut after the 200 still maps for Fallback."""
+    """A stream cut after the 200 maps for Fallback, whether or not the SDK wrapped the httpx error."""
     first = {
         'id': 'chatcmpl-1',
         'object': 'chat.completion.chunk',
@@ -1849,4 +1849,7 @@ async def test_generate_classifies_a_stream_cut_mid_read(
 
     assert chunks == ['Grilled']
     assert exc_info.value.status == status
-    assert exc_info.value.__cause__ is drop
+    # openai<3 surfaces the raw httpx error; openai 3.x wraps it in
+    # APITimeoutError / APIConnectionError first.
+    cause = exc_info.value.__cause__
+    assert cause is drop or (cause is not None and cause.__cause__ is drop)

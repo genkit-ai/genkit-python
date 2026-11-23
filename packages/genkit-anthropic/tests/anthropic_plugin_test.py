@@ -33,13 +33,13 @@ from genkit_anthropic._models import AnthropicModel
 from genkit_anthropic._plugin import anthropic_name
 
 from genkit import Genkit, Message, ModelResponse, Part, Role
-from genkit.model import ConstrainedSupport, ModelRequest, ToolDefinition
+from genkit.model import ConstrainedSupport, ModelRequest, ModelStage, ToolDefinition
 from genkit.plugin_api import ActionKind
 
 
 def test_anthropic_name() -> None:
     """Test anthropic_name helper function."""
-    assert anthropic_name('claude-sonnet-4') == 'anthropic/claude-sonnet-4'
+    assert anthropic_name('claude-sonnet-4-6') == 'anthropic/claude-sonnet-4-6'
 
 
 def test_init_without_api_key_raises() -> None:
@@ -91,7 +91,7 @@ async def test_plugin_beta_default_routes_action_run_to_beta_surface(mock_client
     mock_client_ctor.return_value = mock_client
 
     plugin = Anthropic(api_key='test-key', api_version='beta')
-    action = plugin._create_model_action('claude-sonnet-4')
+    action = plugin._create_model_action('claude-sonnet-4-6')
 
     await action.run(_create_sample_request())
 
@@ -115,10 +115,10 @@ async def test_resolve_action_model() -> None:
     plugin = Anthropic(api_key='test-key')
 
     # Test resolving with unprefixed name
-    action = await plugin.resolve(ActionKind.MODEL, 'claude-sonnet-4')
+    action = await plugin.resolve(ActionKind.MODEL, 'claude-sonnet-4-6')
 
     assert action is not None
-    assert action.name == 'anthropic/claude-sonnet-4'
+    assert action.name == 'anthropic/claude-sonnet-4-6'
     assert action.kind == ActionKind.MODEL
 
 
@@ -165,8 +165,11 @@ async def test_anthropic_runtime_clients_are_loop_local(mock_client_ctor: MagicM
 
 def test_supported_models() -> None:
     """Test that all supported models have proper metadata."""
-    assert len(SUPPORTED_MODELS) == 12
+    assert len(SUPPORTED_MODELS) == 15
     assert 'claude-3-haiku' not in SUPPORTED_MODELS
+    # Retired on the Claude API.
+    for retired in ('claude-opus-4', 'claude-opus-4-1', 'claude-sonnet-4'):
+        assert retired not in SUPPORTED_MODELS
     for _name, info in SUPPORTED_MODELS.items():
         assert info.label is not None
         assert info.label.startswith('Anthropic - ')
@@ -179,6 +182,12 @@ def test_supported_models() -> None:
         assert info.supports.system_role is True
 
     for model_name, expected_label in (
+        ('claude-fable-5-2', 'Anthropic - Claude Fable 5.2'),
+        ('claude-fable-5-1', 'Anthropic - Claude Fable 5.1'),
+        ('claude-opus-5-5', 'Anthropic - Claude Opus 5.5'),
+        ('claude-opus-5', 'Anthropic - Claude Opus 5'),
+        ('claude-sonnet-5-5', 'Anthropic - Claude Sonnet 5.5'),
+        ('claude-haiku-5-5', 'Anthropic - Claude Haiku 5.5'),
         ('claude-opus-4-7', 'Anthropic - Claude Opus 4.7'),
         ('claude-opus-4-8', 'Anthropic - Claude Opus 4.8'),
         ('claude-sonnet-4-6', 'Anthropic - Claude Sonnet 4.6'),
@@ -191,6 +200,32 @@ def test_supported_models() -> None:
         assert info.supports is not None
         assert info.supports.output == ['text', 'json']
         assert info.supports.constrained == ConstrainedSupport.ALL
+        assert info.stage is None
+
+
+def test_dated_versions() -> None:
+    """Models before the 4.6 generation send their dated snapshot id."""
+    assert SUPPORTED_MODELS['claude-opus-4-5'].versions == ['claude-opus-4-5-20251101']
+    assert SUPPORTED_MODELS['claude-sonnet-4-5'].versions == ['claude-sonnet-4-5-20250929']
+    assert SUPPORTED_MODELS['claude-haiku-4-5'].versions == ['claude-haiku-4-5-20251001']
+    for name in ('claude-opus-4-6', 'claude-haiku-5-5'):
+        assert SUPPORTED_MODELS[name].versions == [name]
+
+
+def test_get_model_info_matches_dated_version() -> None:
+    """A dated id returned by the Models API gets the curated entry, deprecation included."""
+    info = get_model_info('claude-sonnet-4-5-20250929')
+    assert info is SUPPORTED_MODELS['claude-sonnet-4-5']
+    assert info.stage == ModelStage.DEPRECATED
+
+
+def test_deprecated_models_are_marked() -> None:
+    """Deprecated-but-not-retired models stay listed with the deprecated stage."""
+    info = SUPPORTED_MODELS['claude-sonnet-4-5']
+    assert info.versions == ['claude-sonnet-4-5-20250929']
+    assert info.stage == ModelStage.DEPRECATED
+    deprecated = {name for name, info in SUPPORTED_MODELS.items() if info.stage == ModelStage.DEPRECATED}
+    assert deprecated == {'claude-sonnet-4-5'}
 
 
 def test_mythos_excluded_but_resolvable() -> None:
@@ -200,12 +235,13 @@ def test_mythos_excluded_but_resolvable() -> None:
     assert info.label == 'Anthropic - claude-mythos-5'
     assert info.supports is not None
     assert info.supports.output == ['text']
+    assert info.supports.constrained is None
 
 
 def test_get_model_info_known() -> None:
     """Test get_model_info returns correct info for known model."""
-    info = get_model_info('claude-sonnet-4')
-    assert info.label == 'Anthropic - Claude Sonnet 4'
+    info = get_model_info('claude-sonnet-4-6')
+    assert info.label == 'Anthropic - Claude Sonnet 4.6'
     assert info.supports is not None
     assert info.supports.multiturn is True
     assert info.supports.tools is True
@@ -218,6 +254,8 @@ def test_get_model_info_unknown() -> None:
     assert info.supports is not None
     assert info.supports.multiturn is True
     assert info.supports.tools is True
+    assert info.supports.output == ['text']
+    assert info.supports.constrained is None
 
 
 class _FakeModelPage:
@@ -250,7 +288,7 @@ async def test_list_actions_dynamic_union_dedup_and_fallback_info() -> None:
     mock_client = MagicMock()
     api_items = [
         SimpleNamespace(id='claude-mythos-5'),  # unknown id -> generic fallback info
-        SimpleNamespace(id='claude-sonnet-4'),  # known static id -> must appear once, curated info
+        SimpleNamespace(id='claude-sonnet-4-6'),  # known static id -> must appear once, curated info
         SimpleNamespace(id='claude-unknown-xyz'),  # unknown id -> generic fallback info
     ]
     mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage(api_items))
@@ -264,20 +302,20 @@ async def test_list_actions_dynamic_union_dedup_and_fallback_info() -> None:
 
     # API ids present, in API order, first.
     assert names[0] == 'anthropic/claude-mythos-5'
-    assert names[1] == 'anthropic/claude-sonnet-4'
+    assert names[1] == 'anthropic/claude-sonnet-4-6'
     assert names[2] == 'anthropic/claude-unknown-xyz'
 
     # Static-only ids the mock didn't return are still present (appended after API ids).
     for model_id in SUPPORTED_MODELS:
-        if model_id != 'claude-sonnet-4':
+        if model_id != 'claude-sonnet-4-6':
             assert anthropic_name(model_id) in names
     assert len(names) == 3 + len(SUPPORTED_MODELS) - 1
 
     # Curated info preserved for a known id returned by the API.
-    sonnet_action = next(a for a in actions if a.name == 'anthropic/claude-sonnet-4')
+    sonnet_action = next(a for a in actions if a.name == 'anthropic/claude-sonnet-4-6')
     assert sonnet_action.metadata is not None
     sonnet_model = cast(dict[str, Any], sonnet_action.metadata['model'])
-    assert sonnet_model['label'] == 'Anthropic - Claude Sonnet 4'
+    assert sonnet_model['label'] == 'Anthropic - Claude Sonnet 4.6'
 
     # Unknown ids get the generic fallback info, not curated.
     mythos_action = next(a for a in actions if a.name == 'anthropic/claude-mythos-5')
@@ -285,6 +323,7 @@ async def test_list_actions_dynamic_union_dedup_and_fallback_info() -> None:
     mythos_model = cast(dict[str, Any], mythos_action.metadata['model'])
     assert mythos_model['label'] == 'Anthropic - claude-mythos-5'
     assert mythos_model['supports']['output'] == ['text']
+    assert 'constrained' not in mythos_model['supports']
 
 
 @pytest.mark.asyncio
@@ -308,7 +347,7 @@ async def test_list_actions_caches_on_success() -> None:
     """A successful API fetch is memoized for the plugin's lifetime."""
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
-    mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage([SimpleNamespace(id='claude-sonnet-4')]))
+    mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage([SimpleNamespace(id='claude-sonnet-4-6')]))
     plugin._runtime_client = lambda: mock_client
 
     first = await plugin.list_actions()
@@ -323,7 +362,7 @@ async def test_list_actions_skips_empty_model_ids() -> None:
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
     api_items = [
-        SimpleNamespace(id='claude-sonnet-4'),
+        SimpleNamespace(id='claude-sonnet-4-6'),
         SimpleNamespace(id=''),  # empty id -> dropped
         SimpleNamespace(id=None),  # missing id -> dropped
     ]
@@ -334,7 +373,7 @@ async def test_list_actions_skips_empty_model_ids() -> None:
     names = [a.name for a in actions]
 
     # The valid id is present; the empty/missing ones produce no action.
-    assert 'anthropic/claude-sonnet-4' in names
+    assert 'anthropic/claude-sonnet-4-6' in names
     assert 'anthropic/' not in names
     assert 'anthropic/None' not in names
     # Only the static set is advertised (the one API id overlaps it).
@@ -383,7 +422,7 @@ async def test_resolve_advertises_anthropic_config() -> None:
     """resolve() metadata customOptions reflects the typed AnthropicConfig."""
     plugin = Anthropic(api_key='test-key')
 
-    action = await plugin.resolve(ActionKind.MODEL, 'claude-sonnet-4')
+    action = await plugin.resolve(ActionKind.MODEL, 'claude-sonnet-4-6')
 
     assert action is not None
     custom_options = _custom_options(action.metadata)

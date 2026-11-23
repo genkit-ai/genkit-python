@@ -65,7 +65,7 @@ def _model_failing_with(error: Exception) -> AnthropicModel:
     """Create a model whose non-streaming request raises an error."""
     client = MagicMock()
     client.messages.create = AsyncMock(side_effect=error)
-    return AnthropicModel(model_name='claude-sonnet-4', client=client)
+    return AnthropicModel(model_name='claude-sonnet-4-6', client=client)
 
 
 @pytest.mark.asyncio
@@ -277,7 +277,7 @@ async def test_generate_maps_streaming_anthropic_errors() -> None:
     api_error = _status_error(503, retry_after='1')
     client = MagicMock()
     client.messages.stream.return_value = _FailingStreamManager(api_error)
-    model = AnthropicModel(model_name='claude-sonnet-4', client=client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=client)
     ctx = MagicMock()
     ctx.is_streaming = True
 
@@ -397,7 +397,7 @@ async def test_streaming_in_band_error_event_with_unknown_type_is_unknown() -> N
 def _model_never_called() -> tuple[AnthropicModel, MagicMock]:
     client = MagicMock()
     client.messages.create = AsyncMock()
-    return AnthropicModel(model_name='claude-sonnet-4', client=client), client
+    return AnthropicModel(model_name='claude-sonnet-4-6', client=client), client
 
 
 @pytest.mark.asyncio

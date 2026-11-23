@@ -81,7 +81,7 @@ async def test_generate_basic() -> None:
 
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     response = await model.generate(sample_request)
 
     assert response.message is not None
@@ -113,7 +113,7 @@ async def test_generate_with_tools() -> None:
 
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     response = await model.generate(sample_request)
 
     assert response.message is not None
@@ -161,7 +161,7 @@ async def test_generate_defaults_empty_tool_input_schema() -> None:
     mock_response.stop_reason = 'end_turn'
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     await model.generate(request)
 
     sent_tools = mock_client.messages.create.call_args.kwargs['tools']
@@ -183,7 +183,7 @@ async def test_generate_with_config() -> None:
 
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     request = ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Test')])],
@@ -209,7 +209,7 @@ async def test_generate_with_config() -> None:
 def test_extract_system() -> None:
     """Test system prompt extraction."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(role=Role.SYSTEM, content=[Part.from_text('You are helpful.')]),
@@ -237,7 +237,7 @@ def test_extract_system_keeps_all_system_messages() -> None:
 def test_to_anthropic_messages() -> None:
     """Test message conversion."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(role=Role.USER, content=[Part.from_text('Hello')]),
@@ -304,7 +304,7 @@ async def test_streaming_generation() -> None:
     mock_stream = MockStreamManager(chunks, final_content=final_content)
     mock_client.messages.stream.return_value = mock_stream
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -375,7 +375,7 @@ async def test_streaming_tool_request() -> None:
     mock_stream = MockStreamManager(chunks, final_content=final_content)
     mock_client.messages.stream.return_value = mock_stream
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -486,7 +486,7 @@ class TestMaybeStripFences:
 def test_cache_control_on_text_block() -> None:
     """Test that cache_control metadata is forwarded to Anthropic blocks."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -517,7 +517,7 @@ def test_cache_control_on_text_block() -> None:
 def test_cache_control_not_applied_without_metadata() -> None:
     """Test that no cache_control is applied when metadata is absent."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -547,7 +547,7 @@ async def test_cache_token_tracking_in_usage() -> None:
 
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     request = ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Test')])],
     )
@@ -577,7 +577,7 @@ async def test_no_cache_tokens_when_caching_not_used() -> None:
 
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     request = ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Test')])],
     )
@@ -590,7 +590,7 @@ async def test_no_cache_tokens_when_caching_not_used() -> None:
 def test_pdf_base64_becomes_document_block() -> None:
     """Test that a base64 PDF MediaPart converts to Anthropic document block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     pdf_data = 'data:application/pdf;base64,JVBERi0xLjQ='
     messages = [
@@ -618,7 +618,7 @@ def test_pdf_base64_becomes_document_block() -> None:
 def test_pdf_url_becomes_document_block() -> None:
     """Test that a URL-based PDF converts to Anthropic document block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -640,7 +640,7 @@ def test_pdf_url_becomes_document_block() -> None:
 def test_image_still_works() -> None:
     """Test that non-document images still produce image blocks."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -661,7 +661,7 @@ def test_image_still_works() -> None:
 def test_pdf_with_cache_control() -> None:
     """Test that cache_control can be applied to document blocks."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     pdf_data = 'data:application/pdf;base64,JVBERi0xLjQ='
     messages = [
@@ -684,7 +684,18 @@ def test_pdf_with_cache_control() -> None:
     assert blocks[0]['cache_control'] == {'type': 'ephemeral'}
 
 
-@pytest.mark.parametrize('model_name', ['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8'])
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'claude-opus-4-6',
+        'claude-opus-4-7',
+        'claude-opus-4-8',
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+        'claude-fable-5-2',
+        'claude-sonnet-4-5-20250929',
+    ],
+)
 def test_structured_output_uses_native_output_config(model_name: str) -> None:
     """Test that JSON schema uses native output_config when model supports it."""
     mock_client = MagicMock()
@@ -761,12 +772,20 @@ def test_structured_output_falls_back_when_unconstrained(output_constrained: boo
     assert '"name"' in params['system']
 
 
-def test_structured_output_falls_back_for_unsupported_models() -> None:
-    """Test that JSON with schema falls back to system prompt for unsupported models."""
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'claude-unknown-model',
+        'claude-mythos-5',
+        'claude-sonnet-4-5@20250929',
+        'claude-sonnet-4-20250514',
+        'claude-3-7-sonnet-20250219',
+    ],
+)
+def test_structured_output_uses_prompt_for_unlisted_models(model_name: str) -> None:
+    """Ids not in the catalog get the text-only fallback, so the schema goes in the system prompt."""
     mock_client = MagicMock()
-    # Unknown models resolve to the generic fallback in model_info.py, whose
-    # supports.constrained is unset — no native constrained-output support.
-    model = AnthropicModel(model_name='claude-unknown-model', client=mock_client)
+    model = AnthropicModel(model_name=model_name, client=mock_client)
 
     request = ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Generate a cat')])],
@@ -780,7 +799,6 @@ def test_structured_output_falls_back_for_unsupported_models() -> None:
     params = model._build_params(request)
 
     assert 'output_config' not in params
-    assert 'system' in params
     assert 'Output valid JSON' in params['system']
     assert 'Follow this JSON schema' in params['system']
     assert '"name"' in params['system']
@@ -910,7 +928,7 @@ def _tool_request(config: Any) -> ModelRequest:
 def test_api_surface_resolution(config: dict[str, Any], default_api_version: Any, expected: bool) -> None:
     """Resolve request override, feature signals, plugin default, then stable."""
     model = AnthropicModel(
-        model_name='claude-sonnet-4',
+        model_name='claude-sonnet-4-6',
         client=MagicMock(),
         default_api_version=default_api_version,
     )
@@ -935,7 +953,7 @@ async def test_api_surface_resolution_routes_create(
     """The resolved API surface selects the matching SDK create method."""
     mock_client = _mock_client_for_generate()
     model = AnthropicModel(
-        model_name='claude-sonnet-4',
+        model_name='claude-sonnet-4-6',
         client=mock_client,
         default_api_version=default_api_version,
     )
@@ -958,7 +976,7 @@ async def test_default_api_version_beta_routes_streaming() -> None:
     final_content = [MagicMock(type='text', text='ok')]
     mock_client.beta.messages.stream.return_value = MockStreamManager([], final_content=final_content)
     model = AnthropicModel(
-        model_name='claude-sonnet-4',
+        model_name='claude-sonnet-4-6',
         client=mock_client,
         default_api_version='beta',
     )
@@ -976,7 +994,7 @@ async def test_default_api_version_beta_routes_streaming() -> None:
 async def test_beta_surface_sends_default_betas() -> None:
     """Beta calls send the same default beta headers as the JS plugin."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'apiVersion': 'beta'}))
 
@@ -993,7 +1011,7 @@ async def test_beta_surface_sends_default_betas() -> None:
 async def test_beta_surface_preserves_empty_betas_opt_out() -> None:
     """An explicit empty list opts out of the default beta headers."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'apiVersion': 'beta', 'betas': []}))
 
@@ -1006,7 +1024,7 @@ async def test_beta_surface_preserves_empty_betas_opt_out() -> None:
 async def test_resold_surface_omits_default_betas() -> None:
     """Resold surfaces do not offer every default beta, so none are assumed."""
     mock_client = _mock_vertex_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'apiVersion': 'beta'}))
 
@@ -1018,7 +1036,7 @@ async def test_resold_surface_omits_default_betas() -> None:
 async def test_resold_surface_beta_only_field_routes_beta_without_defaults() -> None:
     """A beta-only field still selects the beta surface without assuming default headers."""
     mock_client = _mock_vertex_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'taskBudget': 20000}))
 
@@ -1031,7 +1049,7 @@ async def test_resold_surface_beta_only_field_routes_beta_without_defaults() -> 
 async def test_resold_surface_forwards_explicit_betas() -> None:
     """An explicit betas list is still forwarded on resold surfaces."""
     mock_client = _mock_vertex_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'apiVersion': 'beta', 'betas': ['context-1m-2025-08-07']}))
 
@@ -1044,7 +1062,7 @@ async def test_beta_streaming_omits_empty_betas_opt_out() -> None:
     mock_client = MagicMock()
     final_content = [MagicMock(type='text', text='ok')]
     mock_client.beta.messages.stream.return_value = MockStreamManager([], final_content=final_content)
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     ctx = MagicMock()
     ctx.is_streaming = True
 
@@ -1059,7 +1077,7 @@ async def test_beta_streaming_omits_empty_betas_opt_out() -> None:
 async def test_camelcase_sampling_aliases_normalized() -> None:
     """CamelCase sampling aliases become SDK kwargs without leaking."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(
         _text_request({
@@ -1089,7 +1107,7 @@ async def test_sampling_params_reach_streaming_request() -> None:
         [],
         final_content=[MagicMock(type='text', text='ok')],
     )
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     ctx = MagicMock()
     ctx.is_streaming = True
 
@@ -1115,7 +1133,7 @@ async def test_sampling_params_reach_streaming_request() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('model_name', ['claude-opus-4-8', 'claude-fable-5'])
+@pytest.mark.parametrize('model_name', ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-5-5', 'claude-fable-5-2'])
 async def test_sampling_params_pass_through_for_newest_models(model_name: str) -> None:
     """Newest models keep local pass-through for API-enforced sampling rules."""
     mock_client = _mock_client_for_generate()
@@ -1133,7 +1151,7 @@ async def test_sampling_params_pass_through_for_newest_models(model_name: str) -
 def test_build_params_default_max_tokens() -> None:
     """An empty config uses the plugin's default output-token limit."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     params = model._build_params(_text_request({}))
 
@@ -1171,7 +1189,7 @@ def test_build_params_sends_only_create_kwargs_from_config() -> None:
     class TaggedConfig(AnthropicConfig):
         menu_tag: str | None = None
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=MagicMock())
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=MagicMock())
 
     params = model._build_params(
         _text_request({}), config=TaggedConfig(menu_tag='brunch', temperature=0.2, stop_sequences=['END'])
@@ -1186,7 +1204,7 @@ def test_build_params_sends_only_create_kwargs_from_config() -> None:
 async def test_dict_config_extra_reaches_sdk() -> None:
     """Keys under `extra` in a dict config pass through the SDK body escape hatch."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'temperature': 0.3, 'extra': {'future_option': 'x'}}))
 
@@ -1199,7 +1217,7 @@ async def test_dict_config_extra_reaches_sdk() -> None:
 async def test_typed_config_thinking_translated_for_sdk() -> None:
     """The flat thinking fields become Anthropic's thinking object."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     config = AnthropicConfig(thinking='enabled', thinking_budget=2048)
     await model.generate(_text_request(config))
@@ -1235,7 +1253,7 @@ async def test_typed_config_thinking_variants_translated_for_sdk(
 ) -> None:
     """Advertised thinking variants are translated to the SDK shape."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     config = AnthropicConfig.model_validate(thinking)
     await model.generate(_text_request(config))
@@ -1248,7 +1266,7 @@ async def test_typed_config_thinking_variants_translated_for_sdk(
 async def test_beta_config_uses_beta_sdk_and_sends_betas() -> None:
     """apiVersion / betas route through the beta SDK surface."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     config = AnthropicConfig.model_validate({
         'apiVersion': 'beta',
@@ -1266,7 +1284,7 @@ async def test_beta_config_uses_beta_sdk_and_sends_betas() -> None:
 def test_secrets_key_copy_keeps_client_settings_and_transport() -> None:
     """A per-request key yields a request-scoped copy that keeps client settings and transport."""
     base_client = AsyncAnthropic(api_key='base-key', default_headers={'X-Custom': 'yes'})
-    model = AnthropicModel(model_name='claude-sonnet-4', client=base_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=base_client)
 
     client = model._client_for_key('request-key')
 
@@ -1280,7 +1298,7 @@ def test_secrets_key_copy_keeps_client_settings_and_transport() -> None:
 def test_build_params_consumes_client_level_keys_silently() -> None:
     """apiVersion is honored elsewhere and must not be logged as ignored."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     with patch.object(anthropic_models, 'logger') as mock_logger:
         params = model._build_params(_text_request({'apiVersion': 'beta'}))
@@ -1293,7 +1311,7 @@ def test_build_params_consumes_client_level_keys_silently() -> None:
 async def test_invalid_config_raises_from_generate() -> None:
     """An invalid dict config is INVALID_ARGUMENT, carrying the validation error."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     with pytest.raises(GenkitError) as exc_info:
         await model.generate(_text_request({'thinkingBudget': 512}))
@@ -1307,7 +1325,7 @@ async def test_invalid_config_raises_from_generate() -> None:
 async def test_merged_config_rule_raises_from_generate() -> None:
     """A merged config that breaks a cross-field rule is INVALID_ARGUMENT before anything is sent."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     with pytest.raises(GenkitError, match="thinking_budget is required when thinking is 'enabled'") as exc_info:
         await model.generate(_text_request({'thinking': 'enabled'}))
@@ -1320,7 +1338,7 @@ async def test_merged_config_rule_raises_from_generate() -> None:
 async def test_config_metadata_reaches_sdk() -> None:
     """user_id reaches the SDK kwargs as metadata.user_id."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     config = AnthropicConfig(user_id='user-123')
     await model.generate(_tool_request(config))
@@ -1334,7 +1352,7 @@ async def test_config_metadata_reaches_sdk() -> None:
 async def test_config_tool_choice_raises_pointing_to_generate_option() -> None:
     """A dict config with the removed tool_choice key fails before the SDK call."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     with pytest.raises(GenkitError, match=r'ai\.generate\(tool_choice='):
         await model.generate(_tool_request({'tool_choice': {'type': 'none'}}))
@@ -1368,7 +1386,7 @@ def test_structured_output_merges_existing_output_config() -> None:
 def test_config_version_overrides_model_name() -> None:
     """Per-request version maps to the Anthropic model parameter."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     params = model._build_params(_text_request({'version': 'claude-sonnet-4-20260101'}))
 
@@ -1378,7 +1396,7 @@ def test_config_version_overrides_model_name() -> None:
 def test_backward_compat_plain_model_config() -> None:
     """A plain ModelConfig still maps to the same SDK params (no behavior change)."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     params = model._build_params(_text_request(ModelConfig(temperature=0.7, max_output_tokens=100, top_p=0.9)))
 
@@ -1399,7 +1417,7 @@ def test_backward_compat_plain_model_config() -> None:
 async def test_beta_only_params_select_beta_surface(config: dict, kwarg: str) -> None:
     """Beta-only params in `extra` route to the beta surface instead of crashing the stable one."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'extra': config}))
 
@@ -1413,7 +1431,7 @@ async def test_beta_only_params_select_beta_surface(config: dict, kwarg: str) ->
 async def test_task_budget_selects_beta_surface() -> None:
     """task_budget is beta-only and must not ship on the stable surface."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'taskBudget': 20000}))
 
@@ -1426,7 +1444,7 @@ async def test_task_budget_selects_beta_surface() -> None:
 async def test_unknown_params_still_route_to_extra_body_on_beta() -> None:
     """The escape hatch keeps working once the beta surface is selected."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     await model.generate(_text_request({'extra': {'speed': 'fast', 'future_option': 'x'}}))
 
@@ -1438,7 +1456,7 @@ async def test_unknown_params_still_route_to_extra_body_on_beta() -> None:
 async def test_config_stream_does_not_reach_sdk() -> None:
     """Genkit owns streaming: a flat `stream` is an unknown key, and `extra` can't set it."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     with pytest.raises(GenkitError, match='stream'):
         await model.generate(_text_request({'stream': True}))
@@ -1465,7 +1483,7 @@ async def test_finish_reason_mapping(stop_reason: str, expected: FinishReason) -
     """Anthropic stop reasons map onto Genkit finish reasons."""
     mock_client = _mock_client_for_generate()
     mock_client.messages.create.return_value.stop_reason = stop_reason
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     response = await model.generate(_text_request({}))
 
@@ -1511,7 +1529,7 @@ def test_output_config_built_from_flat_fields(config: AnthropicConfig, expected:
 
 def test_extra_nested_object_replaces_the_built_one() -> None:
     """extra={'thinking': ...} and extra={'metadata': ...} replace the object built from the flat fields."""
-    model = AnthropicModel(model_name='claude-sonnet-4', client=MagicMock())
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=MagicMock())
     config = AnthropicConfig(
         thinking='enabled',
         thinking_budget=2048,
@@ -1546,7 +1564,7 @@ async def test_generate_with_thinking_block() -> None:
     mock_response.stop_reason = 'end_turn'
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     response = await model.generate(sample_request)
 
     assert response.message is not None
@@ -1573,7 +1591,7 @@ async def test_generate_thinking_block_without_signature_omits_metadata() -> Non
     mock_response.stop_reason = 'end_turn'
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     response = await model.generate(sample_request)
 
     assert response.message is not None
@@ -1595,7 +1613,7 @@ async def test_generate_with_redacted_thinking_block() -> None:
     mock_response.stop_reason = 'end_turn'
     mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     response = await model.generate(sample_request)
 
     assert response.message is not None
@@ -1624,7 +1642,7 @@ async def test_streaming_thinking_deltas() -> None:
     ]
     mock_client.messages.stream.return_value = MockStreamManager(chunks, final_content=final_content)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -1675,7 +1693,7 @@ async def test_streaming_redacted_thinking_block() -> None:
     ]
     mock_client.messages.stream.return_value = MockStreamManager(chunks, final_content=final_content)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -1736,7 +1754,7 @@ async def test_streaming_thinking_then_tool_use_interleave() -> None:
     ]
     mock_client.messages.stream.return_value = MockStreamManager(chunks, final_content=final_content)
 
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -1777,7 +1795,7 @@ async def test_streaming_thinking_then_tool_use_interleave() -> None:
 def test_reasoning_part_encodes_as_thinking_block() -> None:
     """Test that signed ReasoningPart values encode as Anthropic thinking blocks."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -1820,7 +1838,7 @@ async def test_generate_claude_drops_thinking_part_without_thought_signature(
         Message(role=Role.MODEL, content=[Part.from_reasoning('because', metadata=metadata), Part.from_text('391')]),
     ]
 
-    response = await ai.generate(model='anthropic/claude-sonnet-4', messages=history, prompt='now add 100')
+    response = await ai.generate(model='anthropic/claude-sonnet-4-6', messages=history, prompt='now add 100')
 
     assert response.text == 'ok'
     create = mock_client.messages.create if mock_client.messages.create.called else mock_client.beta.messages.create
@@ -1831,7 +1849,7 @@ async def test_generate_claude_drops_thinking_part_without_thought_signature(
 def test_empty_reasoning_part_is_skipped() -> None:
     """Test that empty reasoning parts produce no Anthropic block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -1847,7 +1865,7 @@ def test_empty_reasoning_part_is_skipped() -> None:
 def test_redacted_thinking_part_round_trips() -> None:
     """Test that redacted thinking custom data encodes as a redacted block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(
@@ -1866,7 +1884,7 @@ def test_redacted_thinking_part_round_trips() -> None:
 def test_thinking_blocks_do_not_get_cache_control() -> None:
     """Test that cache_control metadata is not applied to thinking blocks."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     cache_meta = {'cache_control': {'type': 'ephemeral'}}
     messages = [
@@ -1893,7 +1911,7 @@ def test_thinking_blocks_do_not_get_cache_control() -> None:
 def test_deserialized_reasoning_part_round_trips() -> None:
     """Test that reasoning history parsed from JSON encodes as a thinking block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message.model_validate({
@@ -1914,7 +1932,7 @@ def test_deserialized_reasoning_part_round_trips() -> None:
 def test_deserialized_redacted_thinking_part_round_trips() -> None:
     """Test that redacted thinking history parsed from JSON encodes as a redacted block."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message.model_validate({

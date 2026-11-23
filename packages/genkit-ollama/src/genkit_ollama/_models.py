@@ -729,8 +729,8 @@ class OllamaModel:
 
         ToolRequestParts become the message's ``tool_calls``; non-object
         input is sent as ``{}``. Each ToolResponsePart becomes its own
-        ``tool`` message carrying ``tool_name``, with non-string output
-        encoded as JSON.
+        message carrying ``tool_name``, with non-string output encoded as
+        JSON; other parts in that message are dropped.
 
         Each MediaPart becomes image bytes via ``_resolve_image``: data
         URIs and bare base64 are decoded, HTTP/HTTPS URLs are downloaded,

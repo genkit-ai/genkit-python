@@ -23,7 +23,7 @@ import ollama as ollama_api
 import pytest
 from pydantic import BaseModel
 
-from genkit import Genkit, Message, ModelResponse, Part, Role
+from genkit import FinishReason, Genkit, Message, ModelResponse, Part, Role
 
 
 @pytest.mark.asyncio
@@ -82,25 +82,22 @@ async def test_tool_turn_is_sent_back_with_its_call(
     mock_ollama_api_async_client: Mock,
     genkit_veneer_chat_model: Genkit,
 ) -> None:
-    """The follow-up request carries the model's tool call and the named tool result."""
+    """The model answers once its tool call and the named result are in the history."""
     ai = genkit_veneer_chat_model
-    sent: list[list[ollama_api.Message]] = []
-    replies = [
-        ollama_api.Message(
-            role='assistant',
-            content='',
-            tool_calls=[
-                ollama_api.Message.ToolCall(
-                    function=ollama_api.Message.ToolCall.Function(name='getCurrentTime', arguments={})
-                )
-            ],
-        ),
-        ollama_api.Message(role='assistant', content='It is 18:00.'),
-    ]
+    calls = 0
 
     async def fake_chat(*args: object, **kwargs: Any) -> ollama_api.ChatResponse:
-        sent.append(list(kwargs['messages']))
-        return ollama_api.ChatResponse(message=replies[len(sent) - 1])
+        nonlocal calls
+        calls += 1
+        history = kwargs['messages']
+        called = any(call.function.name == 'getCurrentTime' for m in history for call in m.tool_calls or [])
+        answered = any(m.role == 'tool' and m.tool_name == 'getCurrentTime' for m in history)
+        if called and answered:
+            return ollama_api.ChatResponse(message=ollama_api.Message(role='assistant', content='It is 18:00.'))
+        tool_call = ollama_api.Message.ToolCall(
+            function=ollama_api.Message.ToolCall.Function(name='getCurrentTime', arguments={})
+        )
+        return ollama_api.ChatResponse(message=ollama_api.Message(role='assistant', content='', tool_calls=[tool_call]))
 
     mock_ollama_api_async_client.return_value.chat.side_effect = fake_chat
 
@@ -109,13 +106,11 @@ async def test_tool_turn_is_sent_back_with_its_call(
         """Returns the current time."""
         return '18:00'
 
-    response = await ai.generate(prompt='What time is it?', tools=['getCurrentTime'], max_turns=2)
+    response = await ai.generate(prompt='What time is it?', tools=['getCurrentTime'], max_turns=3)
 
+    assert response.finish_reason != FinishReason.ABORTED
     assert response.text == 'It is 18:00.'
-    assert len(sent) == 2
-    assistant, tool = sent[1][-2:]
-    assert [call.function.name for call in assistant.tool_calls or []] == ['getCurrentTime']
-    assert (tool.role, tool.tool_name, tool.content) == ('tool', 'getCurrentTime', '18:00')
+    assert calls == 2
 
 
 # Integration tests are covered by the above test cases

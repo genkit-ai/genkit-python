@@ -1168,6 +1168,27 @@ class TestBuildChatMessagesWithTools(unittest.IsolatedAsyncioTestCase):
 
         assert messages[0].content == '{"city": "Zürich"}'
 
+    async def test_other_parts_next_to_tool_responses_are_dropped(self) -> None:
+        """A message with tool responses sends only the responses."""
+        request = ModelRequest(
+            messages=[
+                Message(
+                    role=Role.TOOL,
+                    content=[
+                        Part.from_text('note'),
+                        Part.from_tool_response('getCurrentTime', output='18:00', ref='0'),
+                        Part.from_media('data:image/png;base64,AAAA', content_type='image/png'),
+                    ],
+                ),
+            ]
+        )
+
+        messages = await OllamaModel.build_chat_messages(request)
+
+        assert [(m.role, m.tool_name, m.content, m.images) for m in messages] == [
+            ('tool', 'getCurrentTime', '18:00', None)
+        ]
+
 
 class TestToOllamaRole:
     """Tests for OllamaModel._to_ollama_role.

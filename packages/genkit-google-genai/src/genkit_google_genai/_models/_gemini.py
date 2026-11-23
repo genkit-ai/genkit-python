@@ -184,12 +184,15 @@ def _usage_from_metadata(usage_metadata: Any) -> GenerationUsage:  # noqa: ANN40
     if usage_metadata is None:
         return GenerationUsage()
 
+    tool_use_tokens = _to_float(usage_metadata, 'tool_use_prompt_token_count')
     return GenerationUsage(
         input_tokens=_to_float(usage_metadata, 'prompt_token_count'),
         output_tokens=_to_float(usage_metadata, 'candidates_token_count'),
         total_tokens=_to_float(usage_metadata, 'total_token_count'),
         thoughts_tokens=_to_float(usage_metadata, 'thoughts_token_count'),
         cached_content_tokens=_to_float(usage_metadata, 'cached_content_token_count'),
+        # Same key as the JS plugin; billed separately from the prompt, so not added to input_tokens.
+        custom={'toolUseTokens': tool_use_tokens} if tool_use_tokens else None,
     )
 
 
@@ -2688,7 +2691,14 @@ class GeminiModel:
 
         usage = GenerationUsage.from_messages(request.messages, response.message)
         if response.usage:
-            for field in ('input_tokens', 'output_tokens', 'total_tokens', 'thoughts_tokens', 'cached_content_tokens'):
+            for field in (
+                'input_tokens',
+                'output_tokens',
+                'total_tokens',
+                'thoughts_tokens',
+                'cached_content_tokens',
+                'custom',
+            ):
                 val = getattr(response.usage, field, None)
                 if val is not None:
                     setattr(usage, field, val)

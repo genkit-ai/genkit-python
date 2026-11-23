@@ -879,3 +879,24 @@ async def test_anthropic_client_options_reach_the_client() -> None:
     await ai.generate(model=MODEL, prompt='hi')
 
     assert api.requests[-1].headers['x-team'] == 'search'
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_sends_system_cache_control() -> None:
+    """A cached system part is sent as a block with cache_control, not flattened."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+    cache = {'type': 'ephemeral'}
+
+    await ai.generate(
+        model=MODEL,
+        messages=[
+            Message(
+                role=Role.SYSTEM,
+                content=[Part.from_text('Long reference.', metadata={'cache_control': cache})],
+            ),
+        ],
+        prompt='Hi',
+    )
+
+    assert api.body()['system'] == [{'type': 'text', 'text': 'Long reference.', 'cache_control': cache}]

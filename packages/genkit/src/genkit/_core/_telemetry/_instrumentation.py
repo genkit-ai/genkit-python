@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from ._attrs import METADATA_PREFIX, Attr
 from ._log_exporter import reset_log_export
@@ -140,12 +141,17 @@ def describe_value(value: object) -> str:
     return f'{cls.__module__}.{cls.__qualname__}'
 
 
+def _json_default(obj: object) -> object:
+    """Encode leaves that json rejects: models, datetimes, UUIDs, bytes, dataclasses."""
+    return to_jsonable_python(obj, by_alias=True, exclude_none=True, bytes_mode='base64', fallback=str)
+
+
 def to_json_attr(value: object) -> str:
     """Serialize an arbitrary object for an input/output span attribute."""
     if isinstance(value, BaseModel):
         return value.model_dump_json(by_alias=True, exclude_none=True)
     try:
-        return json.dumps(value)
+        return json.dumps(value, default=_json_default)
     except (TypeError, ValueError):
         return str(value)
 

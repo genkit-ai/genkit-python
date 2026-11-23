@@ -92,6 +92,9 @@ from genkit_openai._typing import OpenAIConfig
 # tenant key runs under the tenant's own account, so these are not copied.
 _PLUGIN_ACCOUNT_HEADERS = frozenset({'openai-organization', 'openai-project'})
 
+# The embeddings endpoint accepts at most 2048 inputs per request.
+_MAX_EMBED_INPUTS = 2048
+
 _CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncOpenAI.__init__).parameters) - {'self'}
 
 
@@ -718,13 +721,23 @@ class OpenAI(Plugin):
                     create_kwargs['dimensions'] = dimensions
             if encoding_format is not None:
                 create_kwargs['encoding_format'] = encoding_format
+
+            # The embeddings endpoint rejects requests with more than
+            # _MAX_EMBED_INPUTS inputs, so large batches go out in chunks.
+            data: list[Any] = []
             try:
-                response = await client.embeddings.create(model=name, input=texts, **create_kwargs)
+                for start in range(0, len(texts), _MAX_EMBED_INPUTS):
+                    response = await client.embeddings.create(
+                        model=name,
+                        input=texts[start : start + _MAX_EMBED_INPUTS],
+                        **create_kwargs,
+                    )
+                    data.extend(response.data)
             except APIError as e:
                 reraise_openai_error(e)
 
             # Convert OpenAI response to Genkit format
-            embeddings = [Embedding(embedding=item.embedding) for item in response.data]
+            embeddings = [Embedding(embedding=item.embedding) for item in data]
             return EmbedResponse(embeddings=embeddings)
 
         return Embedder(

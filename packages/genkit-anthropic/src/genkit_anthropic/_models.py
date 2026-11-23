@@ -239,6 +239,26 @@ _CLIENT_SETTING_FIELDS = ('timeout', 'extra_headers', 'extra_query', 'extra_body
 _TOOL_CHOICE_TYPES = {'auto': 'auto', 'required': 'any', 'none': 'none'}
 
 
+def _effective_tool_choice(request: ModelRequest) -> str | None:
+    """The request's tool_choice, with 'required' relaxed to 'auto' once tools have answered.
+
+    'required' forces the first tool call of a user turn. Keeping it after the
+    tool results forbids a text answer, so the run loops until max_turns. If any
+    message after the most recent model turn carries a tool response, later
+    turns may answer.
+    """
+    choice = request.tool_choice
+    if choice != 'required':
+        return choice
+    saw_tool_response = False
+    for msg in reversed(request.messages):
+        if msg.role == Role.MODEL:
+            return 'auto' if saw_tool_response else choice
+        if msg.role == Role.TOOL or any(p.tool_response is not None for p in msg.content):
+            saw_tool_response = True
+    return choice
+
+
 def _to_anthropic_tool_choice(tool_choice: str | None, disable_parallel_tool_use: bool) -> dict[str, Any] | None:
     """Translate Genkit's tool_choice into Anthropic's object; None sends nothing.
 
@@ -587,7 +607,7 @@ class AnthropicModel:
                 }
                 for t in request.tools
             ]
-            tool_choice = _to_anthropic_tool_choice(request.tool_choice, disable_parallel_tool_use)
+            tool_choice = _to_anthropic_tool_choice(_effective_tool_choice(request), disable_parallel_tool_use)
             if tool_choice is not None:
                 params['tool_choice'] = tool_choice
 

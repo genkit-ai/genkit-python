@@ -30,6 +30,7 @@ from genkit_anthropic import Anthropic, AnthropicConfig
 
 from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 from genkit.middleware import Middleware
+from genkit.model import ToolRequest, ToolResponse
 from genkit.plugin_api import ActionKind
 
 MODEL = 'anthropic/claude-sonnet-4-6'
@@ -472,6 +473,41 @@ async def test_generate_claude_tool_choice_request_body(
     # 3. The body carries the translated object, or nothing for unset
     assert response.text == 'ok'
     assert api.body().get('tool_choice') == sent
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_required_tool_choice_relaxes_to_auto_after_tool_result() -> None:
+    """'required' forces the first call; once a tool has answered, the follow-up sends {'type': 'auto'}."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    @ai.tool(name='lookup_menu')
+    async def lookup_menu(dish: str) -> str:
+        return 'ramen'
+
+    history = [
+        Message(role=Role.USER, content=[Part(text='Is ramen in stock?')]),
+        Message(
+            role=Role.MODEL,
+            content=[Part(tool_request=ToolRequest(ref='t1', name='lookup_menu', input='ramen'))],
+        ),
+        Message(
+            role=Role.TOOL,
+            content=[Part(tool_response=ToolResponse(ref='t1', name='lookup_menu', output='ramen'))],
+        ),
+    ]
+    await ai.generate(model=MODEL, messages=history, tools=['lookup_menu'], tool_choice='required')
+    assert api.body().get('tool_choice') == {'type': 'auto'}
+
+    # A new user turn after the tool round is forced again.
+    await ai.generate(
+        model=MODEL,
+        messages=[*history, Message(role=Role.MODEL, content=[Part(text='Yes.')])],
+        prompt='And pho?',
+        tools=['lookup_menu'],
+        tool_choice='required',
+    )
+    assert api.body().get('tool_choice') == {'type': 'any'}
 
 
 @pytest.mark.asyncio

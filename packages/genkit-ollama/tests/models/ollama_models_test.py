@@ -1135,6 +1135,39 @@ class TestBuildChatMessagesWithTools(unittest.IsolatedAsyncioTestCase):
             ('getWeather', '{"sky": "clear"}'),
         ]
 
+    async def test_non_object_tool_input_is_sent_as_empty_arguments(self) -> None:
+        """Ollama only takes object arguments, so other input is sent as {}."""
+        request = ModelRequest(
+            messages=[
+                Message(
+                    role=Role.MODEL,
+                    content=[
+                        Part.from_tool_request('noInput', ref='0'),
+                        Part.from_tool_request('scalarInput', input='Paris', ref='1'),
+                    ],
+                ),
+            ]
+        )
+
+        messages = await OllamaModel.build_chat_messages(request)
+
+        assert [dict(call.function.arguments) for call in messages[0].tool_calls or []] == [{}, {}]
+
+    async def test_non_ascii_tool_output_is_not_escaped(self) -> None:
+        """Non-ASCII tool output reaches the model as written."""
+        request = ModelRequest(
+            messages=[
+                Message(
+                    role=Role.TOOL,
+                    content=[Part.from_tool_response('getWeather', output={'city': 'Zürich'}, ref='0')],
+                ),
+            ]
+        )
+
+        messages = await OllamaModel.build_chat_messages(request)
+
+        assert messages[0].content == '{"city": "Zürich"}'
+
 
 class TestToOllamaRole:
     """Tests for OllamaModel._to_ollama_role.

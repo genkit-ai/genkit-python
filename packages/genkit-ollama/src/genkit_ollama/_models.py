@@ -727,6 +727,11 @@ class OllamaModel:
     async def build_chat_messages(cls, request: ModelRequest) -> list[ollama_api.Message]:
         """Build the messages for the chat API.
 
+        ToolRequestParts become the message's ``tool_calls``; non-object
+        input is sent as ``{}``. Each ToolResponsePart becomes its own
+        ``tool`` message carrying ``tool_name``, with non-string output
+        encoded as JSON.
+
         Each MediaPart becomes image bytes via ``_resolve_image``: data
         URIs and bare base64 are decoded, HTTP/HTTPS URLs are downloaded,
         and anything else raises ``INVALID_ARGUMENT``.
@@ -747,7 +752,9 @@ class OllamaModel:
                     messages.append(
                         ollama_api.Message(
                             role=role,
-                            content=output if isinstance(output, str) else json.dumps(output, default=str),
+                            content=output
+                            if isinstance(output, str)
+                            else json.dumps(output, default=str, ensure_ascii=False),
                             tool_name=tool_response.name,
                         )
                     )

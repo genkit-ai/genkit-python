@@ -193,7 +193,12 @@ print(response.text)
 # => Sure. Loaded python-expert. What are you working on?
 ```
 
-Each direct subdirectory of a skill path that holds a `SKILL.md` is a skill, named after the directory (`skills/python-expert/SKILL.md` is `python-expert`). Frontmatter `description` shows up in the catalog; frontmatter `name` doesn't rename the skill:
+By default, `Skills()` scans `.agents/skills` and then `skills`. Set `skill_paths`
+to replace these defaults, or set it to `[]` to disable discovery.
+
+Each direct subdirectory of a skill path that holds a `SKILL.md` is a skill, named
+after the directory (`skills/python-expert/SKILL.md` is `python-expert`). Frontmatter
+`description` shows up in the catalog. Frontmatter `name` does not rename the skill:
 
 ```markdown
 ---

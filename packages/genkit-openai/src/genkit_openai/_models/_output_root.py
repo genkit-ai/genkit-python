@@ -77,15 +77,19 @@ def unwrap_output_text(text: str) -> str:
     """JSON text of the wrapped value in ``text``, or ``text`` unchanged.
 
     The value's text is kept as sent, so it reads the same as when streamed.
-    Text that is not exactly ``{"value": ...}`` is returned as is: a host that
-    ignored the schema may reply with the bare value.
+    Text that is not an object with a ``value`` key is returned as is: a host
+    that ignored the schema may reply with the bare value.
     """
     try:
         parsed = json.loads(text)
     except ValueError:
         return text
-    if not isinstance(parsed, dict) or set(cast(dict[str, Any], parsed)) != {OUTPUT_VALUE_FIELD}:
+    if not isinstance(parsed, dict) or OUTPUT_VALUE_FIELD not in parsed:
         return text
+    parsed = cast(dict[str, Any], parsed)
+    if len(parsed) > 1:
+        # Keys beside the value (a non-strict host) rule out slicing.
+        return json.dumps(parsed[OUTPUT_VALUE_FIELD])
     # The shape is known, so stripping the opening and closing brace leaves
     # exactly the value.
     unwrapper = OutputStreamUnwrapper()

@@ -83,9 +83,14 @@ def test_unwrap_output_text_returns_the_value_as_sent(text: str, expected: str) 
     assert unwrap_output_text(text) == expected
 
 
-@pytest.mark.parametrize('text', ['[1,2]', '{"other":1}', '{"value":1,"extra":2}', 'not json', ''])
+def test_unwrap_output_text_takes_the_value_beside_other_keys() -> None:
+    """A non-strict host may add keys; the value is still taken, as in JS, Go and Dart."""
+    assert json.loads(unwrap_output_text('{"value":[1, 2],"extra":2}')) == [1, 2]
+
+
+@pytest.mark.parametrize('text', ['[1,2]', '{"other":1}', 'not json', ''])
 def test_unwrap_output_text_passes_through_anything_else(text: str) -> None:
-    """Only exactly {"value": ...} is unwrapped; a bare value from a host that ignored the schema is kept."""
+    """Only an object with a value key is unwrapped; a bare value from a host that ignored the schema is kept."""
     assert unwrap_output_text(text) == text
 
 

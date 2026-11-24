@@ -16,14 +16,8 @@
 
 """Anthropic plugin for Genkit."""
 
-import asyncio
-import inspect
-import os
 from collections.abc import Mapping
-from typing import Any, Literal, cast
-from urllib.parse import urlsplit
-
-from anthropic import NOT_GIVEN, AsyncAnthropic, AsyncAnthropicVertex
+from typing import Any, Literal
 
 from genkit import GenkitError, ModelResponse, get_logger
 from genkit.model import Model, ModelContext, ModelRef, ModelRequest
@@ -31,86 +25,44 @@ from genkit.plugin_api import (
     Action,
     ActionKind,
     Plugin,
-    loop_local_client,
 )
+from genkit_anthropic._anthropic_api import AnthropicApiBackend
+from genkit_anthropic._backend import Backend
 from genkit_anthropic._config import AnthropicConfig
-from genkit_anthropic._google_cloud import (
-    GoogleCloud,
-    adc_project,
-    require_google_auth,
-    resolve_location,
-    resolve_project,
-)
+from genkit_anthropic._google_cloud import GoogleCloud, GoogleCloudBackend
 from genkit_anthropic._model_info import SUPPORTED_ANTHROPIC_MODELS, KnownClaude, get_model_info
-from genkit_anthropic._models import AnthropicModel, pinned_credential_header
+from genkit_anthropic._models import AnthropicModel, ClaudeClient
 from genkit_anthropic._secrets import context_api_key, reject_config_api_key
 
 logger = get_logger(__name__)
 
 ANTHROPIC_PLUGIN_NAME = 'anthropic'
 
-_CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncAnthropic.__init__).parameters) - {'self'}
-# region and project_id come from GoogleCloud(project=..., location=...), so they aren't client options.
-_GOOGLE_CLOUD_CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncAnthropicVertex.__init__).parameters) - {
-    'self',
-    'region',
-    'project_id',
-}
 
-
-def _client_kwargs(
+def _backend_for(
+    config: GoogleCloud | None,
     *,
     api_key: str | None,
     base_url: str | None,
     client_options: Mapping[str, Any] | None,
-    allowed: frozenset[str] = _CLIENT_OPTION_KEYS,
-    client_name: str = 'AsyncAnthropic',
-) -> dict[str, Any]:
-    """Merge the typed settings into ``client_options`` for the SDK client.
+) -> Backend[ClaudeClient]:
+    """Turn the public ``backend=`` value into the backend that serves the models.
+
+    ``GoogleCloud`` is the public choice; ``GoogleCloudBackend`` implements it.
+    This is the only place a backend is picked; past it, the plugin treats
+    every backend the same.
 
     Raises:
-        TypeError: A ``client_options`` key the client doesn't take, or
-            ``api_key``/``base_url`` given both as an argument and in ``client_options``.
+        TypeError: ``backend`` isn't ``None`` or a ``GoogleCloud``.
+        ValueError: ``api_key`` passed with ``GoogleCloud``.
     """
-    options = dict(client_options or {})
-    for key in options:
-        if key not in allowed:
-            raise TypeError(
-                f'Anthropic got an unexpected client_options key {key!r}; '
-                f'{client_name} accepts {", ".join(sorted(k for k in allowed if not k.startswith("_")))}'
-            )
-    for name, value in (('api_key', api_key), ('base_url', base_url)):
-        if value is None:
-            continue
-        if name in options:
-            raise TypeError(f'Anthropic got {name} both as an argument and in client_options; pass it once')
-        options[name] = value
-    return options
-
-
-def _reject_v1_suffix(base_url: str | None, *, source: str) -> None:
-    """The SDK appends ``/v1/messages``, so a base URL ending in ``/v1`` would send ``/v1/v1/messages``."""
-    if base_url and urlsplit(base_url).path.rstrip('/').endswith('/v1'):
-        raise ValueError(
-            f'{source} {base_url!r} ends in /v1, but the Anthropic SDK appends /v1/messages itself; '
-            'pass the origin, e.g. https://claude-proxy.example.com'
-        )
-
-
-def _has_credential(client: AsyncAnthropic) -> bool:
-    if client.api_key is not None or client.auth_token is not None or client.credentials is not None:
-        return True
-    return pinned_credential_header(client) is not None
-
-
-def _missing_key_error() -> GenkitError:
-    return GenkitError(
-        status='FAILED_PRECONDITION',
-        message=(
-            'Anthropic needs an API key: set ANTHROPIC_API_KEY or pass Anthropic(api_key=...), '
-            "or send a per-request key as context={'secrets': {'api_key': ...}}."
-        ),
-    )
+    if config is None:
+        return AnthropicApiBackend(api_key=api_key, base_url=base_url, client_options=client_options)
+    if not isinstance(config, GoogleCloud):
+        raise TypeError(f'Anthropic backend must be GoogleCloud(...) or None, got {type(config).__name__}')
+    if api_key is not None:
+        raise ValueError('Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials; drop api_key')
+    return GoogleCloudBackend(config, base_url=base_url, client_options=client_options)
 
 
 # Only this plugin's namespace. A vertexai/ paste is a different name —
@@ -225,66 +177,9 @@ class Anthropic(Plugin):
         if api_version not in (None, 'stable', 'beta'):
             raise ValueError("api_version must be 'stable', 'beta', or None")
 
-        if backend is not None and not isinstance(backend, GoogleCloud):
-            raise TypeError(f'Anthropic backend must be GoogleCloud(...) or None, got {type(backend).__name__}')
-        self._google_cloud = backend is not None
-        if backend is not None:
-            if api_key is not None:
-                raise ValueError(
-                    'Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials; drop api_key'
-                )
-            require_google_auth()
-            options = _client_kwargs(
-                api_key=None,
-                base_url=base_url,
-                client_options=client_options,
-                allowed=_GOOGLE_CLOUD_CLIENT_OPTION_KEYS,
-                client_name='AsyncAnthropicVertex',
-            )
-            # An explicit setting beats the environment; the SDK's own
-            # ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION never pick these.
-            self._project: str | None = resolve_project(backend)
-            self._location: str = resolve_location(backend)
-            self._adc_probed = False
-        else:
-            options = _client_kwargs(api_key=api_key, base_url=base_url, client_options=client_options)
-            if 'base_url' in options:
-                _reject_v1_suffix(options['base_url'], source='base_url')
-            else:
-                _reject_v1_suffix(os.environ.get('ANTHROPIC_BASE_URL'), source='ANTHROPIC_BASE_URL')
+        self._backend = _backend_for(backend, api_key=api_key, base_url=base_url, client_options=client_options)
         self._default_api_version: Literal['stable', 'beta'] | None = api_version
-        self._options = options
         self._list_actions_cache: list[Action] | None = None
-
-    @loop_local_client
-    def _runtime_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
-        if self._google_cloud:
-            # Generate resolves the project first; NOT_GIVEN lets the SDK fall back to ADC otherwise.
-            project_id = self._project if self._project is not None else NOT_GIVEN
-            return AsyncAnthropicVertex(region=self._location, project_id=project_id, **self._options)
-        return AsyncAnthropic(**self._options)
-
-    async def _resolve_google_cloud_project(self) -> None:
-        """Find the project once, before the first client is built.
-
-        With no project passed or in the environment, it comes from the
-        application default credentials, as on Cloud Run. That lookup can hit
-        the metadata server, so it runs in a thread.
-
-        Raises:
-            GenkitError: FAILED_PRECONDITION when no project can be found.
-        """
-        if self._project is None and not self._adc_probed:
-            self._project = await asyncio.to_thread(adc_project)
-            self._adc_probed = True
-        if self._project is None:
-            raise GenkitError(
-                status='FAILED_PRECONDITION',
-                message=(
-                    'Anthropic(backend=GoogleCloud()) needs a Google Cloud project: pass GoogleCloud(project=...) '
-                    'or set GOOGLE_CLOUD_PROJECT'
-                ),
-            )
 
     async def init(self) -> list[Action]:
         """Initialize plugin.
@@ -323,21 +218,12 @@ class Anthropic(Plugin):
         async def _generate(request: ModelRequest[AnthropicConfig], ctx: ModelContext) -> ModelResponse:
             # A key in config is the more specific error, so it wins over a missing plugin key.
             reject_config_api_key(request.config)
-            if self._google_cloud:
-                # Google Cloud authenticates with ADC; AnthropicModel rejects a context.secrets key.
-                await self._resolve_google_cloud_project()
-                client = self._runtime_client()
-            else:
-                client = self._runtime_client()
-                # A plugin built without a credential serves only callers who bring a key.
-                if not _has_credential(cast(AsyncAnthropic, client)) and context_api_key(ctx.context) is None:
-                    raise _missing_key_error()
+            client = await self._backend.request_client(context_api_key(ctx.context))
             model = AnthropicModel(
                 model_name=name,
-                # AnthropicModel checks isinstance(client, AsyncAnthropic) for the
-                # direct-API-only paths (default betas, per-request keys).
-                client=cast(AsyncAnthropic, client),
+                client=client,
                 default_api_version=self._default_api_version,
+                default_betas=self._backend.default_betas,
             )
             return await model.generate(request, ctx)
 
@@ -355,29 +241,14 @@ class Anthropic(Plugin):
             },
         )
 
-    async def _fetch_dynamic_model_ids(self) -> list[str]:
-        """Fetch all available model ids from the Anthropic API.
-
-        Uses the beta models endpoint (matching JS, so both stable and beta
-        models are discovered) and fully paginates via ``async for`` (matching
-        Go's completeness, rather than JS's first-page-only read).
-
-        Returns:
-            Model ids in API order.
-        """
-        model_ids: list[str] = []
-        async for model in cast(AsyncAnthropic, self._runtime_client()).beta.models.list():
-            if model.id:
-                model_ids.append(model.id)
-        return model_ids
-
     async def list_actions(self) -> list[Action]:
         """List available Anthropic models.
 
-        Queries the Anthropic API for currently available models and returns
-        the union of API-discovered models and any statically known models
-        not already covered by the API response (API ids first, in API
-        order, then remaining static ids, deduplicated by bare id). The
+        Asks the backend for the models it serves and returns the union of
+        those and any statically known models not already covered (backend
+        ids first, in backend order, then remaining static ids, deduplicated
+        by bare id). A backend without a Models API, such as Google Cloud,
+        lists only the static models. The
         successful result is cached for the lifetime of the plugin instance.
         If the API call fails, logs a warning and returns the static model
         list only, without caching the failure, so the next call retries the
@@ -389,15 +260,10 @@ class Anthropic(Plugin):
         if self._list_actions_cache is not None:
             return self._list_actions_cache
 
-        if self._google_cloud:
-            # Google Cloud has no Models API, so the static catalog is the whole list.
-            self._list_actions_cache = [self._create_model_action(model_id) for model_id in SUPPORTED_ANTHROPIC_MODELS]
-            return self._list_actions_cache
-
         try:
-            model_ids = await self._fetch_dynamic_model_ids()
+            model_ids = await self._backend.list_model_ids()
         except Exception as e:
-            logger.warning('Failed to list Anthropic models from API, using static model list', error=str(e))
+            logger.warning('Failed to list Anthropic models, using static model list', error=str(e))
             return [self._create_model_action(model_id) for model_id in SUPPORTED_ANTHROPIC_MODELS]
 
         seen: set[str] = set()

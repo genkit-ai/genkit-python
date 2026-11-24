@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from anthropic import AsyncAnthropic, AsyncAnthropicVertex
 from genkit_anthropic import Anthropic, _models as anthropic_models
+from genkit_anthropic._anthropic_api import BETA_APIS
 from genkit_anthropic._config import AnthropicConfig
 from genkit_anthropic._models import (
-    BETA_APIS,
     AnthropicModel,
     _to_anthropic_output_config,
     _to_anthropic_thinking,
@@ -839,10 +839,6 @@ def _mock_client_for_generate() -> MagicMock:
     mock_response.stop_reason = 'end_turn'
     mock_client.messages.create = AsyncMock(return_value=mock_response)
     mock_client.beta.messages.create = AsyncMock(return_value=mock_response)
-    # The real client only gains these on instantiation; _client_for_key reads them.
-    mock_client.auth_token = None
-    mock_client._custom_headers = {}
-    mock_client.copy = MagicMock(return_value=mock_client)
     return mock_client
 
 
@@ -947,6 +943,7 @@ async def test_default_api_version_beta_routes_streaming() -> None:
         model_name='claude-sonnet-4',
         client=mock_client,
         default_api_version='beta',
+        default_betas=BETA_APIS,
     )
     ctx = MagicMock()
     ctx.is_streaming = True
@@ -960,9 +957,9 @@ async def test_default_api_version_beta_routes_streaming() -> None:
 
 @pytest.mark.asyncio
 async def test_beta_surface_sends_default_betas() -> None:
-    """Beta calls send the same default beta headers as the JS plugin."""
+    """Beta calls send the backend's default beta headers; the Anthropic API's match the JS plugin."""
     mock_client = _mock_client_for_generate()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client, default_betas=BETA_APIS)
 
     await model.generate(_text_request({'apiVersion': 'beta'}))
 
@@ -990,7 +987,7 @@ async def test_beta_surface_preserves_empty_betas_opt_out() -> None:
 
 @pytest.mark.asyncio
 async def test_resold_surface_omits_default_betas() -> None:
-    """Resold surfaces do not offer every default beta, so none are assumed."""
+    """A model built without default betas (Google Cloud's backend) sends none."""
     mock_client = _mock_vertex_client_for_generate()
     model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
 
@@ -1258,20 +1255,6 @@ async def test_beta_config_uses_beta_sdk_and_sends_betas() -> None:
     assert 'api_version' not in kwargs
     assert 'apiVersion' not in kwargs
     assert kwargs['betas'] == ['token-efficient-tools-2025']
-
-
-def test_secrets_key_copy_keeps_client_settings_and_transport() -> None:
-    """A per-request key yields a request-scoped copy that keeps client settings and transport."""
-    base_client = AsyncAnthropic(api_key='base-key', default_headers={'X-Custom': 'yes'})
-    model = AnthropicModel(model_name='claude-sonnet-4', client=base_client)
-
-    client = model._client_for_key('request-key')
-
-    assert client is not base_client
-    assert isinstance(client, AsyncAnthropic)
-    assert client.api_key == 'request-key'
-    assert client.default_headers.get('X-Custom') == 'yes'
-    assert client._client is base_client._client
 
 
 def test_build_params_consumes_client_level_keys_silently() -> None:
@@ -1810,7 +1793,7 @@ async def test_generate_claude_drops_thinking_part_without_thought_signature(
     # The plugin checks the client for a credential before each call.
     mock_client.api_key = 'test-key'
     plugin = Anthropic(api_key='test-key')
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
     ai = Genkit(plugins=[plugin])
     history = [
         Message(role=Role.USER, content=[Part.from_text('what is 17 * 23?')]),

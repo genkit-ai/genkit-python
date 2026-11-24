@@ -50,12 +50,12 @@ def test_init_without_api_key_raises() -> None:
         plugin = Anthropic()
 
         async def _has_client() -> bool:
-            return plugin._runtime_client() is not None
+            return plugin._backend.client() is not None
 
         assert asyncio.run(_has_client())
 
 
-@patch('genkit_anthropic._plugin.AsyncAnthropic')
+@patch('genkit_anthropic._anthropic_api.AsyncAnthropic')
 def test_api_version_is_stored_without_leaking_to_sdk(mock_client_ctor: MagicMock) -> None:
     """Plugin API version is a model default, not an AsyncAnthropic kwarg."""
     mock_client = MagicMock()
@@ -63,7 +63,7 @@ def test_api_version_is_stored_without_leaking_to_sdk(mock_client_ctor: MagicMoc
     plugin = Anthropic(api_key='test-key', api_version='beta')
 
     async def _get_client() -> object:
-        return plugin._runtime_client()
+        return plugin._backend.client()
 
     assert asyncio.run(_get_client()) is mock_client
     assert plugin._default_api_version == 'beta'
@@ -76,7 +76,7 @@ def test_invalid_api_version_fails_fast() -> None:
         Anthropic(api_version=cast(Any, 'Beta'))
 
 
-@patch('genkit_anthropic._plugin.AsyncAnthropic')
+@patch('genkit_anthropic._anthropic_api.AsyncAnthropic')
 @pytest.mark.asyncio
 async def test_plugin_beta_default_routes_action_run_to_beta_surface(mock_client_ctor: MagicMock) -> None:
     """The plugin-wide beta default reaches models resolved as public actions."""
@@ -122,7 +122,7 @@ async def test_resolve_action_model() -> None:
     assert action.kind == ActionKind.MODEL
 
 
-@patch('genkit_anthropic._plugin.AsyncAnthropic')
+@patch('genkit_anthropic._anthropic_api.AsyncAnthropic')
 @pytest.mark.asyncio
 async def test_anthropic_runtime_clients_are_loop_local(mock_client_ctor: MagicMock) -> None:
     """Runtime Anthropic clients are cached per event loop."""
@@ -137,15 +137,15 @@ async def test_anthropic_runtime_clients_are_loop_local(mock_client_ctor: MagicM
     mock_client_ctor.side_effect = _new_client
     plugin = Anthropic(api_key='test-key')
 
-    first = plugin._runtime_client()
-    second = plugin._runtime_client()
+    first = plugin._backend.client()
+    second = plugin._backend.client()
     assert first is second
 
     q: queue.Queue[object] = queue.Queue()
 
     def _other_thread() -> None:
         async def _get_client() -> object:
-            return plugin._runtime_client()
+            return plugin._backend.client()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -254,7 +254,7 @@ async def test_list_actions_dynamic_union_dedup_and_fallback_info() -> None:
         SimpleNamespace(id='claude-unknown-xyz'),  # unknown id -> generic fallback info
     ]
     mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage(api_items))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     actions = await plugin.list_actions()
     names = [a.name for a in actions]
@@ -293,7 +293,7 @@ async def test_list_actions_falls_back_to_static_on_error_uncached() -> None:
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
     mock_client.beta.models.list = MagicMock(side_effect=RuntimeError('boom'))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     actions = await plugin.list_actions()
     names = {a.name for a in actions}
@@ -309,7 +309,7 @@ async def test_list_actions_caches_on_success() -> None:
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
     mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage([SimpleNamespace(id='claude-sonnet-4')]))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     first = await plugin.list_actions()
     second = await plugin.list_actions()
@@ -328,7 +328,7 @@ async def test_list_actions_skips_empty_model_ids() -> None:
         SimpleNamespace(id=None),  # missing id -> dropped
     ]
     mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage(api_items))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     actions = await plugin.list_actions()
     names = [a.name for a in actions]
@@ -347,7 +347,7 @@ async def test_list_actions_empty_api_response_returns_and_caches_statics() -> N
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
     mock_client.beta.models.list = MagicMock(return_value=_FakeModelPage([]))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     actions = await plugin.list_actions()
     names = {a.name for a in actions}
@@ -397,7 +397,7 @@ async def test_list_actions_advertises_anthropic_config() -> None:
     plugin = Anthropic(api_key='test-key')
     mock_client = MagicMock()
     mock_client.beta.models.list = MagicMock(side_effect=RuntimeError('offline'))
-    plugin._runtime_client = lambda: mock_client
+    plugin._backend.client = lambda: mock_client
 
     actions = await plugin.list_actions()
 

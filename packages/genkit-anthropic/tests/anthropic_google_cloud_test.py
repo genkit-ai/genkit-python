@@ -40,7 +40,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _client(plugin: Anthropic) -> Any:  # noqa: ANN401 - the SDK client under test
     async def _get() -> Any:  # noqa: ANN401
-        return plugin._runtime_client()
+        return plugin._backend.client()
 
     return asyncio.run(_get())
 
@@ -130,11 +130,13 @@ def test_google_cloud_without_google_auth_names_the_extra() -> None:
 async def test_google_cloud_list_actions_uses_static_catalog_without_calling_api() -> None:
     """Google Cloud has no Models API, so listing returns the catalog and makes no call."""
     plugin = Anthropic(backend=GoogleCloud(project='p'))
-    with patch.object(plugin, '_fetch_dynamic_model_ids', AsyncMock()) as fetch:
-        actions = await plugin.list_actions()
-        again = await plugin.list_actions()
+    client = MagicMock()
+    plugin._backend.client = client
 
-    fetch.assert_not_called()
+    actions = await plugin.list_actions()
+    again = await plugin.list_actions()
+
+    client.assert_not_called()
     assert [a.name for a in actions] == [f'anthropic/{m}' for m in SUPPORTED_ANTHROPIC_MODELS]
     assert again is actions
 
@@ -168,14 +170,16 @@ async def test_google_cloud_generate_takes_project_from_adc_once() -> None:
     plugin = Anthropic(backend=GoogleCloud())
     ai = Genkit(plugins=[plugin])
     with (
-        patch('genkit_anthropic._plugin.adc_project', return_value='adc-project') as adc,
+        patch('genkit_anthropic._google_cloud.adc_project', return_value='adc-project') as adc,
         patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock(return_value=_vertex_response())),
     ):
         await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='One.')
         await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Two.')
 
     adc.assert_called_once()
-    assert plugin._project == 'adc-project'
+    client = plugin._backend.client()
+    assert isinstance(client, AsyncAnthropicVertex)
+    assert client.project_id == 'adc-project'
 
 
 @pytest.mark.asyncio
@@ -183,8 +187,53 @@ async def test_google_cloud_generate_without_any_project_fails_precondition() ->
     """No project anywhere is a setup problem, reported as FAILED_PRECONDITION naming the fix."""
     plugin = Anthropic(backend=GoogleCloud())
     ai = Genkit(plugins=[plugin])
-    with patch('genkit_anthropic._plugin.adc_project', return_value=None):
+    with patch('genkit_anthropic._google_cloud.adc_project', return_value=None):
         response = await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
 
     assert response.finish_reason == FinishReason.FAILED
     assert 'GOOGLE_CLOUD_PROJECT' in str(response.finish_message)
+
+
+@pytest.mark.asyncio
+async def test_google_cloud_rejects_secrets_key_before_looking_up_project() -> None:
+    """A context.secrets key can't bill Google Cloud, so the call fails without an ADC lookup or a request."""
+    plugin = Anthropic(backend=GoogleCloud())
+    ai = Genkit(plugins=[plugin])
+    with (
+        patch('genkit_anthropic._google_cloud.adc_project') as adc,
+        patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock()) as create,
+    ):
+        response = await ai.generate(
+            model=Anthropic.claude('claude-sonnet-4-6'),
+            prompt='Suggest a dish.',
+            context={'secrets': {'api_key': 'tenant-key'}},
+        )
+
+    assert response.error is not None
+    assert response.error.status == 'FAILED_PRECONDITION'
+    assert 'Google Cloud credentials' in response.error.message
+    assert 'tenant-key' not in response.error.message
+    adc.assert_not_called()
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ('config', 'betas'),
+    [
+        ({'apiVersion': 'beta'}, None),
+        ({'taskBudget': 20000}, ['task-budgets-2026-03-13']),
+    ],
+    ids=['beta-surface-no-defaults', 'task-budget-brings-its-header'],
+)
+@pytest.mark.asyncio
+async def test_google_cloud_sends_only_the_betas_a_field_needs(config: dict[str, Any], betas: list[str] | None) -> None:
+    """The Anthropic API's default betas stay off Google Cloud; task_budget still brings its own header."""
+    plugin = Anthropic(backend=GoogleCloud(project='bistro-prod'))
+    ai = Genkit(plugins=[plugin])
+    # The Vertex client has its own beta resource, so stub this loop's client rather than an SDK class.
+    client = plugin._backend.client()
+    with patch.object(client.beta.messages, 'create', AsyncMock(return_value=_vertex_response())) as create:
+        await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.', config=config)
+
+    create.assert_awaited_once()
+    assert create.call_args.kwargs.get('betas') == betas

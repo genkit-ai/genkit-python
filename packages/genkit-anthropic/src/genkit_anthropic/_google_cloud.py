@@ -16,8 +16,16 @@
 
 """Google Cloud as a backend for the Anthropic plugin."""
 
+import asyncio
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
+
+from anthropic import NOT_GIVEN, AsyncAnthropicVertex
+
+from genkit import GenkitError
+from genkit_anthropic._backend import Backend, client_kwargs
 
 # Every project that enables Claude gets quota on the global endpoint;
 # regional endpoints need regional quota.
@@ -102,3 +110,78 @@ def adc_project() -> str | None:
     except DefaultCredentialsError:
         return None
     return project
+
+
+# region and project_id come from GoogleCloud(project=..., location=...), so they aren't client options.
+_SET_BY_GOOGLE_CLOUD = frozenset({'region', 'project_id'})
+
+
+class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
+    """Claude on Google Cloud, authenticated with application default credentials."""
+
+    # Vertex doesn't offer every Anthropic API beta, so none are assumed.
+    default_betas = ()
+
+    def __init__(self, config: GoogleCloud, *, base_url: str | None, client_options: Mapping[str, Any] | None) -> None:
+        """Validate the client settings at setup, on the user's line.
+
+        Raises:
+            ImportError: The ``google-cloud`` extra isn't installed.
+            TypeError: An unknown or repeated ``client_options`` key.
+        """
+        require_google_auth()
+        # Vertex URLs end in /v1, so the Anthropic API's /v1 guard doesn't apply to base_url here.
+        self._options = client_kwargs(
+            AsyncAnthropicVertex, client_options, reserved=_SET_BY_GOOGLE_CLOUD, base_url=base_url
+        )
+        # An explicit setting beats the environment; the SDK's own
+        # ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION never pick these.
+        self._project = resolve_project(config)
+        self._location = resolve_location(config)
+        self._adc_probed = False
+
+    def _new_client(self) -> AsyncAnthropicVertex:
+        # Callers await request_client first, which resolves the project; NOT_GIVEN is only for tests.
+        project_id = self._project if self._project is not None else NOT_GIVEN
+        return AsyncAnthropicVertex(region=self._location, project_id=project_id, **self._options)
+
+    async def request_client(self, api_key: str | None) -> AsyncAnthropicVertex:
+        """The plugin's client, once the project is known.
+
+        Raises:
+            GenkitError: FAILED_PRECONDITION for a ``context.secrets`` key, or
+                when no project can be found.
+        """
+        if api_key is not None:
+            raise GenkitError(
+                status='FAILED_PRECONDITION',
+                message=(
+                    'A per-request API key from context.secrets cannot be used: '
+                    'Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials.'
+                ),
+            )
+        await self._resolve_project()
+        return self.client()
+
+    async def list_model_ids(self) -> list[str]:
+        """Nothing: Google Cloud has no Models API, so the built-in catalog is the whole list."""
+        return []
+
+    async def _resolve_project(self) -> None:
+        """Find the project once, before the first client is built.
+
+        With no project passed or in the environment, it comes from the
+        application default credentials, as on Cloud Run. That lookup can hit
+        the metadata server, so it runs in a thread.
+        """
+        if self._project is None and not self._adc_probed:
+            self._project = await asyncio.to_thread(adc_project)
+            self._adc_probed = True
+        if self._project is None:
+            raise GenkitError(
+                status='FAILED_PRECONDITION',
+                message=(
+                    'Anthropic(backend=GoogleCloud()) needs a Google Cloud project: pass GoogleCloud(project=...) '
+                    'or set GOOGLE_CLOUD_PROJECT'
+                ),
+            )

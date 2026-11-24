@@ -66,7 +66,7 @@ class OpenAIModelHandler:
             raise ValueError(f"Model '{model}' is not supported.")
 
         info = _SUPPORTED_MODELS[model]
-        openai_model = OpenAIModel(model, client, supports=info.supports)
+        openai_model = OpenAIModel(model, client, supports=info.supports, object_schema_root=True)
         return cls(openai_model).generate
 
     def _validate_version(self, version: str) -> None:

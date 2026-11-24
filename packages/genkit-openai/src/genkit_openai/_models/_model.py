@@ -21,6 +21,12 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from genkit_openai._models._mistral import is_mistral, mistral_chat_body, refuse_non_image_media
+from genkit_openai._models._output_root import (
+    OUTPUT_VALUE_FIELD,
+    OutputStreamUnwrapper,
+    has_object_root,
+    unwrap_output_text,
+)
 from genkit_openai._models._utils import (
     OPENAI_CALL_ERRORS,
     DictMessageAdapter,
@@ -271,8 +277,11 @@ def _root_ref_target(schema: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _is_wrapped_tool_schema(schema: dict[str, Any] | None) -> bool:
+def _is_non_object_schema(schema: dict[str, Any] | None) -> bool:
     """True for a non-empty schema that is not an object (``{'type': 'string'}``).
+
+    OpenAI takes only an object for a function's parameters and for a
+    ``json_schema`` response format, so such a schema is sent wrapped.
 
     A root ``$ref`` is judged by its target: Pydantic emits one for an Enum
     input, which is a string, not an object.
@@ -284,26 +293,26 @@ def _is_wrapped_tool_schema(schema: dict[str, Any] | None) -> bool:
         if '$ref' in schema:
             target = _root_ref_target(schema)
             # An unresolvable ref is sent as is rather than guessed at.
-            return target is not None and _is_wrapped_tool_schema(target)
+            return target is not None and _is_non_object_schema(target)
         # anyOf/oneOf roots: only an object schema is safe to send as-is.
         return 'properties' not in schema
     return schema_type != 'object'
 
 
-def _wrap_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """``schema`` under one ``input`` property, with any ``$defs`` kept at the root."""
+def _wrap_schema(schema: dict[str, Any], field: str) -> dict[str, Any]:
+    """``schema`` under the one property ``field``, with any ``$defs`` kept at the root."""
     defs = {k: schema[k] for k in _DEFS_KEYS if k in schema}
     inner = {k: v for k, v in schema.items() if k not in defs}
     return {
         'type': 'object',
-        'properties': {_TOOL_INPUT_FIELD: inner},
-        'required': [_TOOL_INPUT_FIELD],
+        'properties': {field: inner},
+        'required': [field],
         **defs,
     }
 
 
 def _wrapped_tool_names(tools: list[ToolDefinition] | None) -> frozenset[str]:
-    return frozenset(t.name for t in tools or [] if _is_wrapped_tool_schema(t.input_schema))
+    return frozenset(t.name for t in tools or [] if _is_non_object_schema(t.input_schema))
 
 
 def _map_tool_requests(message: Message, wrapped: frozenset[str], wrap: bool) -> Message:
@@ -343,6 +352,24 @@ def _unwrapped_args_text(arguments: str) -> str:
     return arguments
 
 
+def _unwrap_output(message: Message) -> Message:
+    """Replace a wrapped reply's text with the wrapped value.
+
+    Text beside a tool call is a preamble, not the output, and is left alone.
+    """
+    if any(part.tool_request is not None for part in message.content):
+        return message
+    changed = False
+    content: list[Part] = []
+    for part in message.content:
+        if part.text is not None and (text := unwrap_output_text(part.text)) != part.text:
+            content.append(part.model_copy(update={'text': text}))
+            changed = True
+        else:
+            content.append(part)
+    return message.model_copy(update={'content': content}) if changed else message
+
+
 def _wrap_tool_inputs(messages: list[Message], wrapped: frozenset[str]) -> list[Message]:
     """Replay earlier calls to scalar-input tools in the wrapped wire shape."""
     return [_map_tool_requests(m, wrapped, wrap=True) for m in messages]
@@ -363,6 +390,7 @@ class OpenAIModel:
         *,
         supports: ModelSupports | None = None,
         mistral: bool | None = None,
+        object_schema_root: bool = False,
     ) -> None:
         """Initializes the OpenAIModel instance with the specified model and OpenAI client parameters.
 
@@ -375,11 +403,16 @@ class OpenAIModel:
                 ``json_object`` so a fine-tune keeps working.
             mistral: Send Mistral's field names (see ``_mistral.py``).
                 ``None`` decides from the client's host.
+            object_schema_root: The host takes a ``json_schema`` response
+                format only with an object root (OpenAI). Any other output
+                schema is sent as the ``value`` property of an object, and
+                the reply is unwrapped.
         """
         self._model = model
         self._openai_client = client
         self._supports = supports
         self._mistral = is_mistral(client) if mistral is None else mistral
+        self._object_schema_root = object_schema_root
 
     @property
     def name(self) -> str:
@@ -425,10 +458,10 @@ class OpenAIModel:
         result = []
         for tool_definition in tools:
             parameters = tool_definition.input_schema or {}
-            if _is_wrapped_tool_schema(parameters):
+            if _is_non_object_schema(parameters):
                 # Function parameters must be an object; a scalar tool input
                 # (``async def tool(city: str)``) rides under one field.
-                parameters = _wrap_tool_schema(parameters)
+                parameters = _wrap_schema(parameters, _TOOL_INPUT_FIELD)
             if parameters:
                 parameters = _ensure_strict_json_schema(parameters, path=(), root=parameters)
 
@@ -463,6 +496,16 @@ class OpenAIModel:
         # DeepSeek models use json_object mode — schema never reaches the API.
         return self._model.startswith('deepseek')
 
+    def _wraps_output(self, request: ModelRequest) -> bool:
+        """Whether the output schema goes out wrapped, so the reply must be unwrapped."""
+        return (
+            self._object_schema_root
+            and request.output_format == 'json'
+            and not self._model.startswith('deepseek')
+            and bool(request.output_schema)
+            and not has_object_root(request.output_schema)
+        )
+
     def _get_response_format(self, request: ModelRequest) -> dict | None:
         """Determines the response format configuration based on the output settings.
 
@@ -483,13 +526,14 @@ class OpenAIModel:
             if self._model.startswith('deepseek'):
                 return {'type': 'json_object'}
             if request.output_schema:
+                schema = request.output_schema
+                if self._wraps_output(request):
+                    schema = _wrap_schema(schema, OUTPUT_VALUE_FIELD)
                 return {
                     'type': 'json_schema',
                     'json_schema': {
                         'name': request.output_schema.get('title', 'Response'),
-                        'schema': _ensure_strict_json_schema(
-                            request.output_schema, path=(), root=request.output_schema
-                        ),
+                        'schema': _ensure_strict_json_schema(schema, path=(), root=schema),
                         'strict': True,
                     },
                 }
@@ -652,6 +696,8 @@ class OpenAIModel:
         )
 
         genkit_message = _unwrap_tool_inputs(MessageConverter.to_genkit(message), _wrapped_tool_names(request.tools))
+        if self._wraps_output(request):
+            genkit_message = _unwrap_output(genkit_message)
         # An empty message is the answer when the model was blocked or cut off; at a clean stop it is unreadable.
         if not genkit_message.content and finish_reason is FinishReason.STOP:
             raise ValueError('Unable to determine content part')
@@ -696,6 +742,9 @@ class OpenAIModel:
 
         tool_calls: dict[int, Any] = {}
         wrapped = _wrapped_tool_names(request.tools)
+        # A wrapped reply streams as '{"value": ...}'; text is unwrapped as it
+        # arrives, so chunks and the final message read as the caller's value.
+        unwrapper = OutputStreamUnwrapper() if self._wraps_output(request) else None
         # As a full reply is read (MessageConverter.to_genkit): reasoning from
         # its own field (DeepSeek's reasoning_content) first, then the
         # content's reasoning and text in the order they arrived (Mistral's
@@ -737,8 +786,19 @@ class OpenAIModel:
                 field_reasoning.append(reasoning_part)
                 parts.append(reasoning_part)
 
+            # Text before a tool call is a preamble, not the output: whatever
+            # was held back goes out as it streamed, and so does the rest.
+            if unwrapper is not None and delta.tool_calls and (held_text := unwrapper.pass_through()):
+                held_part = MessageConverter.text_part_to_genkit(held_text)
+                content_parts.append(held_part)
+                parts.append(held_part)
+
             # Text content; Mistral's reasoning models stream reasoning in it too.
             for item in reply_content(delta.content):
+                if isinstance(item, str) and unwrapper is not None:
+                    item = unwrapper.push(item)
+                    if not item:
+                        continue
                 part = MessageConverter.text_part_to_genkit(item) if isinstance(item, str) else item
                 content_parts.append(part)
                 parts.append(part)
@@ -762,6 +822,11 @@ class OpenAIModel:
 
             if parts:
                 callback(ModelResponseChunk(role=Role.MODEL, content=parts))
+
+        if unwrapper is not None and (rest := unwrapper.flush()):
+            rest_part = MessageConverter.text_part_to_genkit(rest)
+            content_parts.append(rest_part)
+            callback(ModelResponseChunk(role=Role.MODEL, content=[rest_part]))
 
         if not saw_choice:
             raise GenkitError(

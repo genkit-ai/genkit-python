@@ -52,7 +52,7 @@ class GoogleCloud:
 
         # 2. Same typed ref and config as the Anthropic API
         res = await ai.generate(
-            model=Anthropic.claude('claude-sonnet-5'),
+            model=Anthropic.claude('claude-sonnet-5-5'),
             prompt='Suggest a dish for a guest with a shellfish allergy.',
         )
         print(res.text)

@@ -32,7 +32,7 @@ Example:
     async def main() -> None:
         # 2. Generate with Claude Sonnet 5
         res = await ai.generate(
-            model=Anthropic.claude('claude-sonnet-5'),
+            model=Anthropic.claude('claude-sonnet-5-5'),
             prompt='Explain recursion in 10 words.',
         )
 

@@ -29,7 +29,7 @@ ai = Genkit(plugins=[Anthropic()])
 
 async def main() -> None:
     res = await ai.generate(
-        model=Anthropic.claude('claude-sonnet-5'),
+        model=Anthropic.claude('claude-sonnet-5-5'),
         prompt='Explain recursion in 10 words.',
     )
     print(res.text)
@@ -106,7 +106,7 @@ skip to step 5.
    ```
 
 4. **Enable Claude for the project.** Open the model's card in Model Garden,
-   e.g. [Claude Sonnet 5](https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-sonnet-5),
+   e.g. [Claude Sonnet 5.5](https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-sonnet-5-5),
    click **Enable**, and accept Anthropic's terms. You do this once per model,
    per project. If you didn't create the project yourself, ask its owner for
    the *Consumer Procurement Entitlement Manager* role (to enable models) and
@@ -139,7 +139,7 @@ skip to step 5.
    async def main() -> None:
        # 2. Same typed ref and config as the Anthropic API
        res = await ai.generate(
-           model=Anthropic.claude('claude-sonnet-5'),
+           model=Anthropic.claude('claude-sonnet-5-5'),
            prompt='Suggest a dish for a guest with a shellfish allergy.',
        )
        print(res.text)
@@ -229,7 +229,7 @@ config = AnthropicConfig(
 
 # 2. Generate with it
 await ai.generate(
-    model=Anthropic.claude('claude-sonnet-5'),
+    model=Anthropic.claude('claude-sonnet-5-5'),
     prompt='Plan a tasting menu.',
     config=config,
 )
@@ -242,6 +242,9 @@ await ai.generate(
 - A `thinking_budget` alone means `thinking='enabled'`. `'enabled'` needs a
   budget from some config layer; `'adaptive'` doesn't send one, and
   `'disabled'` sends neither the budget nor the display.
+- Models after the 4.6 generation (Opus 4.7 and later) take only
+  `'adaptive'` thinking; steer it with `effort`. `'enabled'` with a budget is
+  deprecated on Opus 4.6 and Sonnet 4.6, and works on earlier models.
 - `task_budget` is a beta field, so it sends the call to the beta API.
 - To send a shape the flat fields don't cover, put Anthropic's object in
   `extra`, e.g. `extra={'thinking': {...}}`. It replaces the built object.
@@ -255,7 +258,7 @@ or back on without restating the budget:
 
 ```python
 # 1. Model default with extended thinking on
-claude = Anthropic.claude('claude-sonnet-5', config=AnthropicConfig(thinking='enabled', thinking_budget=4096))
+claude = Anthropic.claude('claude-haiku-4-5', config=AnthropicConfig(thinking='enabled', thinking_budget=4096))
 
 # 2. Turn it off for one call; the inherited budget isn't sent
 await ai.generate(model=claude, prompt='Is shellfish safe for this guest?', config={'thinking': 'disabled'})
@@ -281,7 +284,7 @@ as a flat flag:
 ```python
 # 1. Require one tool call, and only one
 res = await ai.generate(
-    model='anthropic/claude-sonnet-5',
+    model='anthropic/claude-sonnet-5-5',
     prompt='Is the pho in stock?',
     tools=['lookup_menu'],
     tool_choice='required',
@@ -307,7 +310,7 @@ To bill a call to someone else's Anthropic account, pass their key in
 
 ```python
 res = await ai.generate(
-    model='anthropic/claude-sonnet-5',
+    model='anthropic/claude-sonnet-5-5',
     prompt='hi',
     context={'secrets': {'api_key': tenant_key}},
 )

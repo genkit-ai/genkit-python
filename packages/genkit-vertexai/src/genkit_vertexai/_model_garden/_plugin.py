@@ -57,7 +57,8 @@ DEPRECATION_MESSAGE = (
     "For Claude, use the Anthropic plugin on Google Cloud: uv add 'genkit-anthropic[google-cloud]', "
     "then Anthropic(backend=GoogleCloud()) and model=Anthropic.claude('claude-sonnet-5-5') "
     "in place of model='modelgarden/anthropic/claude-sonnet-5-5'. "
-    'Llama, Mistral and the other Model Garden models have no Genkit plugin after the removal.'
+    "For Llama, Mistral and the other OpenAI-compatible models: uv add 'genkit-openai[google-cloud]', "
+    'then OpenAICompatible(backend=GoogleCloud()); refs stay modelgarden/<publisher>/<model>.'
 )
 
 

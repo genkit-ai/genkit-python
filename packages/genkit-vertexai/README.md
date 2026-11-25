@@ -7,8 +7,10 @@ Integrate Genkit with Google Cloud Vertex AI Model Garden.
 > - **Claude**: move to the Anthropic plugin on Google Cloud. It's the same
 >   models, billed to the same project. See
 >   [Moving Claude to the Anthropic plugin](#moving-claude-to-the-anthropic-plugin).
-> - **Llama, Mistral and other Model Garden models**: no Genkit plugin replaces
->   them after the removal.
+> - **Llama, Mistral and other OpenAI-compatible Model Garden models**: move
+>   to `OpenAICompatible(backend=GoogleCloud())` from
+>   `genkit-openai[google-cloud]`. Refs stay `modelgarden/<publisher>/<model>`.
+>   See [Moving Llama and Mistral](#moving-llama-and-mistral).
 >
 > Everything keeps working in this release. `ModelGarden(...)` raises a
 > `FutureWarning`. This package now requires the matching `genkit` minor
@@ -103,3 +105,32 @@ await ai.generate(model=Anthropic.claude('claude-sonnet-5-5'), prompt='Suggest a
 
 See the [genkit-anthropic README](../genkit-anthropic/README.md#claude-on-google-cloud)
 for first-time Google Cloud setup.
+
+## Moving Llama and Mistral
+
+Model Garden's OpenAI-compatible models move to `genkit-openai`, with the same
+project, credentials and refs.
+
+```bash
+uv add 'genkit-openai[google-cloud]'
+```
+
+```python
+from genkit import Genkit
+from genkit_openai import GoogleCloud, OpenAICompatible
+
+# Before
+ai = Genkit(plugins=[ModelGarden(project='bistro-prod', location='us-central1')])
+await ai.generate(model='modelgarden/meta/llama-3.3-70b-instruct-maas', prompt='Suggest a dish.')
+
+# After: the same ref
+garden = OpenAICompatible(backend=GoogleCloud(project='bistro-prod', location='us-central1'))
+ai = Genkit(plugins=[garden])
+await ai.generate(model='modelgarden/meta/llama-3.3-70b-instruct-maas', prompt='Suggest a dish.')
+```
+
+- `location` defaults to `us-central1` in both. `model_locations` has no
+  equivalent: an app uses one location for these models.
+- Config is unchanged: Model Garden's OpenAI-compatible models already took
+  `OpenAIConfig`.
+

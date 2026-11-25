@@ -612,7 +612,9 @@ def test_model_garden_warns_that_the_package_is_deprecated() -> None:
     assert 'genkit-vertexai is deprecated and will be removed in the next release' in message
     assert "uv add 'genkit-anthropic[google-cloud]'" in message
     assert 'Anthropic(backend=GoogleCloud())' in message
-    assert 'Llama, Mistral and the other Model Garden models have no Genkit plugin after the removal' in message
+    assert "uv add 'genkit-openai[google-cloud]'" in message
+    assert 'OpenAICompatible(backend=GoogleCloud())' in message
+    assert 'refs stay modelgarden/<publisher>/<model>' in message
     # Attributed to the caller's line, not to genkit-vertexai.
     assert record[0].filename == __file__
 

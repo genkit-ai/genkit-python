@@ -47,7 +47,7 @@ dependencies = [
   "genkit>=0.13.0,<0.14",
   "google-auth[requests]>=2.14.1",
 ]
-description = "Deprecated, removed in the next release. Model Garden on Genkit; for Claude use genkit-anthropic[google-cloud]."
+description = "Deprecated, removed in the next release. Use genkit-anthropic[google-cloud] for Claude and genkit-openai[google-cloud] for other Model Garden models."
 keywords = [
   "genkit",
   "vertex-ai",

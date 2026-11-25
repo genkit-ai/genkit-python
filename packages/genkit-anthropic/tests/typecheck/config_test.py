@@ -83,7 +83,7 @@ def _claude_reply(request: httpx.Request) -> httpx.Response:
             'id': 'msg_1',
             'type': 'message',
             'role': 'assistant',
-            'model': 'claude-sonnet-4-5',
+            'model': 'claude-sonnet-4-6',
             'content': [{'type': 'text', 'text': 'ok'}],
             'stop_reason': 'end_turn',
             'stop_sequence': None,
@@ -120,7 +120,7 @@ async def test_typed_config_request_body() -> None:
         user_id='diner-42',
     )
     await ai.generate(
-        model='anthropic/claude-sonnet-4-5',
+        model='anthropic/claude-sonnet-4-6',
         prompt='Is the pho in stock?',
         config=config,
         tools=['lookup_menu'],
@@ -149,7 +149,7 @@ async def test_extra_replaces_the_built_thinking_object_on_the_wire() -> None:
     ai = Genkit(plugins=[Anthropic(api_key='fake-key', client_options={'http_client': http_client})])
 
     await ai.generate(
-        model='anthropic/claude-sonnet-4-5',
+        model='anthropic/claude-sonnet-4-6',
         prompt='Plan a nut-free tasting menu.',
         config=AnthropicConfig(
             thinking_budget=2048,

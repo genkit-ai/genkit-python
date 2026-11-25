@@ -134,7 +134,7 @@ class Anthropic(Plugin):
 
     @classmethod
     def claude(cls, name: KnownClaude | str, *, config: AnthropicConfig | None = None) -> ModelRef[AnthropicConfig]:
-        """Typed ref for a Claude model, e.g. ``Anthropic.claude('claude-sonnet-4-5')``.
+        """Typed ref for a Claude model, e.g. ``Anthropic.claude('claude-sonnet-4-6')``.
 
         Unknown ids are allowed so new Claude releases work before this
         plugin learns their names; every Anthropic generate model takes

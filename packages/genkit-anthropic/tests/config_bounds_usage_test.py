@@ -85,7 +85,7 @@ async def test_generate_rejects_out_of_range_sampling_before_calling_client() ->
     """AnthropicModel.generate raises INVALID_ARGUMENT before sending the request."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock()
-    model = AnthropicModel(model_name='claude-sonnet-4-5', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
     request = ModelRequest(
         messages=[Message(role=Role.USER, content=[Part.from_text('Suggest a dish.')])],
         config={'temperature': 1.4},

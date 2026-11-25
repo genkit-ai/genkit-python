@@ -52,17 +52,16 @@ def _backend_for(
     This is the only place a backend is picked; past it, the plugin treats
     every backend the same.
 
+    Every backend takes the same arguments and rejects the ones it can't use.
+
     Raises:
         TypeError: ``backend`` isn't ``None`` or a ``GoogleCloud``.
-        ValueError: ``api_key`` passed with ``GoogleCloud``.
     """
     if config is None:
         return AnthropicApiBackend(api_key=api_key, base_url=base_url, client_options=client_options)
     if not isinstance(config, GoogleCloud):
         raise TypeError(f'Anthropic backend must be GoogleCloud(...) or None, got {type(config).__name__}')
-    if api_key is not None:
-        raise ValueError('Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials; drop api_key')
-    return GoogleCloudBackend(config, base_url=base_url, client_options=client_options)
+    return GoogleCloudBackend(config, api_key=api_key, base_url=base_url, client_options=client_options)
 
 
 # Only this plugin's namespace. A vertexai/ paste is a different name —

@@ -122,13 +122,25 @@ class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
     # Vertex doesn't offer every Anthropic API beta, so none are assumed.
     default_betas = ()
 
-    def __init__(self, config: GoogleCloud, *, base_url: str | None, client_options: Mapping[str, Any] | None) -> None:
+    def __init__(
+        self,
+        config: GoogleCloud,
+        *,
+        api_key: str | None,
+        base_url: str | None,
+        client_options: Mapping[str, Any] | None,
+    ) -> None:
         """Validate the client settings at setup, on the user's line.
 
         Raises:
+            ValueError: ``api_key`` was passed; Google Cloud doesn't use one.
             ImportError: The ``google-cloud`` extra isn't installed.
             TypeError: An unknown or repeated ``client_options`` key.
         """
+        if api_key is not None:
+            raise ValueError(
+                'Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials; drop api_key'
+            )
         require_google_auth()
         # Vertex URLs end in /v1, so the Anthropic API's /v1 guard doesn't apply to base_url here.
         self._options = client_kwargs(

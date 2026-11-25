@@ -26,7 +26,6 @@ from anthropic import AsyncAnthropic
 from genkit import GenkitError
 from genkit_anthropic._backend import Backend, client_kwargs
 from genkit_anthropic._models import TASK_BUDGET_BETA
-from genkit_anthropic._secrets import missing_key_error
 
 # Sent on every beta-surface call to the Anthropic API, matching the JS plugin.
 BETA_APIS: tuple[str, ...] = (
@@ -69,7 +68,7 @@ class AnthropicApiBackend(Backend[AsyncAnthropic]):
         if api_key is None:
             # A plugin built without a credential serves only callers who bring a key.
             if not _has_credential(client):
-                raise missing_key_error()
+                raise _missing_key_error()
             return client
 
         reason = None
@@ -122,3 +121,13 @@ def _has_credential(client: AsyncAnthropic) -> bool:
     if client.api_key is not None or client.auth_token is not None or client.credentials is not None:
         return True
     return _pinned_credential_header(client) is not None
+
+
+def _missing_key_error() -> GenkitError:
+    return GenkitError(
+        status='FAILED_PRECONDITION',
+        message=(
+            'Anthropic needs an API key: set ANTHROPIC_API_KEY or pass Anthropic(api_key=...), '
+            "or send a per-request key as context={'secrets': {'api_key': ...}}."
+        ),
+    )

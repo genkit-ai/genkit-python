@@ -37,16 +37,6 @@ def misplaced_key_error() -> GenkitError:
     )
 
 
-def missing_key_error() -> GenkitError:
-    return GenkitError(
-        status='FAILED_PRECONDITION',
-        message=(
-            'Anthropic needs an API key: set ANTHROPIC_API_KEY or pass Anthropic(api_key=...), '
-            "or send a per-request key as context={'secrets': {'api_key': ...}}."
-        ),
-    )
-
-
 def _has_key(bag: Mapping[str, object]) -> bool:
     return any(bag.get(slot) is not None for slot in _KEY_SLOTS)
 

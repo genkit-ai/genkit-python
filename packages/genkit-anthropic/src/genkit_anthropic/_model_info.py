@@ -18,11 +18,10 @@
 
 from typing import Literal, TypeAlias, cast
 
-from genkit.model import ConstrainedSupport, ModelInfo, ModelStage, ModelSupports
+from genkit.model import ConstrainedSupport, ModelInfo, ModelSupports
 
 # Every model in the catalog takes media input, tools, a system prompt and
 # multi-turn history, and supports native structured output (output_config).
-# Source: https://platform.claude.com/docs/en/models/overview
 _CLAUDE_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
@@ -104,15 +103,6 @@ CLAUDE_SONNET_4_6 = ModelInfo(
     supports=_CLAUDE_SUPPORTS,
 )
 
-# Deprecated 2026-09-30, retires 2026-11-30; replacement is claude-sonnet-5-5.
-# Source: https://platform.claude.com/docs/en/about-claude/model-deprecations
-CLAUDE_SONNET_4_5 = ModelInfo(
-    label='Anthropic - Claude Sonnet 4.5',
-    versions=['claude-sonnet-4-5-20250929'],
-    supports=_CLAUDE_SUPPORTS,
-    stage=ModelStage.DEPRECATED,
-)
-
 CLAUDE_HAIKU_5_5 = ModelInfo(
     label='Anthropic - Claude Haiku 5.5',
     versions=['claude-haiku-5-5'],
@@ -125,9 +115,8 @@ CLAUDE_HAIKU_4_5 = ModelInfo(
     supports=_CLAUDE_SUPPORTS,
 )
 
-# Claude Opus 4, Opus 4.1 and Sonnet 4 are retired on the Claude API and are
-# not listed. Mythos models are limited to verified organizations, so they are
-# not advertised either; their ids still resolve through get_model_info.
+# Mythos models are limited to verified organizations, so they are not
+# advertised; their ids still resolve through get_model_info.
 
 # Quote autocomplete needs a Literal. The catalog below is what you edit when
 # a Claude ships; a test requires these members and the dict keys to be the
@@ -146,7 +135,6 @@ KnownClaude: TypeAlias = Literal[
     'claude-sonnet-5-5',
     'claude-sonnet-5',
     'claude-sonnet-4-6',
-    'claude-sonnet-4-5',
     'claude-haiku-5-5',
     'claude-haiku-4-5',
 ]
@@ -164,13 +152,12 @@ SUPPORTED_ANTHROPIC_MODELS: dict[KnownClaude, ModelInfo] = {
     'claude-sonnet-5-5': CLAUDE_SONNET_5_5,
     'claude-sonnet-5': CLAUDE_SONNET_5,
     'claude-sonnet-4-6': CLAUDE_SONNET_4_6,
-    'claude-sonnet-4-5': CLAUDE_SONNET_4_5,
     'claude-haiku-5-5': CLAUDE_HAIKU_5_5,
     'claude-haiku-4-5': CLAUDE_HAIKU_4_5,
 }
 
-# Fallback for ids that are not in the catalog, such as Mythos ids or Vertex
-# snapshot ids (claude-sonnet-4-5@20250929). Native structured output can't be
+# Fallback for ids that are not in the catalog, such as Mythos ids, dated ids
+# and Vertex snapshot ids (`<model>@<date>`). Native structured output can't be
 # assumed for them: a model without it rejects output_config, so the request
 # would fail instead of using prompt-based JSON.
 DEFAULT_SUPPORTS = ModelSupports(
@@ -193,10 +180,6 @@ def get_model_info(name: str) -> ModelInfo:
     """
     if name in SUPPORTED_ANTHROPIC_MODELS:
         return SUPPORTED_ANTHROPIC_MODELS[cast(KnownClaude, name)]
-    # A dated id (claude-sonnet-4-5-20250929) gets its catalog entry too.
-    for info in SUPPORTED_ANTHROPIC_MODELS.values():
-        if info.versions and name in info.versions:
-            return info
     return ModelInfo(
         label=f'Anthropic - {name}',
         supports=DEFAULT_SUPPORTS,

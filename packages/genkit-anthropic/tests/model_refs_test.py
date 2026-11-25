@@ -28,27 +28,27 @@ from genkit.model import ModelRef
 
 def test_claude_prefixes_anthropic() -> None:
     """claude namespaces the name and binds AnthropicConfig."""
-    ref = Anthropic.claude('claude-sonnet-4-5')
+    ref = Anthropic.claude('claude-sonnet-4-6')
 
     assert isinstance(ref, ModelRef)
-    assert ref.name == 'anthropic/claude-sonnet-4-5'
+    assert ref.name == 'anthropic/claude-sonnet-4-6'
     assert ref.config_schema is AnthropicConfig
 
 
 def test_claude_strips_own_prefix() -> None:
     """An already-namespaced name is not double-prefixed."""
-    ref = Anthropic.claude('anthropic/claude-sonnet-4-5')
-    assert ref.name == 'anthropic/claude-sonnet-4-5'
+    ref = Anthropic.claude('anthropic/claude-sonnet-4-6')
+    assert ref.name == 'anthropic/claude-sonnet-4-6'
 
 
 def test_claude_keeps_foreign_prefix() -> None:
     """A Vertex Model Garden paste is a different name, not remapped onto Anthropic."""
-    assert Anthropic.claude('vertexai/claude-sonnet-4-5').name == 'anthropic/vertexai/claude-sonnet-4-5'
+    assert Anthropic.claude('vertexai/claude-sonnet-4-6').name == 'anthropic/vertexai/claude-sonnet-4-6'
 
 
 def test_claude_carries_config() -> None:
     """A default config passed at construction survives into the ref."""
-    ref = Anthropic.claude('claude-sonnet-4-5', config=AnthropicConfig(max_output_tokens=256))
+    ref = Anthropic.claude('claude-sonnet-4-6', config=AnthropicConfig(max_output_tokens=256))
     assert ref.config is not None
     assert ref.config.max_output_tokens == 256
 

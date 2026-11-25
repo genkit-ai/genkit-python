@@ -32,7 +32,7 @@ def _request(config: AnthropicConfig) -> ModelRequest:
 
 
 def _params(config: AnthropicConfig) -> dict:
-    model = AnthropicModel(model_name='claude-sonnet-4-5', client=MagicMock())
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=MagicMock())
     return model._build_params(_request(config))
 
 

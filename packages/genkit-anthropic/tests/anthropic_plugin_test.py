@@ -33,7 +33,7 @@ from genkit_anthropic._models import AnthropicModel
 from genkit_anthropic._plugin import anthropic_name
 
 from genkit import Genkit, Message, ModelResponse, Part, Role
-from genkit.model import ConstrainedSupport, ModelRequest, ModelStage, ToolDefinition
+from genkit.model import ConstrainedSupport, ModelRequest, ToolDefinition
 from genkit.plugin_api import ActionKind
 
 
@@ -165,10 +165,10 @@ async def test_anthropic_runtime_clients_are_loop_local(mock_client_ctor: MagicM
 
 def test_supported_models() -> None:
     """Test that all supported models have proper metadata."""
-    assert len(SUPPORTED_MODELS) == 15
+    assert len(SUPPORTED_MODELS) == 14
     assert 'claude-3-haiku' not in SUPPORTED_MODELS
     # Retired on the Claude API.
-    for retired in ('claude-opus-4', 'claude-opus-4-1', 'claude-sonnet-4'):
+    for retired in ('claude-opus-4', 'claude-opus-4-1', 'claude-sonnet-4', 'claude-sonnet-4-5'):
         assert retired not in SUPPORTED_MODELS
     for _name, info in SUPPORTED_MODELS.items():
         assert info.label is not None
@@ -206,26 +206,9 @@ def test_supported_models() -> None:
 def test_dated_versions() -> None:
     """Models before the 4.6 generation send their dated snapshot id."""
     assert SUPPORTED_MODELS['claude-opus-4-5'].versions == ['claude-opus-4-5-20251101']
-    assert SUPPORTED_MODELS['claude-sonnet-4-5'].versions == ['claude-sonnet-4-5-20250929']
     assert SUPPORTED_MODELS['claude-haiku-4-5'].versions == ['claude-haiku-4-5-20251001']
     for name in ('claude-opus-4-6', 'claude-haiku-5-5'):
         assert SUPPORTED_MODELS[name].versions == [name]
-
-
-def test_get_model_info_matches_dated_version() -> None:
-    """A dated id returned by the Models API gets the curated entry, deprecation included."""
-    info = get_model_info('claude-sonnet-4-5-20250929')
-    assert info is SUPPORTED_MODELS['claude-sonnet-4-5']
-    assert info.stage == ModelStage.DEPRECATED
-
-
-def test_deprecated_models_are_marked() -> None:
-    """Deprecated-but-not-retired models stay listed with the deprecated stage."""
-    info = SUPPORTED_MODELS['claude-sonnet-4-5']
-    assert info.versions == ['claude-sonnet-4-5-20250929']
-    assert info.stage == ModelStage.DEPRECATED
-    deprecated = {name for name, info in SUPPORTED_MODELS.items() if info.stage == ModelStage.DEPRECATED}
-    assert deprecated == {'claude-sonnet-4-5'}
 
 
 def test_mythos_excluded_but_resolvable() -> None:

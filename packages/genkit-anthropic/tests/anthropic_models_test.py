@@ -223,7 +223,7 @@ def test_extract_system() -> None:
 def test_extract_system_keeps_all_system_messages() -> None:
     """Every system message is sent, not only the first."""
     mock_client = MagicMock()
-    model = AnthropicModel(model_name='claude-sonnet-4', client=mock_client)
+    model = AnthropicModel(model_name='claude-sonnet-4-6', client=mock_client)
 
     messages = [
         Message(role=Role.SYSTEM, content=[Part.from_text('You are helpful.')]),
@@ -693,7 +693,6 @@ def test_pdf_with_cache_control() -> None:
         'claude-opus-5-5',
         'claude-sonnet-5-5',
         'claude-fable-5-2',
-        'claude-sonnet-4-5-20250929',
     ],
 )
 def test_structured_output_uses_native_output_config(model_name: str) -> None:
@@ -777,6 +776,8 @@ def test_structured_output_falls_back_when_unconstrained(output_constrained: boo
     [
         'claude-unknown-model',
         'claude-mythos-5',
+        'claude-sonnet-4-5',
+        'claude-haiku-4-5-20251001',
         'claude-sonnet-4-5@20250929',
         'claude-sonnet-4-20250514',
         'claude-3-7-sonnet-20250219',

@@ -97,13 +97,18 @@ import ollama as ollama_api
 from pydantic import ValidationError
 from pydantic.alias_generators import to_snake
 
-from genkit import GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role, get_logger
+from genkit import FinishReason, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role, get_logger
 from genkit.model import GenerationUsage, ModelConfig, ModelContext, ModelRequest, ToolRequest
 from genkit.plugin_api import loop_local_client, provider_error
 from genkit_ollama._constants import DEFAULT_OLLAMA_SERVER_URL
 from genkit_ollama._errors import wrap_connection_errors
 
 logger = get_logger(__name__)
+
+_FINISH_REASONS = {
+    'stop': FinishReason.STOP,
+    'length': FinishReason.LENGTH,
+}
 
 
 # Some image hosts (Wikimedia, for one) answer 403 to requests without a real
@@ -404,6 +409,7 @@ class OllamaModel:
                 role=Role.MODEL,
                 content=content,
             ),
+            finish_reason=_FINISH_REASONS.get(api_response.done_reason or '') if api_response else None,
             usage=self.get_usage_info(
                 basic_generation_usage=basic_generation_usage,
                 api_response=api_response,

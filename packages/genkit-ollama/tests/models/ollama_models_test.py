@@ -27,8 +27,37 @@ import pytest
 from genkit_ollama._models import OllamaConfig, OllamaModel, _convert_parameters, _ResolvedModel
 from pydantic import ConfigDict, ValidationError
 
-from genkit import GenkitError, Message, ModelResponseChunk, Part, Role
+from genkit import FinishReason, GenkitError, Message, ModelResponseChunk, Part, Role
 from genkit.model import GenerationUsage, ModelConfig, ModelContext, ModelRequest, ToolDefinition
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize(
+    ('done_reason', 'expected'),
+    [('stop', FinishReason.STOP), ('length', FinishReason.LENGTH), (None, None), ('unknown', None)],
+)
+@pytest.mark.asyncio
+async def test_generate_finish_reason(streaming: bool, done_reason: str | None, expected: FinishReason | None) -> None:
+    """Preserve the Ollama completion reason in the final model response."""
+    final = ollama_api.ChatResponse(
+        done=True,
+        done_reason=done_reason,
+        message=ollama_api.Message(role='assistant', content='' if streaming else 'Hello'),
+    )
+
+    async def chunks() -> AsyncIterator[ollama_api.ChatResponse]:
+        yield ollama_api.ChatResponse(done=False, message=ollama_api.Message(role='assistant', content='Hello'))
+        yield final
+
+    client = AsyncMock(spec=ollama_api.AsyncClient)
+    client.chat.return_value = chunks() if streaming else final
+    model = OllamaModel(client=MagicMock(return_value=client), model_definition=_ResolvedModel(name='chat-model'))
+    request = ModelRequest(messages=[Message(role=Role.USER, content=[Part.from_text('Hi')])])
+    ctx = ModelContext(streaming_callback=MagicMock()) if streaming else None
+
+    response = await model.generate(request, ctx)
+
+    assert response.finish_reason == expected
 
 
 class TestOllamaModelGenerate(unittest.IsolatedAsyncioTestCase):

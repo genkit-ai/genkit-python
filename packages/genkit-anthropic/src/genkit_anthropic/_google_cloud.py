@@ -99,21 +99,50 @@ def require_google_auth() -> None:
         ) from e
 
 
-def adc_project() -> str | None:
-    """The project of the application default credentials, or None (blocking: may hit the metadata server)."""
+# The scope AsyncAnthropicVertex asks for when it loads credentials itself.
+_SCOPES = ('https://www.googleapis.com/auth/cloud-platform',)
+_LOGIN_FIX = (
+    'run `gcloud auth application-default login` on your machine, '
+    'or give the service account roles/aiplatform.user when running on Google Cloud'
+)
+
+
+def load_adc() -> tuple[Any, str | None]:  # noqa: ANN401 - google.auth credentials are untyped
+    """Application default credentials, refreshed, and their project (blocking: may hit the metadata server).
+
+    Refreshing here makes a missing or stale login fail on the first call
+    with the command that fixes it. Inside the SDK it surfaces mid-request
+    as an unmapped google.auth error, which reaches the caller as INTERNAL.
+
+    Raises:
+        GenkitError: FAILED_PRECONDITION when there are no credentials, or
+            they need a fresh login.
+    """
     # Optional dependency, checked by require_google_auth at setup.
     import google.auth  # noqa: PLC0415
-    from google.auth.exceptions import DefaultCredentialsError  # noqa: PLC0415
+    from google.auth.exceptions import DefaultCredentialsError, RefreshError  # noqa: PLC0415
+    from google.auth.transport.requests import Request  # noqa: PLC0415
 
     try:
-        _, project = google.auth.default()
-    except DefaultCredentialsError:
-        return None
-    return project
+        credentials, project = google.auth.default(scopes=list(_SCOPES))
+        credentials.refresh(Request())
+    except DefaultCredentialsError as e:
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=f'Anthropic(backend=GoogleCloud()) found no Google Cloud credentials: {_LOGIN_FIX}',
+        ) from e
+    except RefreshError as e:
+        raise GenkitError(
+            status='FAILED_PRECONDITION',
+            message=f'Anthropic(backend=GoogleCloud()) could not refresh Google Cloud credentials: {_LOGIN_FIX}',
+        ) from e
+    return credentials, project
 
 
 # region and project_id come from GoogleCloud(project=..., location=...), so they aren't client options.
 _SET_BY_GOOGLE_CLOUD = frozenset({'region', 'project_id'})
+# Either one in client_options means the caller brings their own credential, so ADC isn't loaded.
+_OWN_CREDENTIAL = frozenset({'access_token', 'credentials'})
 
 
 class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
@@ -150,19 +179,21 @@ class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
         # ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION never pick these.
         self._project = resolve_project(config)
         self._location = resolve_location(config)
-        self._adc_probed = False
+        self._uses_adc = not (_OWN_CREDENTIAL & self._options.keys())
+        self._ready = False
 
     def _new_client(self) -> AsyncAnthropicVertex:
         # Callers await request_client first, which resolves the project; NOT_GIVEN is only for tests.
+        # With ADC, request_client has also put the loaded credentials into the options.
         project_id = self._project if self._project is not None else NOT_GIVEN
         return AsyncAnthropicVertex(region=self._location, project_id=project_id, **self._options)
 
     async def request_client(self, api_key: str | None) -> AsyncAnthropicVertex:
-        """The plugin's client, once the project is known.
+        """The plugin's client, once its credentials and project are known.
 
         Raises:
-            GenkitError: FAILED_PRECONDITION for a ``context.secrets`` key, or
-                when no project can be found.
+            GenkitError: FAILED_PRECONDITION for a ``context.secrets`` key, no
+                usable credentials, or no project.
         """
         if api_key is not None:
             raise GenkitError(
@@ -172,28 +203,33 @@ class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
                     'Anthropic(backend=GoogleCloud()) authenticates with Google Cloud credentials.'
                 ),
             )
-        await self._resolve_project()
+        await self._prepare()
         return self.client()
 
     async def list_model_ids(self) -> list[str]:
         """Nothing: Google Cloud has no Models API, so the built-in catalog is the whole list."""
         return []
 
-    async def _resolve_project(self) -> None:
-        """Find the project once, before the first client is built.
+    async def _prepare(self) -> None:
+        """Load credentials and find the project, before the first client is built.
 
-        With no project passed or in the environment, it comes from the
-        application default credentials, as on Cloud Run. That lookup can hit
-        the metadata server, so it runs in a thread.
+        With ADC, the credentials load once and their project fills in when
+        none was passed or set, as on Cloud Run. The lookup can hit the
+        metadata server, so it runs in a thread. A failure isn't cached, so the
+        next call retries after the user logs in.
         """
-        if self._project is None and not self._adc_probed:
-            self._project = await asyncio.to_thread(adc_project)
-            self._adc_probed = True
+        if self._ready:
+            return
+        if self._uses_adc:
+            credentials, adc_project = await asyncio.to_thread(load_adc)
+            self._options['credentials'] = credentials
+            self._project = self._project or adc_project
         if self._project is None:
             raise GenkitError(
                 status='FAILED_PRECONDITION',
                 message=(
-                    'Anthropic(backend=GoogleCloud()) needs a Google Cloud project: pass GoogleCloud(project=...) '
-                    'or set GOOGLE_CLOUD_PROJECT'
+                    'Anthropic(backend=GoogleCloud()) needs a Google Cloud project: pass GoogleCloud(project=...), '
+                    'set GOOGLE_CLOUD_PROJECT, or run `gcloud config set project PROJECT_ID`'
                 ),
             )
+        self._ready = True

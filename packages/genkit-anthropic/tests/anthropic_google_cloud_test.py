@@ -25,9 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from anthropic import AsyncAnthropicVertex
 from genkit_anthropic import Anthropic, GoogleCloud
+from genkit_anthropic._google_cloud import load_adc
 from genkit_anthropic._model_info import SUPPORTED_ANTHROPIC_MODELS
+from google.auth.exceptions import DefaultCredentialsError, RefreshError
 
-from genkit import FinishReason, Genkit
+from genkit import FinishReason, Genkit, GenkitError
 
 _GCP_ENV = ('GCLOUD_PROJECT', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'ANTHROPIC_API_KEY')
 
@@ -36,6 +38,16 @@ _GCP_ENV = ('GCLOUD_PROJECT', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', '
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _GCP_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+# Stands in for the machine's ADC so no test reads real credentials or calls Google.
+FAKE_CREDENTIALS = MagicMock(name='adc-credentials')
+
+
+@pytest.fixture(autouse=True)
+def fake_adc() -> Any:  # noqa: ANN401 - the patched loader
+    with patch('genkit_anthropic._google_cloud.load_adc', return_value=(FAKE_CREDENTIALS, None)) as adc:
+        yield adc
 
 
 def _client(plugin: Anthropic) -> Any:  # noqa: ANN401 - the SDK client under test
@@ -99,6 +111,13 @@ def test_google_cloud_validates_client_options_against_vertex_client() -> None:
 
     with pytest.raises(TypeError, match='AsyncAnthropicVertex accepts'):
         Anthropic(backend=GoogleCloud(project='p'), client_options={'auth_token': 'tok'})
+
+
+@pytest.mark.parametrize('key', ['region', 'project_id'])
+def test_google_cloud_reserves_region_and_project_id(key: str) -> None:
+    """GoogleCloud(project=..., location=...) sets these, so client_options can't contradict them."""
+    with pytest.raises(TypeError, match=f"unexpected client_options key '{key}'"):
+        Anthropic(backend=GoogleCloud(project='p'), client_options={key: 'other'})
 
 
 def test_google_cloud_accepts_v1_base_url() -> None:
@@ -165,21 +184,108 @@ async def test_google_cloud_generate_needs_no_api_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_google_cloud_generate_takes_project_from_adc_once() -> None:
-    """With no project set, the ADC project is looked up once and reused."""
+async def test_google_cloud_generate_takes_project_and_credentials_from_adc_once(fake_adc: MagicMock) -> None:
+    """With no project set, ADC supplies it; the credentials load once and the client reuses them."""
+    fake_adc.return_value = (FAKE_CREDENTIALS, 'adc-project')
     plugin = Anthropic(backend=GoogleCloud())
     ai = Genkit(plugins=[plugin])
-    with (
-        patch('genkit_anthropic._google_cloud.adc_project', return_value='adc-project') as adc,
-        patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock(return_value=_vertex_response())),
-    ):
+    with patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock(return_value=_vertex_response())):
         await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='One.')
         await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Two.')
 
-    adc.assert_called_once()
+    fake_adc.assert_called_once()
     client = plugin._backend.client()
     assert isinstance(client, AsyncAnthropicVertex)
     assert client.project_id == 'adc-project'
+    assert client.credentials is FAKE_CREDENTIALS
+
+
+@pytest.mark.asyncio
+async def test_google_cloud_explicit_project_beats_adc_project(fake_adc: MagicMock) -> None:
+    """GoogleCloud(project=...) wins over the project the credentials carry."""
+    fake_adc.return_value = (FAKE_CREDENTIALS, 'adc-project')
+    plugin = Anthropic(backend=GoogleCloud(project='bistro-prod'))
+
+    client = await plugin._backend.request_client(None)
+
+    assert isinstance(client, AsyncAnthropicVertex)
+    assert client.project_id == 'bistro-prod'
+
+
+@pytest.mark.parametrize('own', [{'access_token': 'tok'}, {'credentials': MagicMock(name='service-account')}])
+@pytest.mark.asyncio
+async def test_google_cloud_own_credential_skips_adc(fake_adc: MagicMock, own: dict[str, Any]) -> None:
+    """An access_token or credentials in client_options is used as is; ADC isn't loaded."""
+    plugin = Anthropic(backend=GoogleCloud(project='bistro-prod'), client_options=own)
+
+    await plugin._backend.request_client(None)
+
+    fake_adc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_google_cloud_without_credentials_names_the_login_command(fake_adc: MagicMock) -> None:
+    """No ADC fails FAILED_PRECONDITION with the gcloud command, not an opaque INTERNAL from inside the SDK."""
+    fake_adc.side_effect = GenkitError(status='FAILED_PRECONDITION', message='no creds: gcloud auth ...')
+    ai = Genkit(plugins=[Anthropic(backend=GoogleCloud(project='bistro-prod'))])
+    with patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock()) as create:
+        response = await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
+
+    assert response.error is not None
+    assert response.error.status == 'FAILED_PRECONDITION'
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_google_cloud_retries_credentials_after_a_failed_load(fake_adc: MagicMock) -> None:
+    """A failed load isn't cached, so the next call works once the user has logged in."""
+    fake_adc.side_effect = [
+        GenkitError(status='FAILED_PRECONDITION', message='no creds'),
+        (FAKE_CREDENTIALS, None),
+    ]
+    plugin = Anthropic(backend=GoogleCloud(project='bistro-prod'))
+
+    with pytest.raises(GenkitError):
+        await plugin._backend.request_client(None)
+    client = await plugin._backend.request_client(None)
+
+    assert client.credentials is FAKE_CREDENTIALS
+    assert fake_adc.call_count == 2
+
+
+def test_load_adc_refreshes_and_returns_project() -> None:
+    """load_adc asks for the cloud-platform scope and refreshes now, so a stale login fails on the first call."""
+    credentials = MagicMock(name='user-credentials')
+    with patch('google.auth.default', return_value=(credentials, 'gcloud-project')) as default:
+        assert load_adc() == (credentials, 'gcloud-project')
+
+    assert default.call_args.kwargs['scopes'] == ['https://www.googleapis.com/auth/cloud-platform']
+    credentials.refresh.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ('failure', 'match'),
+    [
+        (DefaultCredentialsError('Your default credentials were not found.'), 'found no Google Cloud credentials'),
+        (RefreshError('Reauthentication is needed.'), 'could not refresh Google Cloud credentials'),
+    ],
+    ids=['no-adc', 'stale-login'],
+)
+def test_load_adc_failures_name_the_fix(failure: Exception, match: str) -> None:
+    """A missing or stale login is a setup problem, reported with the command that fixes it."""
+    credentials = MagicMock(name='user-credentials')
+    if isinstance(failure, RefreshError):
+        credentials.refresh.side_effect = failure
+        default = patch('google.auth.default', return_value=(credentials, None))
+    else:
+        default = patch('google.auth.default', side_effect=failure)
+
+    with default, pytest.raises(GenkitError) as exc_info:
+        load_adc()
+
+    assert exc_info.value.status == 'FAILED_PRECONDITION'
+    assert match in str(exc_info.value)
+    assert 'gcloud auth application-default login' in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -187,8 +293,7 @@ async def test_google_cloud_generate_without_any_project_fails_precondition() ->
     """No project anywhere is a setup problem, reported as FAILED_PRECONDITION naming the fix."""
     plugin = Anthropic(backend=GoogleCloud())
     ai = Genkit(plugins=[plugin])
-    with patch('genkit_anthropic._google_cloud.adc_project', return_value=None):
-        response = await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
+    response = await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
 
     assert response.finish_reason == FinishReason.FAILED
     assert 'GOOGLE_CLOUD_PROJECT' in str(response.finish_message)
@@ -200,7 +305,7 @@ async def test_google_cloud_rejects_secrets_key_before_looking_up_project() -> N
     plugin = Anthropic(backend=GoogleCloud())
     ai = Genkit(plugins=[plugin])
     with (
-        patch('genkit_anthropic._google_cloud.adc_project') as adc,
+        patch('genkit_anthropic._google_cloud.load_adc') as adc,
         patch('anthropic.resources.messages.AsyncMessages.create', AsyncMock()) as create,
     ):
         response = await ai.generate(

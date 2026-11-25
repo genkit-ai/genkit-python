@@ -20,195 +20,92 @@ from typing import Literal, TypeAlias, cast
 
 from genkit.model import ConstrainedSupport, ModelInfo, ModelSupports
 
-# Model definitions
-CLAUDE_SONNET_4 = ModelInfo(
-    label='Anthropic - Claude Sonnet 4',
-    versions=['claude-sonnet-4-20250514'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-    ),
-)
-
-CLAUDE_OPUS_4 = ModelInfo(
-    label='Anthropic - Claude Opus 4',
-    versions=['claude-opus-4-20250514'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-    ),
-)
-
-CLAUDE_SONNET_4_5 = ModelInfo(
-    label='Anthropic - Claude Sonnet 4.5',
-    versions=['claude-sonnet-4-5-20250929'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_SONNET_4_6 = ModelInfo(
-    label='Anthropic - Claude Sonnet 4.6',
-    versions=['claude-sonnet-4-6'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_SONNET_5 = ModelInfo(
-    label='Anthropic - Claude Sonnet 5',
-    versions=['claude-sonnet-5'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_HAIKU_4_5 = ModelInfo(
-    label='Anthropic - Claude Haiku 4.5',
-    versions=['claude-haiku-4-5-20251001'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_OPUS_4_1 = ModelInfo(
-    label='Anthropic - Claude Opus 4.1',
-    versions=['claude-opus-4-1-20250805'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_OPUS_4_5 = ModelInfo(
-    label='Anthropic - Claude Opus 4.5',
-    versions=['claude-opus-4-5-20251101'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-# Source: https://docs.anthropic.com/en/docs/about-claude/models
-# Released: February 5, 2026. Most capable model — excels in coding, agents,
-# and enterprise workflows. Supports 1M context window (beta).
-CLAUDE_OPUS_4_6 = ModelInfo(
-    label='Anthropic - Claude Opus 4.6',
-    versions=['claude-opus-4-6'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_OPUS_4_7 = ModelInfo(
-    label='Anthropic - Claude Opus 4.7',
-    versions=['claude-opus-4-7'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
-
-CLAUDE_OPUS_4_8 = ModelInfo(
-    label='Anthropic - Claude Opus 4.8',
-    versions=['claude-opus-4-8'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
+# Source: https://platform.claude.com/docs/en/models/overview and
+# https://platform.claude.com/docs/en/about-claude/model-deprecations
+# (checked 2026-11-25). The catalog holds every model the Claude API serves
+# today, active or deprecated; retired models are dropped. Any other id still
+# resolves on demand, with DEFAULT_SUPPORTS.
 
 
-CLAUDE_FABLE_5 = ModelInfo(
-    label='Anthropic - Claude Fable 5',
-    versions=['claude-fable-5'],
-    supports=ModelSupports(
-        multiturn=True,
-        media=True,
-        tools=True,
-        system_role=True,
-        output=['text', 'json'],
-        constrained=ConstrainedSupport.ALL,
-    ),
-)
+def _claude(label: str, version: str) -> ModelInfo:
+    """A cataloged Claude: text, images, tools, and native structured output.
+
+    ``version`` is the id sent to the API. From the 4.6 generation on, the
+    dateless id is itself a pinned snapshot; older models send the dated id.
+    """
+    return ModelInfo(
+        label=f'Anthropic - {label}',
+        versions=[version],
+        supports=ModelSupports(
+            multiturn=True,
+            media=True,
+            tools=True,
+            system_role=True,
+            output=['text', 'json'],
+            constrained=ConstrainedSupport.ALL,
+        ),
+    )
+
+
+# Latest models.
+CLAUDE_FABLE_5_2 = _claude('Claude Fable 5.2', 'claude-fable-5-2')
+CLAUDE_OPUS_5_5 = _claude('Claude Opus 5.5', 'claude-opus-5-5')
+CLAUDE_SONNET_5_5 = _claude('Claude Sonnet 5.5', 'claude-sonnet-5-5')
+CLAUDE_HAIKU_5_5 = _claude('Claude Haiku 5.5', 'claude-haiku-5-5')
+
+# Earlier models, still served.
+CLAUDE_FABLE_5_1 = _claude('Claude Fable 5.1', 'claude-fable-5-1')
+CLAUDE_FABLE_5 = _claude('Claude Fable 5', 'claude-fable-5')
+CLAUDE_OPUS_5 = _claude('Claude Opus 5', 'claude-opus-5')
+CLAUDE_OPUS_4_8 = _claude('Claude Opus 4.8', 'claude-opus-4-8')
+CLAUDE_OPUS_4_7 = _claude('Claude Opus 4.7', 'claude-opus-4-7')
+CLAUDE_OPUS_4_6 = _claude('Claude Opus 4.6', 'claude-opus-4-6')
+CLAUDE_SONNET_5 = _claude('Claude Sonnet 5', 'claude-sonnet-5')
+CLAUDE_SONNET_4_6 = _claude('Claude Sonnet 4.6', 'claude-sonnet-4-6')
+CLAUDE_HAIKU_4_5 = _claude('Claude Haiku 4.5', 'claude-haiku-4-5-20251001')
+
+# Deprecated: Opus 4.5 retires 2027-01-22, Sonnet 4.5 retires 2026-11-30.
+CLAUDE_OPUS_4_5 = _claude('Claude Opus 4.5', 'claude-opus-4-5-20251101')
+CLAUDE_SONNET_4_5 = _claude('Claude Sonnet 4.5', 'claude-sonnet-4-5-20250929')
 
 # Quote autocomplete needs a Literal. The catalog below is what you edit when
-# a Claude ships; a test requires these members and the dict keys to be the
-# same set, and the dict is typed so a new key that is not in the Literal
-# does not type-check.
+# a Claude ships or retires; a test requires these members and the dict keys
+# to be the same set, and the dict is typed so a new key that is not in the
+# Literal does not type-check.
 KnownClaude: TypeAlias = Literal[
-    'claude-sonnet-4',
-    'claude-opus-4',
-    'claude-sonnet-4-5',
-    'claude-sonnet-4-6',
-    'claude-sonnet-5',
-    'claude-haiku-4-5',
-    'claude-opus-4-1',
-    'claude-opus-4-5',
-    'claude-opus-4-6',
-    'claude-opus-4-7',
-    'claude-opus-4-8',
+    'claude-fable-5-2',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-haiku-5-5',
+    'claude-fable-5-1',
     'claude-fable-5',
+    'claude-opus-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-sonnet-5',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+    'claude-opus-4-5',
+    'claude-sonnet-4-5',
 ]
 
 SUPPORTED_ANTHROPIC_MODELS: dict[KnownClaude, ModelInfo] = {
-    'claude-sonnet-4': CLAUDE_SONNET_4,
-    'claude-opus-4': CLAUDE_OPUS_4,
-    'claude-sonnet-4-5': CLAUDE_SONNET_4_5,
-    'claude-sonnet-4-6': CLAUDE_SONNET_4_6,
-    'claude-sonnet-5': CLAUDE_SONNET_5,
-    'claude-haiku-4-5': CLAUDE_HAIKU_4_5,
-    'claude-opus-4-1': CLAUDE_OPUS_4_1,
-    'claude-opus-4-5': CLAUDE_OPUS_4_5,
-    'claude-opus-4-6': CLAUDE_OPUS_4_6,
-    'claude-opus-4-7': CLAUDE_OPUS_4_7,
-    'claude-opus-4-8': CLAUDE_OPUS_4_8,
+    'claude-fable-5-2': CLAUDE_FABLE_5_2,
+    'claude-opus-5-5': CLAUDE_OPUS_5_5,
+    'claude-sonnet-5-5': CLAUDE_SONNET_5_5,
+    'claude-haiku-5-5': CLAUDE_HAIKU_5_5,
+    'claude-fable-5-1': CLAUDE_FABLE_5_1,
     'claude-fable-5': CLAUDE_FABLE_5,
+    'claude-opus-5': CLAUDE_OPUS_5,
+    'claude-opus-4-8': CLAUDE_OPUS_4_8,
+    'claude-opus-4-7': CLAUDE_OPUS_4_7,
+    'claude-opus-4-6': CLAUDE_OPUS_4_6,
+    'claude-sonnet-5': CLAUDE_SONNET_5,
+    'claude-sonnet-4-6': CLAUDE_SONNET_4_6,
+    'claude-haiku-4-5': CLAUDE_HAIKU_4_5,
+    'claude-opus-4-5': CLAUDE_OPUS_4_5,
+    'claude-sonnet-4-5': CLAUDE_SONNET_4_5,
 }
 
 DEFAULT_SUPPORTS = ModelSupports(

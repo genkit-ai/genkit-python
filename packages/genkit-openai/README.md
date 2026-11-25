@@ -105,6 +105,55 @@ vectors = await ai.embed(embedder='openrouter/openai/text-embedding-3-small', co
 - `OpenAIConfig` is the config for every model. A server may ignore fields it
   doesn't support, or reject them.
 
+### Model Garden on Google Cloud
+
+`OpenAICompatible(backend=GoogleCloud())` serves Model Garden's
+OpenAI-compatible models (Llama, Mistral, and others) from Google Cloud,
+billed to your project and authenticated with your Google login instead of
+an API key. Models register as `modelgarden/<publisher>/<model>`.
+
+```bash
+uv add 'genkit-openai[google-cloud]'
+```
+
+```python
+from genkit import Genkit
+from genkit_openai import GoogleCloud, OpenAICompatible
+
+# 1. Model Garden through your gcloud login; the endpoint and token are handled
+garden = OpenAICompatible(backend=GoogleCloud(project='bistro-prod', location='us-central1'))
+ai = Genkit(plugins=[garden])
+
+# 2. The ref helper gives the ref for any Model Garden model on the OpenAI-compatible endpoint
+res = await ai.generate(model=garden.model('meta/llama-3.3-70b-instruct-maas'), prompt='Suggest a dish.')
+print(res.text)
+# => Grilled salmon with lemon and dill
+```
+
+First-time setup:
+
+1. Log in and pick a project with billing: `gcloud auth login`, then
+   `gcloud config set project YOUR_PROJECT_ID`.
+2. Turn on the API: `gcloud services enable aiplatform.googleapis.com`.
+3. Enable the model on its Model Garden card in the Google Cloud console, and
+   accept its terms. You do this once per model, per project.
+4. Give your code access to your login: `gcloud auth application-default login`.
+
+- `project` comes from `GoogleCloud(project=...)`, then `GCLOUD_PROJECT`,
+  `GOOGLE_CLOUD_PROJECT`, then your credentials. `location` comes from
+  `GoogleCloud(location=...)`, then `GOOGLE_CLOUD_LOCATION`, then
+  `us-central1`; most open models are regional.
+- The name is always `modelgarden`. Leave `name=` out, or pass
+  `name='modelgarden'`; anything else raises `ValueError`.
+- Model Garden has no model list endpoint, so the Dev UI lists nothing for
+  this plugin. Any model id resolves when you call it.
+- A missing or stale login fails the call with `FAILED_PRECONDITION` and the
+  `gcloud` command that fixes it. The next call retries after you log in.
+- A key in `context={'secrets': {'api_key': ...}}` fails with
+  `FAILED_PRECONDITION`: every call bills the project.
+- For Claude on Google Cloud, use `Anthropic(backend=GoogleCloud())` from
+  `genkit-anthropic[google-cloud]`.
+
 ## Mistral
 
 `Mistral()` registers Mistral's models and embedders under `mistral/`, as the

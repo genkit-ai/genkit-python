@@ -1939,12 +1939,19 @@ dependencies = [
     { name = "strenum", marker = "python_full_version < '3.11'" },
 ]
 
+[package.optional-dependencies]
+google-cloud = [
+    { name = "google-auth", extra = ["requests"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
+    { name = "google-auth", extras = ["requests"], marker = "extra == 'google-cloud'", specifier = ">=2.14.1" },
     { name = "openai", specifier = ">=1.106.0,<3" },
     { name = "strenum", marker = "python_full_version < '3.11'", specifier = ">=0.4.15" },
 ]
+provides-extras = ["google-cloud"]
 
 [[package]]
 name = "genkit-otel"

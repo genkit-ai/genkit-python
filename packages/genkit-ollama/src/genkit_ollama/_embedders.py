@@ -67,9 +67,9 @@ class OllamaEmbedder:
     async def embed(self, request: EmbedRequest, client: ollama_api.AsyncClient | None = None) -> EmbedResponse:
         """Generates embeddings for the provided input text.
 
-        Converts the input documents from the Genkit EmbedRequest into a raw
-        list of strings, sends them to the Ollama server for embedding, and then
-        formats the response into a Genkit EmbedResponse.
+        Joins the text parts of each Genkit input document into one string,
+        sends those strings to the Ollama server for embedding, and formats
+        the response into a Genkit EmbedResponse.
 
         Args:
             request: The embedding request containing the input documents.
@@ -87,9 +87,7 @@ class OllamaEmbedder:
         """
         if client is None:
             client = self._get_client()
-        input_raw: list[str] = []
-        for doc in request.input:
-            input_raw.extend([str(content.text) for content in doc.content if content.text is not None])
+        input_raw = ['\n'.join(part.text for part in doc.content if part.text is not None) for doc in request.input]
         try:
             response = await client.embed(
                 model=self.model,

@@ -1,7 +1,7 @@
 # Genkit OpenAI Plugin
 
-OpenAI-compatible model provider for Genkit (OpenAI, Azure OpenAI, and other
-compatible endpoints).
+OpenAI model provider for Genkit, plus `OpenAICompatible` for any other server
+that speaks the OpenAI API.
 
 > **Building with a coding agent? Install the Genkit Python skill first.**
 >
@@ -43,17 +43,67 @@ if __name__ == '__main__':
 ```
 
 Set `OPENAI_API_KEY` in the environment, or pass `api_key=` to `OpenAI()`.
-`base_url=` points the plugin at another OpenAI-compatible server. Pass the URL
-up to and including `/v1`; the SDK appends `/chat/completions`. Any other
+`base_url=` points the plugin at a proxy or gateway in front of OpenAI. Pass the
+URL up to and including `/v1`; the SDK appends `/chat/completions`. Any other
 `AsyncOpenAI` setting goes in `client_options`:
 
 ```python
 OpenAI(
     api_key=key,
-    base_url='https://openrouter.ai/api/v1',
+    base_url='https://llm-gateway.example.com/v1',
     client_options={'organization': 'org-123', 'timeout': 30, 'max_retries': 5},
 )
 ```
+
+For a server that isn't OpenAI, use `OpenAICompatible` below.
+
+## Any OpenAI-compatible server
+
+`OpenAICompatible` connects any server that speaks the OpenAI API (OpenRouter,
+Together, Groq, vLLM, LiteLLM, a local model server) under a name you pick.
+Models register as `<name>/<id>`, and `<id>` is sent exactly as the server
+spells it.
+
+```python
+from genkit import Genkit
+from genkit_openai import OpenAI, OpenAICompatible
+
+# 1. Name the server; its models become openrouter/<id>
+openrouter = OpenAICompatible(name='openrouter', base_url='https://openrouter.ai/api/v1', api_key=key)
+
+# 2. Run it beside OpenAI's own API
+ai = Genkit(plugins=[OpenAI(), openrouter])
+
+# 3. Use the server's own ids, slashes and all
+res = await ai.generate(model=openrouter.model('meta-llama/llama-3.3-70b-instruct'), prompt='Name a bakery.')
+print(res.text)
+# => Rise & Shine Bakehouse
+
+# 4. Embedders resolve the same way
+vectors = await ai.embed(embedder='openrouter/openai/text-embedding-3-small', content='Mushroom Risotto')
+```
+
+- There's no built-in model list. Any id resolves when you call it, and the
+  Dev UI lists what the server's `/models` returns. A server without `/models`
+  lists nothing; calls still work.
+- Give each server its own `name`. Several `OpenAICompatible` plugins and an
+  `OpenAI()` can run in one app.
+- `api_key=None` is for servers that need no key. `OPENAI_API_KEY` is never
+  read, so an OpenAI key doesn't go to another server.
+- For a token that expires, pass an async function as `api_key`. The SDK
+  awaits it before each request:
+
+  ```python
+  async def gateway_token() -> str:
+      return await token_cache.get()
+
+  OpenAICompatible(name='gateway', base_url='https://llm-gateway.example.com/v1', api_key=gateway_token)
+  ```
+
+- A per-request key in `context={'secrets': {'api_key': ...}}` replaces the
+  plugin key for that call.
+- `OpenAIConfig` is the config for every model. A server may ignore fields it
+  doesn't support, or reject them.
 
 ## Mistral
 

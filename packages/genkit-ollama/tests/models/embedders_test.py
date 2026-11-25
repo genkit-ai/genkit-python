@@ -61,7 +61,7 @@ class TestOllamaEmbedderEmbed(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, EmbedResponse(embeddings=expected_genkit_embeddings))
 
     async def test_embed_multiple_documents_multiple_content(self) -> None:
-        """Test embed with multiple documents, each with multiple text contents."""
+        """Test that multipart documents each produce one embedding in input order."""
         request = EmbedRequest(
             input=[
                 Document(
@@ -73,24 +73,18 @@ class TestOllamaEmbedderEmbed(unittest.IsolatedAsyncioTestCase):
                 Document(content=[Part.from_text('doc2_part1')]),
             ]
         )
-        expected_ollama_embeddings = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
-        self.mock_ollama_client_instance.embed.return_value = ollama_api.EmbedResponse(
-            embeddings=expected_ollama_embeddings
+        # Ollama returns one embedding for each string it receives.
+        self.mock_ollama_client_instance.embed.side_effect = lambda **kwargs: ollama_api.EmbedResponse(
+            embeddings=[[float(index)] for index, _ in enumerate(kwargs['input'])]
         )
 
         response = await self.ollama_embedder.embed(request)
 
-        # Assertions
+        self.assertEqual(response, EmbedResponse(embeddings=[Embedding(embedding=[0.0]), Embedding(embedding=[1.0])]))
         self.mock_ollama_client_instance.embed.assert_awaited_once_with(
             model='test-embed-model',
-            input=['doc1_part1', 'doc1_part2', 'doc2_part1'],
+            input=['doc1_part1\ndoc1_part2', 'doc2_part1'],
         )
-        expected_genkit_embeddings = [
-            Embedding(embedding=[0.1, 0.2]),
-            Embedding(embedding=[0.3, 0.4]),
-            Embedding(embedding=[0.5, 0.6]),
-        ]
-        self.assertEqual(response, EmbedResponse(embeddings=expected_genkit_embeddings))
 
     async def test_embed_empty_input(self) -> None:
         """Test embed with an empty input request."""

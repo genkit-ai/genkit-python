@@ -23,6 +23,7 @@ from that publisher is resolved or called.
 
 import asyncio
 import os
+import warnings
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -46,6 +47,30 @@ if TYPE_CHECKING:
     from openai import AsyncOpenAI
 
 MODELGARDEN_PLUGIN_NAME = 'modelgarden'
+
+
+def warn_claude_deprecated(name: str) -> None:
+    """Point a Model Garden Claude user at the Anthropic plugin, once per model.
+
+    Uses FutureWarning rather than DeprecationWarning because Python's default
+    filters hide DeprecationWarning outside ``__main__`` (PEP 565), which would
+    silence it in web servers and imported modules. The message names the
+    model, so the default filter shows it once for each model the app uses.
+
+    Args:
+        name: The model id without the ``modelgarden/`` prefix, e.g.
+            ``anthropic/claude-sonnet-5-5`` or ``anthropic/claude-sonnet-4@20250514``.
+    """
+    # Google Cloud's Claude names drop Model Garden's @date suffix.
+    claude = name.removeprefix('anthropic/').split('@', 1)[0]
+    warnings.warn(
+        f"ModelGarden's Claude models are deprecated and will be removed in genkit-vertexai 1.0. "
+        f"Use the Anthropic plugin on Google Cloud instead: uv add 'genkit-anthropic[google-cloud]', "
+        f"then Anthropic(backend=GoogleCloud()) and model=Anthropic.claude('{claude}') "
+        f"in place of model='modelgarden/{name}'.",
+        FutureWarning,
+        stacklevel=2,
+    )
 
 
 @dataclass(frozen=True)
@@ -208,6 +233,11 @@ class ModelGarden(Plugin):
     enabling the use of Vertex AI models and services within the Genkit
     framework. It handles initialization of the Model Garden client and
     registration of model actions.
+
+    Claude models (``modelgarden/anthropic/...``) are deprecated and will be
+    removed in 1.0; use ``Anthropic(backend=GoogleCloud())`` from
+    ``genkit-anthropic[google-cloud]``. They keep working until then, with a
+    ``FutureWarning`` the first time each one is resolved.
     """
 
     name = MODELGARDEN_PLUGIN_NAME
@@ -310,6 +340,7 @@ class ModelGarden(Plugin):
         full_name = model_garden_name(name)
 
         if name.startswith('anthropic/'):
+            warn_claude_deprecated(name)
             with _requires_extra(_ANTHROPIC_EXTRA):
                 from ._anthropic import AnthropicModelGarden
 

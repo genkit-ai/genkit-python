@@ -28,9 +28,6 @@ from genkit_vertexai._model_garden._secrets import reject_secrets_api_key
 from genkit import Genkit, GenkitError, Message, ModelResponse, Part, Role
 from genkit.model import ModelContext, ModelRequest
 
-# These tests exercise Claude through ModelGarden; the deprecation warning has its own test.
-pytestmark = pytest.mark.filterwarnings("ignore:ModelGarden's Claude models are deprecated:FutureWarning")
-
 CLAUDE_MODEL = 'modelgarden/anthropic/claude-sonnet-4-5@20250929'
 
 

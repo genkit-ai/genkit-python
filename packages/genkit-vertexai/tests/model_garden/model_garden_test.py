@@ -41,9 +41,6 @@ from genkit.model import ModelContext, ModelRequest, OutputConfig
 from genkit.plugin_api import ActionKind
 
 CLAUDE = 'modelgarden/anthropic/claude-sonnet-4@20250514'
-
-# These tests exercise Claude through ModelGarden; the deprecation warning has its own test.
-pytestmark = pytest.mark.filterwarnings("ignore:ModelGarden's Claude models are deprecated:FutureWarning")
 _ADC = 'genkit_vertexai._model_garden._plugin.google_auth_default'
 LLAMA = 'modelgarden/meta/llama-3.1-405b-instruct-maas'
 MISTRAL = 'modelgarden/mistralai/mistral-small-2503'
@@ -606,37 +603,24 @@ async def test_model_garden_without_models_still_resolves_any_model() -> None:
     assert client.chat.completions.create.call_args.kwargs['model'] == 'mistralai/mistral-small-2503'
 
 
-@pytest.mark.parametrize(
-    ('model', 'suggested'),
-    [
-        ('modelgarden/anthropic/claude-sonnet-4-5@20250929', "Anthropic.claude('claude-sonnet-4-5')"),
-        ('modelgarden/anthropic/claude-sonnet-5-5', "Anthropic.claude('claude-sonnet-5-5')"),
-    ],
-    ids=['dated', 'dateless'],
-)
-@pytest.mark.asyncio
-async def test_model_garden_claude_warns_with_the_anthropic_replacement(model: str, suggested: str) -> None:
-    """Resolving a Model Garden Claude still works, with a FutureWarning naming the exact Anthropic ref."""
-    ai = Genkit(plugins=[ModelGarden(project='p', location='global')])
+def test_model_garden_warns_that_the_package_is_deprecated() -> None:
+    """Constructing ModelGarden raises a FutureWarning naming the Claude replacement and the removal."""
+    with pytest.warns(FutureWarning) as record:
+        ModelGarden(project='p', location='global')
 
-    with pytest.warns(FutureWarning, match='deprecated') as record:
-        action = await ai.lookup_model(model)
-
-    assert action is not None
     message = str(record[0].message)
-    assert 'genkit-anthropic[google-cloud]' in message
+    assert 'genkit-vertexai is deprecated and will be removed in the next release' in message
+    assert "uv add 'genkit-anthropic[google-cloud]'" in message
     assert 'Anthropic(backend=GoogleCloud())' in message
-    assert suggested in message
-    assert f"model='{model}'" in message
+    assert 'Llama, Mistral and the other Model Garden models have no Genkit plugin after the removal' in message
+    # Attributed to the caller's line, not to genkit-vertexai.
+    assert record[0].filename == __file__
 
 
 @pytest.mark.asyncio
-async def test_model_garden_llama_does_not_warn() -> None:
-    """Only Claude is deprecated; OpenAI-compatible publishers resolve without a warning."""
-    import warnings
-
+async def test_model_garden_models_keep_working_while_deprecated() -> None:
+    """Deprecated isn't removed: Claude and Llama still resolve this release."""
     ai = Genkit(plugins=[ModelGarden(project='p', location='global')])
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('error', FutureWarning)
-        assert await ai.lookup_model(LLAMA) is not None
+    assert await ai.lookup_model(CLAUDE) is not None
+    assert await ai.lookup_model(LLAMA) is not None

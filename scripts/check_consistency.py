@@ -35,7 +35,9 @@ NC = '\033[0m'
 
 PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPECTED_PYTHON = '>=3.10'
-ZERO_X_ONLY_PACKAGES: frozenset[str] = frozenset({'genkit-evaluators'})
+# Deprecated packages capped at the next minor while on 0.x, so dropping them
+# in a later 0.x release doesn't leave an old copy installable next to a newer genkit.
+ZERO_X_ONLY_PACKAGES: frozenset[str] = frozenset({'genkit-evaluators', 'genkit-vertexai'})
 
 _INTRA_REPO_NAME_RE = re.compile(r'^\s*(genkit(?:-[a-z0-9-]+)?)\b')
 _EXACT_PIN_RE = re.compile(r'^(genkit(?:-[a-z0-9-]+)?)(?:\[[a-z0-9,_-]+\])?==([^,;\s]+)$')

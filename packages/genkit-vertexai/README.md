@@ -2,10 +2,18 @@
 
 Integrate Genkit with Google Cloud Vertex AI Model Garden.
 
-> **Claude through `ModelGarden` is deprecated.** Use the Anthropic plugin on
-> Google Cloud instead; see [Moving Claude to the Anthropic plugin](#moving-claude-to-the-anthropic-plugin).
-> `modelgarden/anthropic/...` models keep working in this release, warn the
-> first time each one is used, and will be removed in the next release.
+> **Deprecated: genkit-vertexai will be removed in the next release.**
+>
+> - **Claude**: move to the Anthropic plugin on Google Cloud. It's the same
+>   models, billed to the same project. See
+>   [Moving Claude to the Anthropic plugin](#moving-claude-to-the-anthropic-plugin).
+> - **Llama, Mistral and other Model Garden models**: no Genkit plugin replaces
+>   them after the removal.
+>
+> Everything keeps working in this release. `ModelGarden(...)` raises a
+> `FutureWarning`. This package now requires the matching `genkit` minor
+> version, so upgrading `genkit` past this release means removing
+> `genkit-vertexai` first.
 
 > **Building with a coding agent? Install the Genkit Python skill first.**
 >
@@ -23,7 +31,7 @@ Install the extra for the Model Garden publishers you call:
 
 ```bash
 uv add 'genkit-vertexai[openai]'             # Llama, Mistral, and other OpenAI-compatible models
-uv add 'genkit-vertexai[anthropic]'          # Claude (deprecated)
+uv add 'genkit-vertexai[anthropic]'          # Claude
 ```
 
 The package without an extra serves no models. Calling a model without its
@@ -89,10 +97,9 @@ await ai.generate(model=Anthropic.claude('claude-sonnet-5-5'), prompt='Suggest a
   suffix: `modelgarden/anthropic/claude-sonnet-4-5@20250929` becomes
   `Anthropic.claude('claude-sonnet-4-5')`.
 - `project` and `location` mean the same thing in `GoogleCloud(...)` and
-  default the same way. `model_locations` has no equivalent; use one
-  `Anthropic(backend=GoogleCloud(location=...))` per region.
+  default the same way. `model_locations` has no equivalent: an app uses one
+  location for Claude. The default, `global`, serves every Claude model.
 - Config is unchanged: Model Garden Claude already took `AnthropicConfig`.
-- Keep `ModelGarden` for Llama and the other OpenAI-compatible models.
 
 See the [genkit-anthropic README](../genkit-anthropic/README.md#claude-on-google-cloud)
 for first-time Google Cloud setup.

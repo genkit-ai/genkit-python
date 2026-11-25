@@ -88,8 +88,8 @@ middleware            = ["genkit-middleware>=0.13.0,<2"]
 otel                  = ["genkit-otel>=0.13.0,<2"]
 ollama                = ["genkit-ollama>=0.13.0,<2"]
 openai                = ["genkit-openai>=0.13.0,<2"]
-vertex-ai             = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
-vertexai              = ["genkit-vertexai[anthropic,openai]>=0.13.0,<2"]
+vertex-ai             = ["genkit-vertexai[anthropic,openai]>=0.13.0,<0.14"]
+vertexai              = ["genkit-vertexai[anthropic,openai]>=0.13.0,<0.14"]
 
 [project.urls]
 "Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"

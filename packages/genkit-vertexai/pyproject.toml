@@ -44,10 +44,10 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-  "genkit>=0.13.0,<2",
+  "genkit>=0.13.0,<0.14",
   "google-auth[requests]>=2.14.1",
 ]
-description = "Vertex AI and Model Garden on Genkit"
+description = "Deprecated, removed in the next release. Model Garden on Genkit; for Claude use genkit-anthropic[google-cloud]."
 keywords = [
   "genkit",
   "vertex-ai",

@@ -22,9 +22,6 @@ from genkit_vertexai import ModelGarden
 
 from genkit import FinishReason, Genkit
 
-# These tests exercise Claude through ModelGarden; the deprecation warning has its own test.
-pytestmark = pytest.mark.filterwarnings("ignore:ModelGarden's Claude models are deprecated:FutureWarning")
-
 MODEL = 'modelgarden/anthropic/claude-sonnet-4-6'
 
 

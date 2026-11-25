@@ -49,28 +49,16 @@ if TYPE_CHECKING:
 MODELGARDEN_PLUGIN_NAME = 'modelgarden'
 
 
-def warn_claude_deprecated(name: str) -> None:
-    """Point a Model Garden Claude user at the Anthropic plugin, once per model.
-
-    Uses FutureWarning rather than DeprecationWarning because Python's default
-    filters hide DeprecationWarning outside ``__main__`` (PEP 565), which would
-    silence it in web servers and imported modules. The message names the
-    model, so the default filter shows it once for each model the app uses.
-
-    Args:
-        name: The model id without the ``modelgarden/`` prefix, e.g.
-            ``anthropic/claude-sonnet-5-5`` or ``anthropic/claude-sonnet-4@20250514``.
-    """
-    # Google Cloud's Claude names drop Model Garden's @date suffix.
-    claude = name.removeprefix('anthropic/').split('@', 1)[0]
-    warnings.warn(
-        f"ModelGarden's Claude models are deprecated and will be removed in the next release of genkit-vertexai. "
-        f"Use the Anthropic plugin on Google Cloud instead: uv add 'genkit-anthropic[google-cloud]', "
-        f"then Anthropic(backend=GoogleCloud()) and model=Anthropic.claude('{claude}') "
-        f"in place of model='modelgarden/{name}'.",
-        FutureWarning,
-        stacklevel=2,
-    )
+# FutureWarning, not DeprecationWarning: Python's default filters hide
+# DeprecationWarning outside __main__ (PEP 565), which would silence it in web
+# servers and imported modules. Same choice as the evaluators deprecation.
+DEPRECATION_MESSAGE = (
+    'genkit-vertexai is deprecated and will be removed in the next release. '
+    "For Claude, use the Anthropic plugin on Google Cloud: uv add 'genkit-anthropic[google-cloud]', "
+    "then Anthropic(backend=GoogleCloud()) and model=Anthropic.claude('claude-sonnet-5-5') "
+    "in place of model='modelgarden/anthropic/claude-sonnet-5-5'. "
+    'Llama, Mistral and the other Model Garden models have no Genkit plugin after the removal.'
+)
 
 
 @dataclass(frozen=True)
@@ -234,10 +222,10 @@ class ModelGarden(Plugin):
     framework. It handles initialization of the Model Garden client and
     registration of model actions.
 
-    Claude models (``modelgarden/anthropic/...``) are deprecated and will be
-    removed in the next release; use ``Anthropic(backend=GoogleCloud())`` from
-    ``genkit-anthropic[google-cloud]``. They keep working until then, with a
-    ``FutureWarning`` the first time each one is resolved.
+    Deprecated: genkit-vertexai will be removed in the next release. For
+    Claude, use ``Anthropic(backend=GoogleCloud())`` from
+    ``genkit-anthropic[google-cloud]``. Constructing ``ModelGarden`` raises a
+    ``FutureWarning``; every model keeps working until the removal.
     """
 
     name = MODELGARDEN_PLUGIN_NAME
@@ -263,6 +251,7 @@ class ModelGarden(Plugin):
                 Google Cloud regions. This overrides the default `location` for the
                 specified models.
         """
+        warnings.warn(DEPRECATION_MESSAGE, FutureWarning, stacklevel=2)
         self.project = (
             project if project is not None else os.getenv(const.GCLOUD_PROJECT) or os.getenv('GOOGLE_CLOUD_PROJECT')
         )
@@ -340,7 +329,6 @@ class ModelGarden(Plugin):
         full_name = model_garden_name(name)
 
         if name.startswith('anthropic/'):
-            warn_claude_deprecated(name)
             with _requires_extra(_ANTHROPIC_EXTRA):
                 from ._anthropic import AnthropicModelGarden
 

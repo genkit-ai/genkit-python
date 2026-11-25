@@ -14,8 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A fake Vertex Claude endpoint shared by the Model Garden tests."""
+"""A fake Vertex Claude endpoint shared by the Model Garden tests, and the deprecation filter."""
 
+import pathlib
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
@@ -59,3 +60,17 @@ def vertex_requests() -> Iterator[list[httpx.Request]]:
 
     with patch('genkit_vertexai._model_garden._anthropic.AsyncAnthropicVertex', client):
         yield fake.requests
+
+
+_HERE = pathlib.Path(__file__).parent
+_DEPRECATION_FILTER = pytest.mark.filterwarnings('ignore:genkit-vertexai is deprecated:FutureWarning')
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Every ModelGarden(...) warns; the warning is pinned by its own test, so it's filtered elsewhere here.
+
+    This hook sees the whole session's items, so it only marks the ones in this directory.
+    """
+    for item in items:
+        if _HERE in pathlib.Path(str(item.path)).parents:
+            item.add_marker(_DEPRECATION_FILTER)

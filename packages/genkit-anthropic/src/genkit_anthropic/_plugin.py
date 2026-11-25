@@ -104,7 +104,7 @@ class Anthropic(Plugin):
 
     @classmethod
     def claude(cls, name: KnownClaude | str, *, config: AnthropicConfig | None = None) -> ModelRef[AnthropicConfig]:
-        """Typed ref for a Claude model, e.g. ``Anthropic.claude('claude-sonnet-4-5')``.
+        """Typed ref for a Claude model, e.g. ``Anthropic.claude('claude-sonnet-5')``.
 
         Unknown ids are allowed so new Claude releases work before this
         plugin learns their names; every Anthropic generate model takes
@@ -141,7 +141,7 @@ class Anthropic(Plugin):
             Anthropic(backend=GoogleCloud(project='bistro-prod'))
 
             # 3. Refs, config and .prompt files don't change between the two
-            await ai.generate(model=Anthropic.claude('claude-sonnet-4-6'), prompt='Suggest a dish.')
+            await ai.generate(model=Anthropic.claude('claude-sonnet-5'), prompt='Suggest a dish.')
             ```
 
         Args:

@@ -30,9 +30,9 @@ Example:
 
 
     async def main() -> None:
-        # 2. Generate with Claude Sonnet 4.6
+        # 2. Generate with Claude Sonnet 5
         res = await ai.generate(
-            model=Anthropic.claude('claude-sonnet-4-6'),
+            model=Anthropic.claude('claude-sonnet-5'),
             prompt='Explain recursion in 10 words.',
         )
 

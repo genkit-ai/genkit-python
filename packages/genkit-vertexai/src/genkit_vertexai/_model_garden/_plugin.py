@@ -64,7 +64,7 @@ def warn_claude_deprecated(name: str) -> None:
     # Google Cloud's Claude names drop Model Garden's @date suffix.
     claude = name.removeprefix('anthropic/').split('@', 1)[0]
     warnings.warn(
-        f"ModelGarden's Claude models are deprecated and will be removed in genkit-vertexai 1.0. "
+        f"ModelGarden's Claude models are deprecated and will be removed in the next release of genkit-vertexai. "
         f"Use the Anthropic plugin on Google Cloud instead: uv add 'genkit-anthropic[google-cloud]', "
         f"then Anthropic(backend=GoogleCloud()) and model=Anthropic.claude('{claude}') "
         f"in place of model='modelgarden/{name}'.",
@@ -235,7 +235,7 @@ class ModelGarden(Plugin):
     registration of model actions.
 
     Claude models (``modelgarden/anthropic/...``) are deprecated and will be
-    removed in 1.0; use ``Anthropic(backend=GoogleCloud())`` from
+    removed in the next release; use ``Anthropic(backend=GoogleCloud())`` from
     ``genkit-anthropic[google-cloud]``. They keep working until then, with a
     ``FutureWarning`` the first time each one is resolved.
     """

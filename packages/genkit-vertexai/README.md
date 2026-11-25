@@ -4,8 +4,8 @@ Integrate Genkit with Google Cloud Vertex AI Model Garden.
 
 > **Claude through `ModelGarden` is deprecated.** Use the Anthropic plugin on
 > Google Cloud instead; see [Moving Claude to the Anthropic plugin](#moving-claude-to-the-anthropic-plugin).
-> `modelgarden/anthropic/...` models keep working until genkit-vertexai 1.0 and
-> warn the first time each one is used.
+> `modelgarden/anthropic/...` models keep working in this release, warn the
+> first time each one is used, and will be removed in the next release.
 
 > **Building with a coding agent? Install the Genkit Python skill first.**
 >

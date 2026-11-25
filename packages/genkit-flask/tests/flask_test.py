@@ -23,6 +23,7 @@ import logging
 import threading
 import warnings
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -461,6 +462,41 @@ def test_flask_context_provider_abort_keeps_its_status() -> None:
     response = app.test_client().post('/chat', json={'data': 'x'})
 
     assert response.status_code == 401
+
+
+def test_concurrent_streaming_requests_to_same_flow() -> None:
+    """Both SSE responses complete while one flow invocation waits for the other."""
+    ai = Genkit()
+    app = Flask(__name__)
+    app.config['TESTING'] = True
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    @app.post('/chat')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def chat(name: str, ctx: FlowContext) -> str:
+        if name == 'first':
+            first_started.set()
+            if not await asyncio.to_thread(release_first.wait, 10):
+                raise TimeoutError('second response did not complete')
+        ctx.send_chunk(name)
+        return name
+
+    def request_stream(name: str) -> bytes:
+        response = app.test_client().post(
+            '/chat', json={'data': name}, headers={'accept': 'text/event-stream'}, buffered=True
+        )
+        return response.data
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(request_stream, 'first')
+        try:
+            assert first_started.wait(5)
+            assert request_stream('second') == b'data: {"message":"second"}\n\ndata: {"result":"second"}\n\n'
+        finally:
+            release_first.set()
+        assert first.result(timeout=5) == b'data: {"message":"first"}\n\ndata: {"result":"first"}\n\n'
 
 
 def test_flask_streaming_client_disconnect_cancels_flow() -> None:

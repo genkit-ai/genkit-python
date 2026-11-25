@@ -199,9 +199,58 @@ The error comes back on `response.error`, and the Dev UI shows it on the run.
   login; then set the project with `project=` or an environment variable.
 - Google Cloud has no Models API, so the Dev UI lists the plugin's built-in
   Claude catalog. Any other Claude id still resolves when you call it.
-- Image URLs aren't supported on Google Cloud (base64 images work), and an
-  organization policy can block structured output or web search for partner
-  models.
+- Model names on Google Cloud have no date: `Anthropic.claude('claude-haiku-4-5')`
+  is sent as `claude-haiku-4-5`. On the Anthropic API, the plugin sends the
+  pinned id (`claude-haiku-4-5-20251001`) for you.
+
+### What's different on Google Cloud
+
+Most of `AnthropicConfig` behaves the same on both backends. These are the
+places it doesn't.
+
+**Works differently:**
+
+- **Images must be inline.** Google Cloud rejects image URLs
+  (`INVALID_ARGUMENT`, `URL sources are not supported`). Send the image as a
+  base64 data URL instead:
+
+  ```python
+  import base64
+
+  from genkit import Part
+
+  # 1. Inline the image; a https:// URL fails on Google Cloud
+  photo = 'data:image/jpeg;base64,' + base64.b64encode(jpeg_bytes).decode()
+
+  # 2. Same call on both backends
+  res = await ai.generate(
+      model=Anthropic.claude('claude-sonnet-5-5'),
+      prompt=[Part.from_text('Is this dish shellfish-free?'), Part.from_media(url=photo)],
+  )
+  ```
+
+- **No default beta headers.** On the Anthropic API, beta calls carry the
+  plugin's default betas (Files API, effort, structured outputs, task
+  budgets). Google Cloud doesn't offer all of them, so it gets none. Setting
+  `task_budget` still sends the one header it needs. To send others, list them
+  in `betas`.
+- **An organization policy can block features.** If your organization sets
+  `constraints/vertexai.allowedPartnerModelFeatures`, it can turn off native
+  structured output and web search for Claude. Genkit uses native structured
+  output for cataloged models, so JSON output fails in that case. Pass
+  `output_constrained=False` to have Genkit ask for JSON in the prompt
+  instead, or ask your admin to allow the feature.
+- **No per-request keys.** Every call bills the project, so a key in
+  `context={'secrets': {'api_key': ...}}` fails with `FAILED_PRECONDITION`.
+
+**Not available on Google Cloud:**
+
+- `service_tier` and `inference_geo` in `extra`.
+- The Files API, web fetch and code execution betas.
+
+**Works the same:** prompt caching (`cache_control`, with cache reads and
+writes in `usage`), citations, base64 images, thinking and `effort`,
+`user_id`, `version`, `api_version='beta'`, and an explicit `betas` list.
 
 ## Typed config
 

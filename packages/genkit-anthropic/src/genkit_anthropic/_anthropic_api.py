@@ -25,6 +25,7 @@ from anthropic import AsyncAnthropic
 
 from genkit import GenkitError
 from genkit_anthropic._backend import Backend, client_kwargs
+from genkit_anthropic._model_info import get_model_info
 from genkit_anthropic._models import TASK_BUDGET_BETA
 
 # Sent on every beta-surface call to the Anthropic API, matching the JS plugin.
@@ -84,6 +85,11 @@ class AnthropicApiBackend(Backend[AsyncAnthropic]):
             )
         # copy() keeps every other client setting and shares the pooled HTTP transport.
         return client.copy(api_key=api_key)
+
+    def api_model_id(self, name: str) -> str:
+        """The catalog's pinned id, e.g. ``claude-haiku-4-5-20251001``; an unknown id goes as is."""
+        versions = get_model_info(name).versions
+        return versions[0] if versions else name
 
     async def list_model_ids(self) -> list[str]:
         """Every model id the Models API lists, in API order.

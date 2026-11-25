@@ -60,6 +60,10 @@ class Backend(ABC, Generic[ClientT_co]):
         """
 
     @abstractmethod
+    def api_model_id(self, name: str) -> str:
+        """The id this backend expects as ``model`` for the plugin's model ``name``."""
+
+    @abstractmethod
     async def list_model_ids(self) -> list[str]:
         """Model ids the backend reports; the plugin adds its built-in catalog."""
 

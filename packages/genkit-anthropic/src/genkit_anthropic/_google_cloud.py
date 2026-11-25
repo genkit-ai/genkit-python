@@ -206,6 +206,10 @@ class GoogleCloudBackend(Backend[AsyncAnthropicVertex]):
         await self._prepare()
         return self.client()
 
+    def api_model_id(self, name: str) -> str:
+        """The name as given: Google Cloud names Claude without a date, e.g. ``claude-haiku-4-5``."""
+        return name
+
     async def list_model_ids(self) -> list[str]:
         """Nothing: Google Cloud has no Models API, so the built-in catalog is the whole list."""
         return []

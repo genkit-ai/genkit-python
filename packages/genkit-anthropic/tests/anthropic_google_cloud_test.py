@@ -342,3 +342,16 @@ async def test_google_cloud_sends_only_the_betas_a_field_needs(config: dict[str,
 
     create.assert_awaited_once()
     assert create.call_args.kwargs.get('betas') == betas
+
+
+@pytest.mark.parametrize('model', ['claude-haiku-4-5', 'claude-sonnet-5-5'])
+@pytest.mark.asyncio
+async def test_google_cloud_sends_the_dateless_model_name(model: str) -> None:
+    """Google Cloud names Claude without a date, so a cataloged model goes as named, not as its pinned API id."""
+    ai = Genkit(plugins=[Anthropic(backend=GoogleCloud(project='bistro-prod'))])
+    with patch(
+        'anthropic.resources.messages.AsyncMessages.create', AsyncMock(return_value=_vertex_response())
+    ) as create:
+        await ai.generate(model=Anthropic.claude(model), prompt='Suggest a dish.')
+
+    assert create.call_args.kwargs['model'] == model

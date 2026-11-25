@@ -223,6 +223,7 @@ class Anthropic(Plugin):
                 client=client,
                 default_api_version=self._default_api_version,
                 default_betas=self._backend.default_betas,
+                api_model_id=self._backend.api_model_id(name),
             )
             return await model.generate(request, ctx)
 

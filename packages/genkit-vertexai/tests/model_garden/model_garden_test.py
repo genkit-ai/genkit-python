@@ -357,7 +357,8 @@ async def test_generate_model_garden_claude_registers_full_publisher_path() -> N
     assert response.text == 'hello'
     sent = client.messages.create.await_args or client.beta.messages.create.await_args
     assert sent is not None
-    assert sent.kwargs['model'].startswith('claude-sonnet-4-5')
+    # Vertex names Claude without a date; the Anthropic API's pinned id would 404 there.
+    assert sent.kwargs['model'] == 'claude-sonnet-4-5'
     assert action is not None
     assert action.name == 'modelgarden/anthropic/claude-sonnet-4-5'
 

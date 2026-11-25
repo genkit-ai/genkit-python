@@ -76,6 +76,8 @@ class AnthropicModelGarden:
             model = AnthropicModel(
                 model_name=self._model_name,
                 client=self._runtime_client(),
+                # Vertex names Claude without the Anthropic API's date suffix.
+                api_model_id=self._model_name,
             )
             return await model.generate(request, ctx)
 

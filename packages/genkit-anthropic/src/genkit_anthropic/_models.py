@@ -320,6 +320,7 @@ class AnthropicModel:
         client: ClaudeClient,
         default_api_version: Literal['stable', 'beta'] | None = None,
         default_betas: Sequence[str] = (),
+        api_model_id: str | None = None,
     ) -> None:
         """Initialize Anthropic model.
 
@@ -334,10 +335,12 @@ class AnthropicModel:
             default_betas: Beta headers sent on beta-surface calls that don't
                 pass their own ``betas``. Backends differ in which betas they
                 offer, so none are assumed.
+            api_model_id: The id sent as ``model``. Defaults to the catalog's
+                pinned Anthropic API id; other backends name models their own way.
         """
         model_info = get_model_info(model_name)
         self._model_info = model_info
-        self.model_name = model_info.versions[0] if model_info.versions else model_name
+        self.model_name = api_model_id or (model_info.versions[0] if model_info.versions else model_name)
         self.client = client
         self._default_api_version = default_api_version
         self._default_betas = tuple(default_betas)

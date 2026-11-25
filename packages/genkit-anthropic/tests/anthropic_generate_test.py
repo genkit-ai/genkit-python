@@ -855,3 +855,14 @@ async def test_generate_claude_beta_call_sends_the_default_betas_once(config: di
     await ai.generate(model=MODEL, prompt='hi', config=config)
 
     assert api.requests[-1].headers['anthropic-beta'].split(',') == list(BETA_APIS)
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_sends_the_pinned_api_id_for_a_cataloged_model() -> None:
+    """On the Anthropic API, a cataloged model with a dated snapshot is sent as that snapshot."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    await ai.generate(model='anthropic/claude-haiku-4-5', prompt='hi')
+
+    assert api.body()['model'] == 'claude-haiku-4-5-20251001'

@@ -79,14 +79,6 @@ def _parse_request_json() -> object:
 T = TypeVar('T')
 
 
-def _create_loop() -> AbstractEventLoop:
-    """Creates a new asyncio event loop or returns the current one."""
-    try:
-        return asyncio.get_event_loop()
-    except Exception:
-        return asyncio.new_event_loop()
-
-
 def _iter_over_async(ait: AsyncIterable[T], loop: AbstractEventLoop) -> Generator[T, None, None]:
     """Synchronously iterates over an AsyncIterable using a specified event loop."""
     ait_iter = ait.__aiter__()
@@ -156,8 +148,6 @@ def genkit_flask_handler(
     ```
 
     """
-    loop = _create_loop()
-
     def decorator(flow: Action) -> Callable[..., Awaitable[Response]]:
         if not isinstance(flow, Action):
             raise GenkitError(status='INVALID_ARGUMENT', message='must apply @genkit_flask_handler on a @flow')
@@ -206,7 +196,12 @@ def genkit_flask_handler(
                         async for line in lines:
                             yield line
 
-                return Response(_iter_over_async(async_gen(), loop), mimetype='text/event-stream')
+                def stream_body() -> Generator[str, None, None]:
+                    # WSGI consumes the body after the async view returns.
+                    with contextlib.closing(asyncio.new_event_loop()) as loop:
+                        yield from _iter_over_async(async_gen(), loop)
+
+                return Response(stream_body(), mimetype='text/event-stream')
             try:
                 response = await flow.run(input=action_input, context=action_context, init=init)
                 return Response(response=result_json(response.response), mimetype='application/json')

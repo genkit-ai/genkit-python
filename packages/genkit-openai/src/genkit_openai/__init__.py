@@ -19,9 +19,11 @@
 
 Registers OpenAI chat, image, text-to-speech, transcription, and embedding
 models under ``openai/``, using the official OpenAI Python SDK. ``base_url=``
-points it at any OpenAI-compatible server, such as Azure OpenAI or Together AI.
+points it at a proxy or gateway in front of OpenAI.
 ``Mistral()`` (or ``OpenAI(provider='mistral')``) registers Mistral's chat
-models and embedders under ``mistral/``.
+models and embedders under ``mistral/``. ``OpenAICompatible(name=..., base_url=...)``
+registers any other OpenAI-compatible server (OpenRouter, Together, Groq,
+vLLM) under the name you give it, with no OpenAI catalog.
 
 Example:
     ```python
@@ -60,7 +62,8 @@ See Also:
     - OpenAI documentation: https://platform.openai.com/docs/
 """
 
+from ._compatible import OpenAICompatible
 from ._openai_plugin import Mistral, OpenAI
 from ._typing import OpenAIConfig
 
-__all__ = ['Mistral', 'OpenAI', 'OpenAIConfig']
+__all__ = ['Mistral', 'OpenAI', 'OpenAICompatible', 'OpenAIConfig']

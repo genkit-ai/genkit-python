@@ -1942,7 +1942,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "genkit", editable = "packages/genkit" },
-    { name = "openai", specifier = ">=1.60.0,<3" },
+    { name = "openai", specifier = ">=1.106.0,<3" },
     { name = "strenum", marker = "python_full_version < '3.11'", specifier = ">=0.4.15" },
 ]
 

@@ -20,7 +20,7 @@
 import enum
 import inspect
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal, TypeAlias, cast
 
 from openai import APIError, AsyncOpenAI
@@ -95,8 +95,16 @@ _PLUGIN_ACCOUNT_HEADERS = frozenset({'openai-organization', 'openai-project'})
 _CLIENT_OPTION_KEYS = frozenset(inspect.signature(AsyncOpenAI.__init__).parameters) - {'self'}
 
 
+# A static key, or an async function the SDK awaits before each request (e.g. a refreshed token).
+ApiKey: TypeAlias = str | Callable[[], Awaitable[str]]
+
+
 def _client_kwargs(
-    *, api_key: str | None, base_url: str | None, client_options: Mapping[str, Any] | None
+    *,
+    api_key: ApiKey | None,
+    base_url: str | None,
+    client_options: Mapping[str, Any] | None,
+    plugin: str = 'OpenAI',
 ) -> dict[str, Any]:
     """Merge the typed settings into ``client_options`` for ``AsyncOpenAI``.
 
@@ -108,16 +116,70 @@ def _client_kwargs(
     for key in options:
         if key not in _CLIENT_OPTION_KEYS:
             raise TypeError(
-                f'OpenAI got an unexpected client_options key {key!r}; '
+                f'{plugin} got an unexpected client_options key {key!r}; '
                 f'AsyncOpenAI accepts {", ".join(sorted(k for k in _CLIENT_OPTION_KEYS if not k.startswith("_")))}'
             )
     for name, value in (('api_key', api_key), ('base_url', base_url)):
         if value is None:
             continue
         if name in options:
-            raise TypeError(f'OpenAI got {name} both as an argument and in client_options; pass it once')
+            raise TypeError(f'{plugin} got {name} both as an argument and in client_options; pass it once')
         options[name] = value
     return options
+
+
+async def embed_texts(client: AsyncOpenAI, model: str, request: EmbedRequest, *, mistral: bool) -> EmbedResponse:
+    """Call the embeddings endpoint for ``request`` and convert the reply.
+
+    Shared by ``OpenAI`` and ``OpenAICompatible``.
+
+    Args:
+        client: The client the call goes through, already carrying its key.
+        model: The id the server knows the embedder by.
+        request: The Genkit embed request.
+        mistral: Send Mistral's field names (``output_dimension``).
+
+    Raises:
+        GenkitError: INVALID_ARGUMENT for a non-int ``dimensions``, or the
+            mapped provider error.
+    """
+    texts = [''.join(part.text for part in doc.content if part.text) for doc in request.input]
+
+    # Get optional parameters (omit when None; OpenAI create() uses Omit, not None)
+    dimensions: int | None = None
+    encoding_format: Literal['float'] | None = None
+    dim_val = request.options.get('dimensions')
+    if dim_val is not None:
+        # bool is an int subclass, so True would otherwise pass as 1.
+        if not isinstance(dim_val, int) or isinstance(dim_val, bool):
+            raise GenkitError(
+                status='INVALID_ARGUMENT',
+                message=f'dimensions must be an int, got {dim_val!r}',
+            )
+        dimensions = dim_val
+    # 'base64' is deliberately not forwarded: the SDK sends base64 either
+    # way and only decodes the response when it was not asked explicitly.
+    if request.options.get('encodingFormat') == 'float':
+        encoding_format = 'float'
+
+    # Only set options go out; the SDK's sentinel for an unset one
+    # differs across the openai versions this package supports.
+    create_kwargs: dict[str, Any] = {}
+    if dimensions is not None:
+        if mistral:
+            # Mistral names it output_dimension and rejects dimensions.
+            # The SDK has no output_dimension kwarg, so it rides in extra_body.
+            create_kwargs['extra_body'] = {'output_dimension': dimensions}
+        else:
+            create_kwargs['dimensions'] = dimensions
+    if encoding_format is not None:
+        create_kwargs['encoding_format'] = encoding_format
+    try:
+        response = await client.embeddings.create(model=model, input=texts, **create_kwargs)
+    except APIError as e:
+        reraise_openai_error(e)
+
+    return EmbedResponse(embeddings=[Embedding(embedding=item.embedding) for item in response.data])
 
 
 def _missing_key_error(env: str) -> GenkitError:
@@ -680,52 +742,8 @@ class OpenAI(Plugin):
 
         async def embed_fn(request: EmbedRequest, ctx: EmbedContext) -> EmbedResponse:
             """Embedder function that calls OpenAI embeddings API."""
-            # Extract text from document content
-            texts = []
-            for doc in request.input:
-                doc_text = ''.join(  # type: ignore[arg-type]
-                    part.text for part in doc.content if part.text is not None and part.text
-                )
-                texts.append(doc_text)
-
-            # Get optional parameters (omit when None; OpenAI create() uses Omit, not None)
-            dimensions: int | None = None
-            encoding_format: Literal['float'] | None = None
-            dim_val = request.options.get('dimensions')
-            if dim_val is not None:
-                # bool is an int subclass, so True would otherwise pass as 1.
-                if not isinstance(dim_val, int) or isinstance(dim_val, bool):
-                    raise GenkitError(
-                        status='INVALID_ARGUMENT',
-                        message=f'dimensions must be an int, got {dim_val!r}',
-                    )
-                dimensions = dim_val
-            # 'base64' is deliberately not forwarded: the SDK sends base64 either
-            # way and only decodes the response when it was not asked explicitly.
-            if request.options.get('encodingFormat') == 'float':
-                encoding_format = 'float'
-
-            # Only set options go out; the SDK's sentinel for an unset one
-            # differs across the openai versions this package supports.
             client = self._embed_client(ctx.context)
-            create_kwargs: dict[str, Any] = {}
-            if dimensions is not None:
-                if self._uses_mistral_names(client):
-                    # Mistral names it output_dimension and rejects dimensions.
-                    # The SDK has no output_dimension kwarg, so it rides in extra_body.
-                    create_kwargs['extra_body'] = {'output_dimension': dimensions}
-                else:
-                    create_kwargs['dimensions'] = dimensions
-            if encoding_format is not None:
-                create_kwargs['encoding_format'] = encoding_format
-            try:
-                response = await client.embeddings.create(model=name, input=texts, **create_kwargs)
-            except APIError as e:
-                reraise_openai_error(e)
-
-            # Convert OpenAI response to Genkit format
-            embeddings = [Embedding(embedding=item.embedding) for item in response.data]
-            return EmbedResponse(embeddings=embeddings)
+            return await embed_texts(client, name, request, mistral=self._uses_mistral_names(client))
 
         return Embedder(
             self._action_name(name),

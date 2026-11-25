@@ -24,6 +24,9 @@ points it at a proxy or gateway in front of OpenAI.
 models and embedders under ``mistral/``. ``OpenAICompatible(name=..., base_url=...)``
 registers any other OpenAI-compatible server (OpenRouter, Together, Groq,
 vLLM) under the name you give it, with no OpenAI catalog.
+``OpenAICompatible(backend=GoogleCloud())`` serves Model Garden's
+OpenAI-compatible models (Llama, Mistral and others) under ``modelgarden/``
+(``uv add 'genkit-openai[google-cloud]'``).
 
 Example:
     ```python
@@ -63,7 +66,8 @@ See Also:
 """
 
 from ._compatible import OpenAICompatible
+from ._google_cloud import GoogleCloud
 from ._openai_plugin import Mistral, OpenAI
 from ._typing import OpenAIConfig
 
-__all__ = ['Mistral', 'OpenAI', 'OpenAICompatible', 'OpenAIConfig']
+__all__ = ['GoogleCloud', 'Mistral', 'OpenAI', 'OpenAICompatible', 'OpenAIConfig']

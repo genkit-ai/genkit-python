@@ -55,6 +55,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 version = "0.14.0"
 
+[project.optional-dependencies]
+# OpenAICompatible(backend=GoogleCloud()): google-auth for application default credentials.
+google-cloud = ["google-auth[requests]>=2.14.1"]
+
 [project.urls]
 "Bug Tracker"   = "https://github.com/genkit-ai/genkit-python/issues"
 Changelog       = "https://github.com/genkit-ai/genkit-python/releases"

@@ -25,7 +25,8 @@ See:
 """
 
 import json
-from typing import Any, Literal, Protocol, cast
+from collections.abc import Sequence
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 import httpx
 from anthropic import (
@@ -35,6 +36,7 @@ from anthropic import (
     APIStatusError,
     APITimeoutError,
     AsyncAnthropic,
+    AsyncAnthropicVertex,
 )
 from anthropic.types import Message as AnthropicMessage
 
@@ -43,7 +45,6 @@ from genkit.model import ConstrainedSupport, GenerationUsage, ModelContext, Mode
 from genkit.plugin_api import StatusName, provider_error
 from genkit_anthropic._config import AnthropicConfig
 from genkit_anthropic._model_info import get_model_info
-from genkit_anthropic._secrets import context_api_key
 from genkit_anthropic._utils import (
     build_cache_usage,
     get_cache_control,
@@ -56,12 +57,11 @@ from genkit_anthropic._utils import (
 logger = get_logger(__name__)
 
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
-BETA_APIS: tuple[str, ...] = (
-    'files-api-2025-04-14',
-    'effort-2025-11-24',
-    'structured-outputs-2025-11-13',
-    'task-budgets-2026-03-13',
-)
+# Vertex rejects task_budget without this header, so the field brings it on every backend.
+TASK_BUDGET_BETA = 'task-budgets-2026-03-13'
+
+# Every SDK client AnthropicModel sends through; they share messages and beta.messages.
+ClaudeClient: TypeAlias = AsyncAnthropic | AsyncAnthropicVertex
 
 
 class _ModelDumpable(Protocol):
@@ -293,17 +293,12 @@ def _merge_config_extra(params: dict[str, Any], extra: dict[str, Any] | None) ->
         params['extra_body'] = extra_body
 
 
-def pinned_credential_header(client: AsyncAnthropic) -> str | None:
-    """The credential header ``client`` pins in ``default_headers``, if any.
-
-    ``copy(api_key=...)`` keeps custom headers, so a pinned ``x-api-key`` or
-    ``Authorization`` would still go out next to a tenant key and could
-    authenticate the call.
-    """
-    for name in client._custom_headers:  # noqa: SLF001
-        if name.lower() in ('x-api-key', 'authorization'):
-            return name
-    return None
+def _request_betas(default_betas: Sequence[str], config: AnthropicConfig) -> list[str]:
+    """The backend's default beta headers plus any that a set beta-only field needs."""
+    headers = list(default_betas)
+    if config.task_budget is not None and TASK_BUDGET_BETA not in headers:
+        headers.append(TASK_BUDGET_BETA)
+    return headers
 
 
 class AnthropicModel:
@@ -322,25 +317,33 @@ class AnthropicModel:
     def __init__(
         self,
         model_name: str,
-        client: AsyncAnthropic,
+        client: ClaudeClient,
         default_api_version: Literal['stable', 'beta'] | None = None,
+        default_betas: Sequence[str] = (),
+        api_model_id: str | None = None,
     ) -> None:
         """Initialize Anthropic model.
 
-        Sets up the client for communicating with the Anthropic API
-        and stores the model name.
+        The client arrives ready to send: the backend has already picked its
+        credential, so this class only maps requests and responses.
 
         Args:
             model_name: Name of the Anthropic model.
-            client: AsyncAnthropic client instance.
+            client: SDK client for the backend serving the model.
             default_api_version: Default API surface when a request does not
                 provide an explicit ``apiVersion``.
+            default_betas: Beta headers sent on beta-surface calls that don't
+                pass their own ``betas``. Backends differ in which betas they
+                offer, so none are assumed.
+            api_model_id: The id sent as ``model``. Defaults to the catalog's
+                pinned Anthropic API id; other backends name models their own way.
         """
         model_info = get_model_info(model_name)
         self._model_info = model_info
-        self.model_name = model_info.versions[0] if model_info.versions else model_name
+        self.model_name = api_model_id or (model_info.versions[0] if model_info.versions else model_name)
         self.client = client
         self._default_api_version = default_api_version
+        self._default_betas = tuple(default_betas)
 
     async def generate(self, request: ModelRequest, ctx: ModelContext | None = None) -> ModelResponse:
         """Generate response from Anthropic.
@@ -352,8 +355,7 @@ class AnthropicModel:
         Returns:
             Generated response.
         """
-        context = ctx.context if ctx is not None and isinstance(ctx.context, dict) else None
-        client = self._client_for_key(context_api_key(context))
+        client = self.client
         # A config that fails validation, a bad thinking budget, or a malformed
         # data URI is caller input, so retry skips it. Pydantic's
         # ValidationError is a ValueError.
@@ -449,33 +451,6 @@ class AnthropicModel:
             cache_read_input_tokens=raw_read if isinstance(raw_read, int) and not isinstance(raw_read, bool) else 0,
         )
 
-    def _client_for_key(self, api_key: str | None) -> object:
-        """Return the request client, re-credentialed with the caller's key when one was given.
-
-        A client that can't swap its credential raises rather than sending the
-        call on the plugin's own key, because whoever passed a key expects
-        that account to be billed.
-        """
-        if api_key is None:
-            return self.client
-
-        reason = None
-        if not isinstance(self.client, AsyncAnthropic):
-            reason = 'this client uses its own cloud credentials, not an Anthropic API key'
-        # copy() cannot unset these, so the override would leave the base credential authenticating the request.
-        elif self.client.auth_token is not None:
-            reason = 'the plugin client authenticates with an auth token'
-        elif (header := pinned_credential_header(self.client)) is not None:
-            reason = f'the plugin client sets its own {header} header'
-        if reason is not None:
-            raise GenkitError(
-                status='FAILED_PRECONDITION',
-                message=f'A per-request API key from context.secrets cannot be used: {reason}.',
-            )
-
-        # copy() keeps every other client setting and shares the pooled HTTP transport.
-        return self.client.copy(api_key=api_key)
-
     def _uses_beta_api(self, config: AnthropicConfig) -> bool:
         """Whether this request should use the Anthropic beta API surface.
 
@@ -513,9 +488,8 @@ class AnthropicModel:
         params['max_tokens'] = max_tokens
 
         if use_beta:
-            # Resold surfaces (Vertex, Bedrock) do not offer every default beta, so only the direct API gets them.
-            default_betas = list(BETA_APIS) if isinstance(self.client, AsyncAnthropic) else []
-            beta_headers = betas if betas is not None else default_betas
+            # An explicit betas list replaces the defaults, including the one a field brings.
+            beta_headers = betas if betas is not None else _request_betas(self._default_betas, config)
             # The Python SDK serializes [] as an empty anthropic-beta header,
             # which the API rejects. Omit the kwarg to request no beta headers.
             if beta_headers:

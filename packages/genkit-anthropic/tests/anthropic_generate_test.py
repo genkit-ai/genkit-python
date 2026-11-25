@@ -27,6 +27,7 @@ from typing import Any, Literal, cast
 import httpx
 import pytest
 from genkit_anthropic import Anthropic, AnthropicConfig
+from genkit_anthropic._anthropic_api import BETA_APIS
 
 from genkit import FinishReason, Genkit, GenkitError, Message, Part, Role
 from genkit.middleware import Middleware
@@ -879,3 +880,33 @@ async def test_anthropic_client_options_reach_the_client() -> None:
     await ai.generate(model=MODEL, prompt='hi')
 
     assert api.requests[-1].headers['x-team'] == 'search'
+
+
+# --- default betas -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'config',
+    [{'apiVersion': 'beta'}, {'taskBudget': 20000}],
+    ids=['beta-surface', 'task-budget-already-in-defaults'],
+)
+@pytest.mark.asyncio
+async def test_generate_claude_beta_call_sends_the_default_betas_once(config: dict[str, Any]) -> None:
+    """A beta call on the Anthropic API sends the default beta headers, each once, even when task_budget needs one."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    await ai.generate(model=MODEL, prompt='hi', config=config)
+
+    assert api.requests[-1].headers['anthropic-beta'].split(',') == list(BETA_APIS)
+
+
+@pytest.mark.asyncio
+async def test_generate_claude_sends_the_pinned_api_id_for_a_cataloged_model() -> None:
+    """On the Anthropic API, a cataloged model with a dated snapshot is sent as that snapshot."""
+    api = FakeClaudeApi()
+    ai = _genkit(api)
+
+    await ai.generate(model='anthropic/claude-haiku-4-5', prompt='hi')
+
+    assert api.body()['model'] == 'claude-haiku-4-5-20251001'

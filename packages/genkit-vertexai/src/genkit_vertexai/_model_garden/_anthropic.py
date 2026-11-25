@@ -18,9 +18,8 @@
 """Anthropic models."""
 
 from collections.abc import Awaitable, Callable
-from typing import cast
 
-from anthropic import AsyncAnthropic, AsyncAnthropicVertex
+from anthropic import AsyncAnthropicVertex
 from genkit_anthropic import AnthropicConfig
 
 # Private import across packages, on purpose. genkit-anthropic and
@@ -76,7 +75,9 @@ class AnthropicModelGarden:
             reject_secrets_api_key(ctx.context)
             model = AnthropicModel(
                 model_name=self._model_name,
-                client=cast(AsyncAnthropic, self._runtime_client()),
+                client=self._runtime_client(),
+                # Vertex names Claude without the Anthropic API's date suffix.
+                api_model_id=self._model_name,
             )
             return await model.generate(request, ctx)
 

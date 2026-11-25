@@ -29,7 +29,7 @@ ai = Genkit(plugins=[Anthropic()])
 
 async def main() -> None:
     res = await ai.generate(
-        model=Anthropic.claude('claude-sonnet-4-6'),
+        model=Anthropic.claude('claude-sonnet-5-5'),
         prompt='Explain recursion in 10 words.',
     )
     print(res.text)
@@ -41,6 +41,9 @@ if __name__ == '__main__':
 ```
 
 Set `ANTHROPIC_API_KEY` in the environment, or pass `api_key=` to `Anthropic()`.
+Create a key in the [Anthropic Console](https://console.anthropic.com/settings/keys).
+To run Claude through Google Cloud instead, see
+[Claude on Google Cloud](#claude-on-google-cloud).
 `base_url=` points the plugin at another server. Pass the origin with no `/v1`
 suffix; the SDK appends `/v1/messages`. Any other `AsyncAnthropic` setting goes
 in `client_options`:
@@ -52,6 +55,202 @@ Anthropic(
     client_options={'timeout': 30, 'max_retries': 5, 'default_headers': {'X-Team': 'search'}},
 )
 ```
+
+## Claude on Google Cloud
+
+You can also run the same Claude models through Google Cloud. Usage is billed
+to your Google Cloud project instead of an Anthropic account, and you
+authenticate with your Google login instead of an API key. Your code doesn't
+change apart from one constructor argument: refs, `AnthropicConfig` and
+`.prompt` files work the same on both.
+
+```python
+# Anthropic API (ANTHROPIC_API_KEY)
+Anthropic()
+
+# Google Cloud (your gcloud login and project)
+Anthropic(backend=GoogleCloud())
+```
+
+Most users of this plugin call the Anthropic API, so `Anthropic()`'s own
+arguments (`api_key`, `base_url`) are about that. Everything Google Cloud needs
+goes in the one `GoogleCloud(...)` object instead of adding more arguments to
+`Anthropic()`.
+
+### First-time setup
+
+This takes about five minutes the first time. If you already use Vertex AI
+(now Gemini Enterprise Agent Platform) and have Claude enabled in a project,
+skip to step 5.
+
+1. **Install the gcloud CLI** ([install guide](https://cloud.google.com/sdk/docs/install)),
+   then log in:
+
+   ```bash
+   gcloud auth login
+   ```
+
+2. **Pick a project with billing turned on.** To make a new one, use
+   [Create a project](https://console.cloud.google.com/projectcreate), then
+   link a billing account on the [Billing page](https://console.cloud.google.com/billing).
+   Then make it your default project:
+
+   ```bash
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+3. **Turn on the API** that serves Claude on Google Cloud:
+
+   ```bash
+   gcloud services enable aiplatform.googleapis.com
+   ```
+
+4. **Enable Claude for the project.** Open the model's card in Model Garden,
+   e.g. [Claude Sonnet 5.5](https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-sonnet-5-5),
+   click **Enable**, and accept Anthropic's terms. You do this once per model,
+   per project. If you didn't create the project yourself, ask its owner for
+   the *Consumer Procurement Entitlement Manager* role (to enable models) and
+   the *Agent Platform User* role (to call them).
+
+5. **Give your code access to your login:**
+
+   ```bash
+   gcloud auth application-default login
+   gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+   ```
+
+   The second command is optional. It stops google-auth from warning that
+   your login has no quota project.
+
+6. **Install the extra and call Claude:**
+
+   ```bash
+   uv add 'genkit-anthropic[google-cloud]'
+   ```
+
+   ```python
+   from genkit import Genkit
+   from genkit_anthropic import Anthropic, GoogleCloud
+
+   # 1. Project comes from `gcloud config set project`; location defaults to 'global'
+   ai = Genkit(plugins=[Anthropic(backend=GoogleCloud())])
+
+
+   async def main() -> None:
+       # 2. Same typed ref and config as the Anthropic API
+       res = await ai.generate(
+           model=Anthropic.claude('claude-sonnet-5-5'),
+           prompt='Suggest a dish for a guest with a shellfish allergy.',
+       )
+       print(res.text)
+       # => Herb-Roasted Chicken with Lemon Rice
+
+
+   if __name__ == '__main__':
+       ai.run_main(main())
+   ```
+
+### Deploying to Google Cloud
+
+On Cloud Run, GKE or Compute Engine, skip steps 1 and 5. The code runs as the
+service's service account, and `GoogleCloud()` picks up the project from the
+environment. The service account needs the *Agent Platform User* role:
+
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member=serviceAccount:YOUR_SERVICE_ACCOUNT_EMAIL \
+    --role=roles/aiplatform.user
+```
+
+### If a call fails
+
+The error comes back on `response.error`, and the Dev UI shows it on the run.
+
+- **`FAILED_PRECONDITION` ... found no Google Cloud credentials**, or
+  **... could not refresh Google Cloud credentials**: run step 5 again. The
+  next call picks up the new login; you don't need to restart the app.
+- **`FAILED_PRECONDITION` ... needs a Google Cloud project**: run
+  `gcloud config set project YOUR_PROJECT_ID`, set `GOOGLE_CLOUD_PROJECT`, or
+  pass `GoogleCloud(project='YOUR_PROJECT_ID')`.
+- **`PERMISSION_DENIED`, ... API has not been used in project ... or it is
+  disabled**: run step 3. It can take a few minutes to take effect.
+- **`PERMISSION_DENIED` naming `aiplatform.endpoints.predict`**: your login or
+  service account needs the *Agent Platform User* role (step 4, or
+  [Deploying to Google Cloud](#deploying-to-google-cloud)).
+- **`NOT_FOUND` for the model**: enable that model for this project (step 4),
+  and check the model id.
+- **`RESOURCE_EXHAUSTED`**: the project is out of quota for that model. Check
+  the model's quota on the [Quotas page](https://console.cloud.google.com/iam-admin/quotas),
+  and request more there if you need it.
+
+### Settings
+
+- `project` is taken from, in order: `GoogleCloud(project=...)`,
+  `GCLOUD_PROJECT`, `GOOGLE_CLOUD_PROJECT`, then your credentials (your
+  `gcloud config` project locally, the service's project on Google Cloud).
+- `location` is taken from `GoogleCloud(location=...)`, then
+  `GOOGLE_CLOUD_LOCATION`, then `global`. Every project that enables Claude
+  gets quota on the `global` endpoint; regional endpoints need regional quota.
+- Only `backend=` switches to Google Cloud. A missing `ANTHROPIC_API_KEY`
+  never falls back to it, and `api_key=` with `backend=GoogleCloud()` raises
+  `ValueError`.
+- `client_options` go to `AsyncAnthropicVertex`. Pass `credentials=` or
+  `access_token=` there to use your own credential instead of your gcloud
+  login; then set the project with `project=` or an environment variable.
+- Google Cloud has no Models API, so the Dev UI lists the plugin's built-in
+  Claude catalog. Any other Claude id still resolves when you call it.
+- Model names on Google Cloud have no date: `Anthropic.claude('claude-haiku-4-5')`
+  is sent as `claude-haiku-4-5`. On the Anthropic API, the plugin sends the
+  pinned id (`claude-haiku-4-5-20251001`) for you.
+
+### What's different on Google Cloud
+
+Most of `AnthropicConfig` behaves the same on both backends. These are the
+places it doesn't.
+
+**Works differently:**
+
+- **Images must be inline.** Google Cloud rejects image URLs
+  (`INVALID_ARGUMENT`, `URL sources are not supported`). Send the image as a
+  base64 data URL instead:
+
+  ```python
+  import base64
+
+  from genkit import Part
+
+  # 1. Inline the image; a https:// URL fails on Google Cloud
+  photo = 'data:image/jpeg;base64,' + base64.b64encode(jpeg_bytes).decode()
+
+  # 2. Same call on both backends
+  res = await ai.generate(
+      model=Anthropic.claude('claude-sonnet-5-5'),
+      prompt=[Part.from_text('Is this dish shellfish-free?'), Part.from_media(url=photo)],
+  )
+  ```
+
+- **No default beta headers.** On the Anthropic API, beta calls carry the
+  plugin's default betas (Files API, effort, structured outputs, task
+  budgets). Google Cloud doesn't offer all of them, so it gets none. Setting
+  `task_budget` still sends the one header it needs. To send others, list them
+  in `betas`.
+- **An organization policy can block features.** If your organization sets
+  `constraints/vertexai.allowedPartnerModelFeatures`, it can turn off native
+  structured output and web search for Claude. Genkit uses native structured
+  output for cataloged models, so JSON output fails in that case. Pass
+  `output_constrained=False` to have Genkit ask for JSON in the prompt
+  instead, or ask your admin to allow the feature.
+- **No per-request keys.** Every call bills the project, so a key in
+  `context={'secrets': {'api_key': ...}}` fails with `FAILED_PRECONDITION`.
+
+**Not available on Google Cloud:**
+
+- `service_tier` and `inference_geo` in `extra`.
+- The Files API, web fetch and code execution betas.
+
+**Works the same:** prompt caching (`cache_control`, with cache reads and
+writes in `usage`), citations, base64 images, thinking and `effort`,
+`user_id`, `version`, `api_version='beta'`, and an explicit `betas` list.
 
 ## Typed config
 
@@ -79,7 +278,7 @@ config = AnthropicConfig(
 
 # 2. Generate with it
 await ai.generate(
-    model=Anthropic.claude('claude-opus-4-6'),
+    model=Anthropic.claude('claude-sonnet-5-5'),
     prompt='Plan a tasting menu.',
     config=config,
 )
@@ -92,6 +291,9 @@ await ai.generate(
 - A `thinking_budget` alone means `thinking='enabled'`. `'enabled'` needs a
   budget from some config layer; `'adaptive'` doesn't send one, and
   `'disabled'` sends neither the budget nor the display.
+- Models after the 4.6 generation (Opus 4.7 and later) take only
+  `'adaptive'` thinking; steer it with `effort`. `'enabled'` with a budget is
+  deprecated on Opus 4.6 and Sonnet 4.6, and works on earlier models.
 - `task_budget` is a beta field, so it sends the call to the beta API.
 - To send a shape the flat fields don't cover, put Anthropic's object in
   `extra`, e.g. `extra={'thinking': {...}}`. It replaces the built object.
@@ -105,7 +307,7 @@ or back on without restating the budget:
 
 ```python
 # 1. Model default with extended thinking on
-claude = Anthropic.claude('claude-sonnet-4-6', config=AnthropicConfig(thinking='enabled', thinking_budget=4096))
+claude = Anthropic.claude('claude-haiku-4-5', config=AnthropicConfig(thinking='enabled', thinking_budget=4096))
 
 # 2. Turn it off for one call; the inherited budget isn't sent
 await ai.generate(model=claude, prompt='Is shellfish safe for this guest?', config={'thinking': 'disabled'})
@@ -131,7 +333,7 @@ as a flat flag:
 ```python
 # 1. Require one tool call, and only one
 res = await ai.generate(
-    model='anthropic/claude-sonnet-4-6',
+    model='anthropic/claude-sonnet-5-5',
     prompt='Is the pho in stock?',
     tools=['lookup_menu'],
     tool_choice='required',
@@ -157,7 +359,7 @@ To bill a call to someone else's Anthropic account, pass their key in
 
 ```python
 res = await ai.generate(
-    model='anthropic/claude-sonnet-4-6',
+    model='anthropic/claude-sonnet-5-5',
     prompt='hi',
     context={'secrets': {'api_key': tenant_key}},
 )
@@ -174,7 +376,7 @@ res = await ai.generate(
 - A client whose credential can't be swapped refuses a tenant key with
   `FAILED_PRECONDITION` rather than billing its own account: an
   `Anthropic(client_options={'auth_token': ...})` client, one whose `default_headers` pin
-  `x-api-key` or `Authorization`, and Claude on Vertex AI Model Garden, which
+  `x-api-key` or `Authorization`, and `Anthropic(backend=GoogleCloud())`, which
   authenticates with Google Cloud credentials.
 
 ## Disclaimer

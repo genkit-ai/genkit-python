@@ -30,9 +30,9 @@ Example:
 
 
     async def main() -> None:
-        # 2. Generate with Claude Sonnet 4.6
+        # 2. Generate with Claude Sonnet 5
         res = await ai.generate(
-            model=Anthropic.claude('claude-sonnet-4-6'),
+            model=Anthropic.claude('claude-sonnet-5-5'),
             prompt='Explain recursion in 10 words.',
         )
 
@@ -50,17 +50,24 @@ Credentials:
     can bring its own key as ``context={'secrets': {'api_key': ...}}``; a
     plugin with no key of its own serves only those calls.
 
+    ``Anthropic(backend=GoogleCloud(project=...))`` serves the same models from
+    Google Cloud instead, authenticated with application default credentials
+    and billed to the project (``uv add 'genkit-anthropic[google-cloud]'``).
+    Refs, config and ``.prompt`` files stay the same.
+
 See Also:
     - Anthropic documentation: https://docs.anthropic.com/
 """
 
 from genkit_anthropic._config import AnthropicConfig, Effort, ThinkingDisplay, ThinkingMode
+from genkit_anthropic._google_cloud import GoogleCloud
 from genkit_anthropic._plugin import Anthropic
 
 __all__ = [
     'Anthropic',
     'AnthropicConfig',
     'Effort',
+    'GoogleCloud',
     'ThinkingDisplay',
     'ThinkingMode',
 ]

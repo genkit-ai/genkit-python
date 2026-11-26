@@ -23,9 +23,14 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from genkit_openai import OpenAI
+from genkit_openai import Mistral, OpenAI
 from genkit_openai._models._model import OpenAIModel, _unwrap_output
-from genkit_openai._models._output_root import OutputStreamUnwrapper, has_object_root, unwrap_output_text
+from genkit_openai._models._output_root import (
+    OutputStreamUnwrapper,
+    has_object_root,
+    unwrap_output_text,
+    wrap_schema_root,
+)
 
 from genkit import Genkit, Message, Part, Role
 from genkit.model import ModelRequest, OutputConfig, ToolRequest
@@ -83,15 +88,23 @@ def test_unwrap_output_text_returns_the_value_as_sent(text: str, expected: str) 
     assert unwrap_output_text(text) == expected
 
 
-def test_unwrap_output_text_takes_the_value_beside_other_keys() -> None:
-    """A non-strict host may add keys; the value is still taken, as in JS, Go and Dart."""
-    assert json.loads(unwrap_output_text('{"value":[1, 2],"extra":2}')) == [1, 2]
-
-
-@pytest.mark.parametrize('text', ['[1,2]', '{"other":1}', 'not json', ''])
+@pytest.mark.parametrize(
+    'text', ['[1,2]', '{"other":1}', '{"value":[1,2],"extra":2}', '{"extra":2,"value":[1,2]}', 'not json', '']
+)
 def test_unwrap_output_text_passes_through_anything_else(text: str) -> None:
-    """Only an object with a value key is unwrapped; a bare value from a host that ignored the schema is kept."""
+    """Only an object whose one key is value is unwrapped; a host that ignored the schema keeps its reply."""
     assert unwrap_output_text(text) == text
+
+
+def test_unwrap_output_reads_streamed_text_parts_as_one() -> None:
+    """A streamed reply's text parts are unwrapped together, and the value goes in the first."""
+    answer = _unwrap_output(
+        Message(
+            role=Role.MODEL,
+            content=[Part.from_text('{"val'), Part.from_reasoning('hmm'), Part.from_text('ue":[1]}')],
+        )
+    )
+    assert [(p.text, p.reasoning) for p in answer.content] == [('[1]', None), (None, 'hmm')]
 
 
 def test_unwrap_output_keeps_reasoning_and_leaves_a_tool_call_preamble_alone() -> None:
@@ -249,6 +262,55 @@ def test_response_format_wraps_a_root_ref_to_an_enum() -> None:
     sent = _sent_schema(model, _json_request(schema))
     assert sent['properties']['value'] == {'$ref': '#/$defs/Color'}
     assert sent['$defs'] == schema['$defs']
+
+
+def test_wrap_schema_root_hoists_a_root_reference() -> None:
+    """'#' pointed at the caller's schema; once wrapped it moves to $defs, and $schema stays at the root."""
+    schema = {
+        '$schema': 'http://json-schema.org/draft-07/schema#',
+        'type': 'array',
+        'items': {'anyOf': [{'type': 'string'}, {'$ref': '#'}]},
+    }
+    wrapped = wrap_schema_root(schema)
+    assert wrapped['$schema'] == schema['$schema']
+    assert wrapped['properties'] == {'value': {'$ref': '#/$defs/value'}}
+    assert wrapped['$defs'] == {
+        'value': {'type': 'array', 'items': {'anyOf': [{'type': 'string'}, {'$ref': '#/$defs/value'}]}}
+    }
+
+
+def test_wrap_schema_root_hoists_a_pointer_into_the_schema() -> None:
+    """A '#/items/...' reference moves to $defs, which the SDK's strict pass can then resolve."""
+    model = OpenAIModel(model='gpt-4o', client=MagicMock(), object_schema_root=True)
+    schema = {
+        'type': 'array',
+        'items': {
+            'type': 'object',
+            'properties': {'a': {'type': 'string'}, 'b': {'$ref': '#/items/properties/a', 'description': 'd'}},
+            'required': ['a', 'b'],
+        },
+    }
+    sent = _sent_schema(model, _json_request(schema))
+    item = sent['properties']['value']['items']
+    assert item['properties']['a'] == {'$ref': '#/$defs/value_items_properties_a'}
+    assert item['properties']['b'] == {'type': 'string', 'description': 'd'}
+    assert sent['$defs'] == {'value_items_properties_a': {'type': 'string'}}
+
+
+def test_wrap_schema_root_leaves_references_to_whole_definitions() -> None:
+    """References to a top-level definition still resolve, and data keywords are not read as references."""
+    schema = {
+        'type': 'array',
+        'items': {'$ref': '#/$defs/Node', 'default': {'$ref': '#'}},
+        '$defs': {'Node': {'type': 'object', 'properties': {'name': {'$ref': '#/$defs/Node/properties/x'}, 'x': {}}}},
+    }
+    wrapped = wrap_schema_root(schema)
+    assert wrapped['properties']['value']['items'] == {'$ref': '#/$defs/Node', 'default': {'$ref': '#'}}
+    assert wrapped['$defs']['Node']['properties'] == {
+        'name': {'$ref': '#/$defs/Node_properties_x'},
+        'x': {'$ref': '#/$defs/Node_properties_x'},
+    }
+    assert wrapped['$defs']['Node_properties_x'] == {}
 
 
 def test_response_format_is_unchanged_without_the_setting() -> None:
@@ -419,3 +481,64 @@ async def test_plugin_pointed_at_another_host_still_wraps() -> None:
 
     assert server.sent_schema()['required'] == ['value']
     assert response.output == [{'name': 'a'}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply', ['{"value":[1,2],"extra":2}', '{"extra":2,"value":[1,2]}'])
+async def test_plugin_leaves_a_reply_with_other_keys_alone(reply: str) -> None:
+    """A host that ignored the wrapper keeps its reply, streamed or not."""
+    schema = {'type': 'array', 'items': {'type': 'integer'}}
+    response = await _genkit(_Server(reply)).generate(model='openai/gpt-4o', prompt='?', output_schema=schema)
+    assert response.text == reply
+
+    frames = [_delta({'content': reply[i : i + 4]}) for i in range(0, len(reply), 4)]
+    frames.append(_delta({}, 'stop'))
+    stream = _genkit(_Server(frames=frames)).generate_stream(model='openai/gpt-4o', prompt='?', output_schema=schema)
+    [_ async for _ in stream.stream]
+    assert (await stream.response).text == reply
+
+
+@pytest.mark.asyncio
+async def test_plugin_streams_the_same_message_as_a_full_reply_when_a_tool_call_follows() -> None:
+    """A whole wrapper before a tool call is a preamble, kept as sent, as in a full reply."""
+    tool_call = {
+        'index': 0,
+        'id': 'call_1',
+        'type': 'function',
+        'function': {'name': 'lookup', 'arguments': '{"dish":"pho"}'},
+    }
+    server = _Server(
+        frames=[_delta({'content': '{"value":[1,2]}'}), _delta({'tool_calls': [tool_call]}), _delta({}, 'tool_calls')]
+    )
+    ai = _genkit(server)
+
+    @ai.tool(name='lookup')
+    async def lookup(dish: str) -> str:
+        return dish
+
+    stream = ai.generate_stream(
+        model='openai/gpt-4o',
+        prompt='?',
+        output_schema={'type': 'array', 'items': {'type': 'integer'}},
+        tools=['lookup'],
+        return_tool_requests=True,
+    )
+    [_ async for _ in stream.stream]
+    response = await stream.response
+
+    assert response.message is not None
+    assert response.message.content[0].text == '{"value":[1,2]}'
+    assert [p.tool_request.name for p in response.tool_requests if p.tool_request] == ['lookup']
+
+
+@pytest.mark.asyncio
+async def test_mistral_sends_a_non_object_root_unwrapped() -> None:
+    """Only OpenAI needs an object root, so Mistral gets the schema as before."""
+    server = _Server('[1,2]')
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(server.handler))
+    ai = Genkit(plugins=[Mistral(api_key='test', client_options={'http_client': http_client, 'max_retries': 0})])
+    schema = {'type': 'array', 'items': {'type': 'integer'}}
+    response = await ai.generate(model='mistral/mistral-small-latest', prompt='?', output_schema=schema)
+
+    assert server.sent_schema()['type'] == 'array'
+    assert response.output == [1, 2]

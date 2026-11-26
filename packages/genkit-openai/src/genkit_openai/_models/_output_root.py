@@ -73,12 +73,183 @@ def has_object_root(schema: dict[str, Any]) -> bool:
     return False
 
 
+def wrap_schema_root(schema: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` as the one required ``value`` property of an object schema.
+
+    ``$schema``, ``$defs`` and ``definitions`` stay at the root, so references
+    to the definitions still resolve.
+
+    Any other local reference (``#``, ``#/items/...``) pointed into the
+    caller's schema, which is no longer the root. Strict mode accepts
+    references only to top-level definitions, so each referenced subschema
+    moves into ``$defs``, and both its old place and every reference to it
+    point there instead.
+    """
+    hoister = _RefHoister(schema)
+    wrapped: dict[str, Any] = {
+        'type': 'object',
+        'required': [OUTPUT_VALUE_FIELD],
+        'additionalProperties': False,
+    }
+    inner: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == '$schema':
+            wrapped[key] = value
+        elif key == 'definitions':
+            wrapped[key] = hoister.walk(value, '#/definitions', names=True)
+        elif key == '$defs':
+            if isinstance(value, dict):
+                for name, definition in cast(dict[str, Any], value).items():
+                    hoister.defs[name] = hoister.walk(definition, f'#/$defs/{_escape(name)}')
+            else:
+                wrapped[key] = value
+        else:
+            inner[key] = value
+    wrapped['properties'] = {OUTPUT_VALUE_FIELD: hoister.walk(inner, '#')}
+    if hoister.defs:
+        wrapped['$defs'] = hoister.defs
+    return wrapped
+
+
+# Keywords that hold data rather than subschemas: a ``$ref`` inside them is
+# not a reference.
+_DATA_KEYWORDS = frozenset({'const', 'enum', 'default', 'examples'})
+# Keywords whose values map names to subschemas. Keys there are names, so a
+# property called ``default`` or ``$ref`` is a schema like any other.
+_NAME_MAPS = frozenset({'properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'})
+_DEFS_PREFIXES = ('#/$defs/', '#/definitions/')
+
+
+class _RefHoister:
+    """Moves the subschemas that local references point at into ``$defs`` as it copies a schema."""
+
+    def __init__(self, schema: dict[str, Any]) -> None:
+        self.defs: dict[str, Any] = {}
+        defs = schema.get('$defs')
+        taken = set(cast(dict[str, Any], defs)) if isinstance(defs, dict) else set()
+        refs: set[str] = set()
+        _collect_refs(schema, refs, names=False)
+        # Each referenced JSON pointer, and the name it moves to in defs.
+        self.targets: dict[str, str] = {}
+        for ref in sorted(r for r in refs if _hoistable(r) and _resolves(schema, r)):
+            self.targets[ref] = _unique_def_name(ref, taken)
+
+    def walk(self, node: object, pointer: str, *, names: bool = False) -> object:
+        """Copy ``node``, found at ``pointer`` in the caller's schema.
+
+        A node that a reference points at goes into defs, and a reference to it
+        is left in its place. ``names`` says ``node`` maps names to subschemas.
+        """
+        if (name := self.targets.get(pointer)) is not None:
+            self.defs[name] = self._copy(node, pointer, names=names)
+            return {'$ref': f'#/$defs/{name}'}
+        return self._copy(node, pointer, names=names)
+
+    def _copy(self, node: object, pointer: str, *, names: bool) -> object:
+        if isinstance(node, list):
+            return [self.walk(v, f'{pointer}/{i}') for i, v in enumerate(cast(list[Any], node))]
+        if not isinstance(node, dict):
+            return node
+        out: dict[str, Any] = {}
+        for key, value in cast(dict[str, Any], node).items():
+            at = f'{pointer}/{_escape(key)}'
+            if names:
+                out[key] = self.walk(value, at)
+            elif key == '$ref' and isinstance(value, str):
+                name = self.targets.get(value)
+                out[key] = f'#/$defs/{name}' if name is not None else value
+            elif key in _DATA_KEYWORDS:
+                out[key] = value
+            else:
+                out[key] = self.walk(value, at, names=key in _NAME_MAPS)
+        return out
+
+
+def _collect_refs(node: object, found: set[str], *, names: bool) -> None:
+    """Add every ``$ref`` in ``node`` to ``found``."""
+    if isinstance(node, list):
+        for value in cast(list[Any], node):
+            _collect_refs(value, found, names=False)
+    elif isinstance(node, dict):
+        for key, value in cast(dict[str, Any], node).items():
+            if names:
+                _collect_refs(value, found, names=False)
+            elif key == '$ref' and isinstance(value, str):
+                found.add(value)
+            elif key not in _DATA_KEYWORDS:
+                _collect_refs(value, found, names=key in _NAME_MAPS)
+
+
+def _defs_path(ref: str) -> str | None:
+    """What follows ``#/$defs/`` or ``#/definitions/`` in ``ref``, or None."""
+    for prefix in _DEFS_PREFIXES:
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return None
+
+
+def _hoistable(ref: str) -> bool:
+    """Whether ``ref`` is a local reference strict mode can't follow once the schema is wrapped.
+
+    A reference to a whole top-level definition is fine; one into the middle
+    of a definition or anywhere else in the schema is not.
+    """
+    if ref != '#' and not ref.startswith('#/'):
+        return False
+    if (rest := _defs_path(ref)) is not None:
+        return '/' in rest
+    return ref not in ('#/$defs', '#/definitions')
+
+
+def _resolves(schema: dict[str, Any], ref: str) -> bool:
+    """Whether the JSON pointer ``ref`` names a schema inside ``schema``."""
+    node: object = schema
+    for segment in ref.removeprefix('#').split('/')[1:]:
+        segment = segment.replace('~1', '/').replace('~0', '~')
+        if isinstance(node, dict):
+            node = cast(dict[str, Any], node)
+            if segment not in node:
+                return False
+            node = node[segment]
+        elif isinstance(node, list):
+            items = cast(list[Any], node)
+            if not segment.isdigit() or int(segment) >= len(items):
+                return False
+            node = items[int(segment)]
+        else:
+            return False
+    return isinstance(node, dict)
+
+
+def _escape(key: str) -> str:
+    return key.replace('~', '~0').replace('/', '~1')
+
+
+def _unique_def_name(ref: str, taken: set[str]) -> str:
+    """Name the definition a referenced pointer moves to, avoiding the names already taken.
+
+    A pointer into a definition is named after its path there
+    (``Person_properties_name``), and any other after its path under the
+    wrapper (``value_items``).
+    """
+    path = _defs_path(ref)
+    if path is None:
+        path = OUTPUT_VALUE_FIELD + ref.removeprefix('#')
+    base = re.sub(r'[^\w-]', '_', path)
+    name, i = base, 2
+    while name in taken:
+        name, i = f'{base}_{i}', i + 1
+    taken.add(name)
+    return name
+
+
 def unwrap_output_text(text: str) -> str:
     """JSON text of the wrapped value in ``text``, or ``text`` unchanged.
 
     The value's text is kept as sent, so it reads the same as when streamed.
-    Text that is not an object with a ``value`` key is returned as is: a host
-    that ignored the schema may reply with the bare value.
+    Text that is not an object whose only key is ``value`` is returned as is:
+    a host that ignored the schema may reply with the bare value, or with an
+    object that has a ``value`` property of its own.
     """
     try:
         parsed = json.loads(text)
@@ -86,10 +257,10 @@ def unwrap_output_text(text: str) -> str:
         return text
     if not isinstance(parsed, dict) or OUTPUT_VALUE_FIELD not in parsed:
         return text
-    parsed = cast(dict[str, Any], parsed)
-    if len(parsed) > 1:
-        # Keys beside the value (a non-strict host) rule out slicing.
-        return json.dumps(parsed[OUTPUT_VALUE_FIELD])
+    if len(cast(dict[str, Any], parsed)) > 1:
+        # Keys beside the value: a host that ignored the wrapper and replied
+        # with an object of its own, which is left as sent.
+        return text
     # The shape is known, so stripping the opening and closing brace leaves
     # exactly the value.
     unwrapper = OutputStreamUnwrapper()

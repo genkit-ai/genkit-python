@@ -214,7 +214,7 @@ async def test_scalar_tool_schema_is_wrapped_and_round_trips(make_completion: Ca
 
 def test_enum_and_defs_tool_schemas_wrap_with_defs_at_root() -> None:
     """A $ref root to an Enum is wrapped; $defs stay at the root so refs still resolve."""
-    from genkit_openai._models._model import _TOOL_INPUT_FIELD, _is_non_object_schema, _wrap_schema
+    from genkit_openai._models._model import _is_wrapped_tool_schema, _wrap_tool_schema
 
     spice = {'enum': ['mild', 'hot'], 'type': 'string'}
     enum_root = {'$defs': {'SpiceLevel': spice}, '$ref': '#/$defs/SpiceLevel'}
@@ -224,10 +224,10 @@ def test_enum_and_defs_tool_schemas_wrap_with_defs_at_root() -> None:
     }
     dangling = {'$ref': '#/$defs/Missing'}
 
-    assert _is_non_object_schema(enum_root) is True
-    assert _is_non_object_schema(order) is False
-    assert _is_non_object_schema(dangling) is False
-    assert _wrap_schema(enum_root, _TOOL_INPUT_FIELD) == {
+    assert _is_wrapped_tool_schema(enum_root) is True
+    assert _is_wrapped_tool_schema(order) is False
+    assert _is_wrapped_tool_schema(dangling) is False
+    assert _wrap_tool_schema(enum_root) == {
         'type': 'object',
         'properties': {'input': {'$ref': '#/$defs/SpiceLevel'}},
         'required': ['input'],

@@ -617,7 +617,8 @@ class OpenAI(Plugin):
                     client,
                     supports=supports,
                     mistral=self._uses_mistral_names(client),
-                    object_schema_root=True,
+                    # Only OpenAI requires an object root; Mistral requests go as before.
+                    object_schema_root=not self._uses_mistral_names(client),
                 )
             )
             return await openai_model.generate(request, ctx)

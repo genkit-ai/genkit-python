@@ -22,10 +22,10 @@ from typing import Any, cast
 
 from genkit_openai._models._mistral import is_mistral, mistral_chat_body, refuse_non_image_media
 from genkit_openai._models._output_root import (
-    OUTPUT_VALUE_FIELD,
     OutputStreamUnwrapper,
     has_object_root,
     unwrap_output_text,
+    wrap_schema_root,
 )
 from genkit_openai._models._utils import (
     OPENAI_CALL_ERRORS,
@@ -277,11 +277,11 @@ def _root_ref_target(schema: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _is_non_object_schema(schema: dict[str, Any] | None) -> bool:
+def _is_wrapped_tool_schema(schema: dict[str, Any] | None) -> bool:
     """True for a non-empty schema that is not an object (``{'type': 'string'}``).
 
-    OpenAI takes only an object for a function's parameters and for a
-    ``json_schema`` response format, so such a schema is sent wrapped.
+    OpenAI takes only an object for a function's parameters, so such a
+    schema is sent wrapped.
 
     A root ``$ref`` is judged by its target: Pydantic emits one for an Enum
     input, which is a string, not an object.
@@ -293,26 +293,26 @@ def _is_non_object_schema(schema: dict[str, Any] | None) -> bool:
         if '$ref' in schema:
             target = _root_ref_target(schema)
             # An unresolvable ref is sent as is rather than guessed at.
-            return target is not None and _is_non_object_schema(target)
+            return target is not None and _is_wrapped_tool_schema(target)
         # anyOf/oneOf roots: only an object schema is safe to send as-is.
         return 'properties' not in schema
     return schema_type != 'object'
 
 
-def _wrap_schema(schema: dict[str, Any], field: str) -> dict[str, Any]:
-    """``schema`` under the one property ``field``, with any ``$defs`` kept at the root."""
+def _wrap_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` under one ``input`` property, with any ``$defs`` kept at the root."""
     defs = {k: schema[k] for k in _DEFS_KEYS if k in schema}
     inner = {k: v for k, v in schema.items() if k not in defs}
     return {
         'type': 'object',
-        'properties': {field: inner},
-        'required': [field],
+        'properties': {_TOOL_INPUT_FIELD: inner},
+        'required': [_TOOL_INPUT_FIELD],
         **defs,
     }
 
 
 def _wrapped_tool_names(tools: list[ToolDefinition] | None) -> frozenset[str]:
-    return frozenset(t.name for t in tools or [] if _is_non_object_schema(t.input_schema))
+    return frozenset(t.name for t in tools or [] if _is_wrapped_tool_schema(t.input_schema))
 
 
 def _map_tool_requests(message: Message, wrapped: frozenset[str], wrap: bool) -> Message:
@@ -355,19 +355,25 @@ def _unwrapped_args_text(arguments: str) -> str:
 def _unwrap_output(message: Message) -> Message:
     """Replace a wrapped reply's text with the wrapped value.
 
-    Text beside a tool call is a preamble, not the output, and is left alone.
+    The text parts are read as one text, as a streamed reply arrives in many
+    of them, and the value goes in the first. Text beside a tool call is a
+    preamble, not the output, and is left alone.
     """
     if any(part.tool_request is not None for part in message.content):
         return message
-    changed = False
-    content: list[Part] = []
-    for part in message.content:
-        if part.text is not None and (text := unwrap_output_text(part.text)) != part.text:
-            content.append(part.model_copy(update={'text': text}))
-            changed = True
-        else:
-            content.append(part)
-    return message.model_copy(update={'content': content}) if changed else message
+    texts = [i for i, part in enumerate(message.content) if part.text is not None]
+    if not texts:
+        return message
+    text = ''.join(message.content[i].text or '' for i in texts)
+    value = unwrap_output_text(text)
+    if value == text:
+        return message
+    content = [
+        part.model_copy(update={'text': value}) if i == texts[0] else part
+        for i, part in enumerate(message.content)
+        if i == texts[0] or i not in texts
+    ]
+    return message.model_copy(update={'content': content})
 
 
 def _wrap_tool_inputs(messages: list[Message], wrapped: frozenset[str]) -> list[Message]:
@@ -458,10 +464,10 @@ class OpenAIModel:
         result = []
         for tool_definition in tools:
             parameters = tool_definition.input_schema or {}
-            if _is_non_object_schema(parameters):
+            if _is_wrapped_tool_schema(parameters):
                 # Function parameters must be an object; a scalar tool input
                 # (``async def tool(city: str)``) rides under one field.
-                parameters = _wrap_schema(parameters, _TOOL_INPUT_FIELD)
+                parameters = _wrap_tool_schema(parameters)
             if parameters:
                 parameters = _ensure_strict_json_schema(parameters, path=(), root=parameters)
 
@@ -528,7 +534,7 @@ class OpenAIModel:
             if request.output_schema:
                 schema = request.output_schema
                 if self._wraps_output(request):
-                    schema = _wrap_schema(schema, OUTPUT_VALUE_FIELD)
+                    schema = wrap_schema_root(schema)
                 return {
                     'type': 'json_schema',
                     'json_schema': {
@@ -742,8 +748,9 @@ class OpenAIModel:
 
         tool_calls: dict[int, Any] = {}
         wrapped = _wrapped_tool_names(request.tools)
-        # A wrapped reply streams as '{"value": ...}'; text is unwrapped as it
-        # arrives, so chunks and the final message read as the caller's value.
+        # A wrapped reply streams as '{"value": ...}'; chunks are unwrapped as
+        # they arrive. The final message is built from the raw text and
+        # unwrapped as a full reply is, so the two paths can't disagree.
         unwrapper = OutputStreamUnwrapper() if self._wraps_output(request) else None
         # As a full reply is read (MessageConverter.to_genkit): reasoning from
         # its own field (DeepSeek's reasoning_content) first, then the
@@ -789,18 +796,16 @@ class OpenAIModel:
             # Text before a tool call is a preamble, not the output: whatever
             # was held back goes out as it streamed, and so does the rest.
             if unwrapper is not None and delta.tool_calls and (held_text := unwrapper.pass_through()):
-                held_part = MessageConverter.text_part_to_genkit(held_text)
-                content_parts.append(held_part)
-                parts.append(held_part)
+                parts.append(MessageConverter.text_part_to_genkit(held_text))
 
             # Text content; Mistral's reasoning models stream reasoning in it too.
             for item in reply_content(delta.content):
-                if isinstance(item, str) and unwrapper is not None:
-                    item = unwrapper.push(item)
-                    if not item:
-                        continue
                 part = MessageConverter.text_part_to_genkit(item) if isinstance(item, str) else item
                 content_parts.append(part)
+                if isinstance(item, str) and unwrapper is not None:
+                    if chunk_text := unwrapper.push(item):
+                        parts.append(MessageConverter.text_part_to_genkit(chunk_text))
+                    continue
                 parts.append(part)
 
             # Tool calls (partial function calls)
@@ -824,9 +829,7 @@ class OpenAIModel:
                 callback(ModelResponseChunk(role=Role.MODEL, content=parts))
 
         if unwrapper is not None and (rest := unwrapper.flush()):
-            rest_part = MessageConverter.text_part_to_genkit(rest)
-            content_parts.append(rest_part)
-            callback(ModelResponseChunk(role=Role.MODEL, content=[rest_part]))
+            callback(ModelResponseChunk(role=Role.MODEL, content=[MessageConverter.text_part_to_genkit(rest)]))
 
         if not saw_choice:
             raise GenkitError(
@@ -865,9 +868,12 @@ class OpenAIModel:
             failure_message=failure_message,
         )
 
+        final_message = Message(role=Role.MODEL, content=accumulated_content)
+        if unwrapper is not None:
+            final_message = _unwrap_output(final_message)
         result = ModelResponse(
             request=request,
-            message=Message(role=Role.MODEL, content=accumulated_content),
+            message=final_message,
             finish_reason=finish_reason,
             finish_message=finish_message,
             usage=_usage_from_completion(usage),

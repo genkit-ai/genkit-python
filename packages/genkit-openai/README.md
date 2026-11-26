@@ -55,6 +55,15 @@ OpenAI(
 )
 ```
 
+## Structured output
+
+OpenAI only accepts an object at the root of an output schema, so `OpenAI()`
+sends any other schema (a list, enum or scalar, such as `output_schema=int`,
+a `str` Enum or `{'type': 'array', 'items': {'type': 'string'}}`) as the
+`value` property of an object and unwraps the reply. `response.output` and
+the streamed chunks hold the value itself. Requests to Mistral are sent
+unwrapped.
+
 ## Mistral
 
 `Mistral()` registers Mistral's models and embedders under `mistral/`, as the

@@ -612,7 +612,14 @@ class OpenAI(Plugin):
                 supports = catalog.supports if catalog is not None else get_default_openai_model_info(name).supports
             client = self._client_for_call(request, ctx)
             openai_model = OpenAIModelHandler(
-                OpenAIModel(name, client, supports=supports, mistral=self._uses_mistral_names(client))
+                OpenAIModel(
+                    name,
+                    client,
+                    supports=supports,
+                    mistral=self._uses_mistral_names(client),
+                    # Only OpenAI requires an object root; Mistral requests go as before.
+                    object_schema_root=not self._uses_mistral_names(client),
+                )
             )
             return await openai_model.generate(request, ctx)
 

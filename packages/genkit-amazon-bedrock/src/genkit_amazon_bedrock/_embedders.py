@@ -523,6 +523,8 @@ class BedrockEmbedder:
     async def _run_bounded(self, calls: list[tuple[int, Coroutine[Any, Any, _T]]]) -> list[_T]:
         """Runs the calls concurrently, cancelling the rest on the first failure.
 
+        Cancelling the caller cancels the whole batch, in-flight calls included.
+
         The semaphore is built per call rather than once per module: it binds
         to the running loop, and the Dev UI reflection server runs a second one.
         """
@@ -555,7 +557,7 @@ class BedrockEmbedder:
         tasks = [asyncio.create_task(_bounded(index, call)) for index, call in calls]
         try:
             _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-        except BaseException:
+        except asyncio.CancelledError:
             # create_task does not tie the tasks to this coroutine, and
             # asyncio.wait does not cancel what it waits on, so a cancelled
             # caller would leave the whole batch running and billing.
@@ -566,7 +568,7 @@ class BedrockEmbedder:
             # so swallow it and let the original exception surface.
             try:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            except BaseException:  # noqa: S110
+            except asyncio.CancelledError:
                 pass
             raise
         for task in pending:

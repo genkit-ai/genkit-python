@@ -24,14 +24,14 @@ import asyncio
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 import httpx
 import ollama as ollama_api
 import pytest
 from genkit_ollama import Ollama, OllamaConfig
 from genkit_ollama._plugin import _ResolvedModel
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from genkit import FinishReason, Genkit, GenkitError
 
@@ -82,6 +82,29 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[Server]:
 
 def make_ai(**plugin_kwargs: Any) -> Genkit:
     return Genkit(plugins=[Ollama(**plugin_kwargs)])
+
+
+@pytest.mark.asyncio
+async def test_generate_ollama_preserves_tool_property_enums(server: Server) -> None:
+    """Literal choices from a typed tool reach Ollama's chat request."""
+    ai = make_ai()
+
+    class InventoryQuery(BaseModel):
+        warehouse: Literal['north', 'south']
+        priority: Literal[0, 1]
+        sku: str
+
+    @ai.tool()
+    async def check_inventory(query: InventoryQuery) -> str:
+        """Look up a product in a warehouse."""
+        return query.sku
+
+    await ai.generate(model=MODEL, prompt='Check inventory for SKU-42.', tools=[check_inventory])
+
+    properties = server.last_body['tools'][0]['function']['parameters']['properties']
+    assert properties['warehouse'].get('enum') == ['north', 'south']
+    assert properties['priority'].get('enum') == [0, 1]
+    assert 'enum' not in properties['sku']
 
 
 def test_ollama_config_with_unknown_key_raises_validation_error() -> None:

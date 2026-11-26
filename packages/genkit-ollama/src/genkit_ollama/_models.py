@@ -936,9 +936,11 @@ def _convert_parameters(input_schema: dict[str, object]) -> ollama_api.Tool.Func
     properties_raw = input_schema.get('properties', {})
     if isinstance(properties_raw, dict):
         properties = cast(dict[str, dict[str, Any]], properties_raw)
-        for key in properties:
+        for key, prop in properties.items():
             schema.properties[key] = ollama_api.Tool.Function.Parameters.Property(
-                type=_property_type(properties[key]), description=properties[key].get('description', '')
+                type=_property_type(prop),
+                description=prop.get('description', ''),
+                enum=prop.get('enum'),
             )
 
     return schema
